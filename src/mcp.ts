@@ -1,7 +1,7 @@
 /**
  * agent-memory MCP server over stdio (contract §3).
  *
- * - official `@modelcontextprotocol/sdk`, 7 frozen core tools
+ * - official `@modelcontextprotocol/sdk`, 11 frozen core tools
  * - backed by the SAME MemoryStore implementation as the REST server
  * - same bearer rule: when AGENT_MEMORY_SECRET is non-empty, every tool call
  *   must carry `_meta.authorization = "Bearer <secret>"` (stdio has no HTTP
@@ -15,7 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { isMetaAuthorized, secretFromEnv } from "./auth.js";
-import { logSafeNote } from "./errors.js";
+import { failureSignal, logSafeNote } from "./errors.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
@@ -23,6 +23,8 @@ const DEFAULT_PROJECT = "default";
 const DEFAULT_LIMIT = 10;
 /** Default origin for MCP writes (the REST route defaults to "rest"). */
 const DEFAULT_ORIGIN = "mcp";
+/** `memory_lesson` forces this origin (contract §3, P3.1). */
+const LESSON_ORIGIN = "lesson";
 const DEFAULT_IMPORTANCE = 0.5;
 
 const projectSchema = z.string().trim().min(1).max(200);
@@ -64,12 +66,96 @@ const forgetInput = {
   memoryId: z.string().trim().min(1).max(200),
 };
 
+/** Recap and handoff share this input (contract §3, P3.1). */
+const recapInput = {
+  project: projectSchema.optional(),
+  sessionId: z.string().trim().min(1).max(200).optional(),
+  limit: limitSchema.optional(),
+};
+
+/** Lesson = memory_save without an `origin` field — origin is forced. */
+const lessonInput = {
+  content: z.string().trim().min(1).max(200_000),
+  concepts: conceptsSchema.optional(),
+  project: projectSchema.optional(),
+  sessionId: z.string().trim().min(1).max(200).optional(),
+  importance: z.number().min(0).max(1).optional(),
+};
+
+/** Governance delete: `reason` required, no `project` field. */
+const deleteInput = {
+  memoryId: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(1000),
+};
+
 function ok(payload: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
 function failed(payload: { error: string }): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], isError: true };
+}
+
+/* ------------------------------------------------------------------ */
+/* Recap/handoff digest (contract §3, P3.1 — degrades, never errors)   */
+/* Same assembly as `src/server.ts` recap/handoff; kept in-file because */
+/* only server.ts and mcp.ts are in scope for this change.              */
+/* ------------------------------------------------------------------ */
+
+interface DigestInput {
+  project?: string | undefined;
+  sessionId?: string | undefined;
+  limit?: number | undefined;
+}
+
+interface DigestLines {
+  lines: string[];
+  /** Number of memories summarized across all sessions. */
+  count: number;
+  /** Per-store-call failures as `<source>: <failure>` (src/search.ts style). */
+  signals: string[];
+}
+
+/**
+ * One bullet per memory: `- [sessionId] createdAt (origin): content`, in
+ * session order then memory order. Every store call is individually wrapped:
+ * a failure lands in `signals` while the remaining sessions still contribute
+ * lines — a digest never rejects for store failures.
+ */
+async function buildDigestLines(store: MemoryStore, input: DigestInput): Promise<DigestLines> {
+  const project = input.project ?? DEFAULT_PROJECT;
+  const limit = input.limit ?? DEFAULT_LIMIT;
+  const lines: string[] = [];
+  const signals: string[] = [];
+  let count = 0;
+
+  const appendSession = async (sessionId: string): Promise<void> => {
+    try {
+      const memories = await store.sessionMemories({ sessionId, project, limit });
+      for (const memory of memories) {
+        lines.push(`- [${sessionId}] ${memory.createdAt} (${memory.origin}): ${memory.content}`);
+      }
+      count += memories.length;
+    } catch (err) {
+      signals.push(`memories(${sessionId}): ${failureSignal(err)}`);
+    }
+  };
+
+  if (input.sessionId !== undefined) {
+    await appendSession(input.sessionId);
+    return { lines, count, signals };
+  }
+
+  try {
+    // appendSession never rejects (fully wrapped), so this catch is listSessions only.
+    const sessions = await store.listSessions({ project, limit });
+    for (const session of sessions) {
+      await appendSession(session.sessionId);
+    }
+  } catch (err) {
+    signals.push(`sessions: ${failureSignal(err)}`);
+  }
+  return { lines, count, signals };
 }
 
 function registerTools(mcp: McpServer, store: MemoryStore, secret: string | undefined): void {
@@ -221,6 +307,99 @@ function registerTools(mcp: McpServer, store: MemoryStore, secret: string | unde
       handle("memory_health", extra._meta, async () => {
         const counts = await store.healthCounts(args.project ?? DEFAULT_PROJECT);
         return ok({ status: "ok", counts });
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_recap",
+    {
+      description:
+        "Recap recent memories as text bullets for one sessionId, or for every session of a project. Degrades to partial output with a signals list when the store fails; never errors on store failure.",
+      inputSchema: recapInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_recap", extra._meta, async () => {
+        const digest = await buildDigestLines(store, args);
+        return ok({
+          recap: digest.lines.join("\n"),
+          sessionId: args.sessionId ?? null,
+          count: digest.count,
+          signals: digest.signals,
+        });
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_handoff",
+    {
+      description:
+        "Handoff text: a project/memory/session counts header plus the recap bullets, for one sessionId or a whole project. Degrades like memory_recap — failed counts land in signals.",
+      inputSchema: recapInput, // body identical to recap (contract §3)
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_handoff", extra._meta, async () => {
+        const digest = await buildDigestLines(store, args);
+        const signals = digest.signals;
+        let counts: { memories: number; sessions: number } = { memories: 0, sessions: 0 };
+        try {
+          counts = await store.healthCounts(args.project ?? DEFAULT_PROJECT);
+        } catch (err) {
+          signals.push(`counts: ${failureSignal(err)}`);
+        }
+        const project = args.project ?? DEFAULT_PROJECT;
+        const header = `project=${project} memories=${counts.memories} sessions=${counts.sessions} recent:`;
+        return ok({
+          handoff: [header, ...digest.lines].join("\n"),
+          sessionId: args.sessionId ?? null,
+          counts,
+          signals,
+        });
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_lesson",
+    {
+      description:
+        "Persist a lesson: memory_save with origin forced to \"lesson\" (no caller-supplied origin). Returns the generated memory id and effective session/project.",
+      inputSchema: lessonInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async (args, extra) =>
+      handle("memory_lesson", extra._meta, async () => {
+        const result = await store.remember({
+          content: args.content,
+          concepts: args.concepts ?? [],
+          project: args.project ?? DEFAULT_PROJECT,
+          sessionId: args.sessionId ?? crypto.randomUUID(),
+          origin: LESSON_ORIGIN,
+          importance: args.importance ?? DEFAULT_IMPORTANCE,
+        });
+        return ok(result);
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_delete",
+    {
+      description:
+        "Governance delete: hard-delete one memory by id with a required reason (emits a governance log line). Returns {deleted:true, receipt:{memoryId, deletedAt}}, or an isError result with error not_found when the id does not exist.",
+      inputSchema: deleteInput,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_delete", extra._meta, async () => {
+        const deleted = await store.forget(args.memoryId);
+        if (!deleted) return failed({ error: "not_found" });
+        const deletedAt = new Date().toISOString();
+        // stderr, not stdout: stdout carries ONLY the MCP protocol. Reason is
+        // caller-supplied metadata — never memory content, never the secret.
+        console.error(
+          `[agentmemory] delete governance memoryId=${args.memoryId} reason=${args.reason} at=${deletedAt}`,
+        );
+        return ok({ deleted: true, receipt: { memoryId: args.memoryId, deletedAt } });
       }),
   );
 }
