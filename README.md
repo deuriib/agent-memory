@@ -381,18 +381,22 @@ silently to keep their zero-output guarantee.
 
 Stated plainly — these are real, not hypothetical:
 
-1. **Port conflict with upstream agentmemory.** Ports `3111/3112/3113` may
-   already be held by the real upstream `agentmemory`
-   (`npx` → `node …/bin/agentmemory` → `iii`). We keep `3111` as our default
-   for drop-in parity, but when upstream is running, start ours elsewhere and
-   point clients at it:
+1. **Port conflict with upstream agentmemory.** Port `3111` is **our default**,
+   chosen deliberately for drop-in parity with upstream. Ports
+   `3111/3112/3113` may be held by the real upstream `agentmemory`
+   (`npx` → `node …/bin/agentmemory` → `iii`; verified live on this machine).
+   When `3111` is occupied, start ours on `3151` and point **every HTTP
+   client — hooks, plugin, and `verify`** — at it via
+   `AGENT_MEMORY_URL=http://127.0.0.1:3151` (the MCP server needs no reroute:
+   it is stdio and talks to HelixDB directly via `HELIX_URL`):
 
    ```bash
    AGENT_MEMORY_PORT=3151 npm run dev
    AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify
    ```
 
-   **Never kill the user's upstream instance.**
+   The server prints this exact reroute hint on `EADDRINUSE`.
+   **Never kill or displace the upstream instance.**
 
 2. **Persistence is the default; in-memory is opt-in.** The Quick start's
    `helix start dev --disk --persist` writes the storage mode into
