@@ -7,7 +7,7 @@ root is the **repository root**:
 ./plugin.json            # manifest (required)
 ./mcp_config.json        # MCP server -> src/mcp.ts (7 tools)
 ./hooks.json             # PostToolUse + Stop capture, PreInvocation recall
-./.skills/memory/SKILL.md
+./skills/memory/SKILL.md
 ./agents/recall.md           # recall subagent template
 ./rules/persistence.md       # behavioral rule
 ./plugins/antigravity/
@@ -23,7 +23,7 @@ root is the **repository root**:
 ```bash
 mkdir -p .agents/plugins/agent-memory/plugins/antigravity
 cp plugin.json mcp_config.json hooks.json .agents/plugins/agent-memory/
-cp -r .skills .agents/plugins/agent-memory/
+cp -r skills .agents/plugins/agent-memory/
 cp -r agents .agents/plugins/agent-memory/
 cp -r rules .agents/plugins/agent-memory/
 cp -r plugins/antigravity/* .agents/plugins/agent-memory/plugins/antigravity/
@@ -64,7 +64,6 @@ All hooks always exit 0: a dead or slow memory service never blocks the agent.
 ## Known deviation from plugin discovery
 
 Antigravity docs describe `plugins/<name>/` with the manifest inside. This
-repo places `plugin.json`, `mcp_config.json`, `hooks.json`, and `.skills/` at
+repo places `plugin.json`, `mcp_config.json`, `hooks.json`, and `skills/` at
 the root per project convention — the install step above re-creates the
-documented layout under `.agents/plugins/<name>/`. If skills are not
-discovered, mirror `.skills/` to `skills/` inside the installed plugin folder.
+documented layout under `.agents/plugins/<name>/`.
