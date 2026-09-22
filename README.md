@@ -85,9 +85,11 @@ npm run dev                     # REST server on http://127.0.0.1:3111
 npm run verify                  # end-to-end verification against the running server
 ```
 
-`--disk --persist` writes the storage mode into `helix.toml`, so a plain
-`helix start dev` afterwards keeps data across restarts. **Without `--disk`
-the instance is in-memory and every restart wipes it.**
+`--disk --persist` writes `storage = "disk"` into `helix.toml`, and that key —
+not the flag — is what decides persistence. This repo's `helix.toml` already
+sets it, so a plain `helix start dev` keeps data across restarts. A project
+whose `helix.toml` has no `storage = "disk"` key runs memory storage, and
+every restart wipes it.
 
 Scripts (from `package.json`): `bootstrap`, `dev`, `demo`, `verify`,
 `typecheck`.
@@ -373,9 +375,22 @@ environment variable.
 **Legacy names.** `AGENTMEMORY_SECRET`, `AGENTMEMORY_PORT`,
 `AGENTMEMORY_URL`, `AGENTMEMORY_HOST`, and `AGENTMEMORY_PROJECT` are accepted
 as **deprecated fallbacks** (the upstream spelling). When both spellings are
-set, the `AGENT_MEMORY_*` name wins. The servers warn on stderr naming the
-legacy variable — **never printing its value**; the capture hooks fall back
-silently to keep their zero-output guarantee.
+set to non-empty values, the `AGENT_MEMORY_*` name wins. The servers warn on
+stderr naming the legacy variable — **never printing its value**; the capture
+hooks fall back silently to keep their zero-output guarantee.
+
+Two migration traps:
+
+- **Both set to different values (split-brain):** the new name wins with **no
+  warning** — the stale legacy value is silently ignored, and a client still
+  presenting the legacy secret then gets `401` with **no server-side signal**
+  that its secret is out of date. Set exactly one spelling.
+- **Never set a new name to an empty string** — unset it instead. Empty and
+  unset mean different things on different surfaces: the server treats
+  `AGENT_MEMORY_SECRET=""` as unset (falls back to the legacy name), while the
+  capture hooks treat any set value as authoritative — so `""` means *no
+  bearer sent*, every capture `401`s, and their zero-output guarantee swallows
+  it.
 
 ## Known limitations
 
@@ -395,14 +410,29 @@ Stated plainly — these are real, not hypothetical:
    AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify
    ```
 
+   Starting ours on `3151` does **not** move the clients: hooks, the plugin,
+   and `verify` still default to `http://127.0.0.1:3111` — which upstream may
+   hold — so **every client process must set
+   `AGENT_MEMORY_URL=http://127.0.0.1:3151` explicitly**. Skip it and captures
+   and recalls are silently aimed at whatever occupies `3111`.
+
    The server prints this exact reroute hint on `EADDRINUSE`.
    **Never kill or displace the upstream instance.**
 
-2. **Persistence is the default; in-memory is opt-in.** The Quick start's
-   `helix start dev --disk --persist` writes the storage mode into
-   `helix.toml`, so a plain `helix start dev` keeps data across restarts. An
-   instance started *without* `--disk` still runs `storage: memory` and loses
-   everything on restart.
+2. **Persistence is the default; in-memory is opt-in.** Persistence is decided
+   by the `storage = "disk"` key in `helix.toml`, not by any start flag: the
+   Quick start's `--disk --persist` is what writes that key, and this repo's
+   `helix.toml` already carries it — so a plain `helix start dev` keeps data
+   across restarts. A project whose `helix.toml` lacks the key runs memory
+   storage and loses everything on restart.
+
+   **Durability & recovery.** Data survives `helix restart dev` on the Docker
+   volume while `storage = "disk"` is set. After a **host reboot** the
+   container does **not** auto-start (no restart policy is configured) — run
+   `helix start dev` to bring it back. The failure mode is symptom-free:
+   captures keep exiting `0` silently and auto-recall is simply skipped, so
+   the memory stack goes dark with no error anywhere. If recall suddenly
+   returns nothing, check `helix status` first.
 
 3. **Listings are ordered by node `$id` descending (insertion order), not by
    timestamp.** The engine cannot correctly sort `dateTime` properties —
@@ -423,8 +453,11 @@ Stated plainly — these are real, not hypothetical:
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
-   duplicate rows in later results. Restart Helix (data is in-memory anyway)
-   or seed into a fresh `project` for a clean demonstration.
+   duplicate rows in later results. Storage is durable by default
+   (`storage = "disk"`), so a restart no longer clears them — seed into a
+   fresh `project` for a clean demonstration. Data persists now; what is still
+   pending is the P4 hardening story (backup/DR, data-dir control), not an
+   in-memory reset.
 
 7. **Vector hits carry `distance`, BM25 hits carry `score`.** Vector rows are
    projected as `$distance` (cosine, lower = closer), so a raw vector hit's

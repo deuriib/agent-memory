@@ -11,7 +11,7 @@
 | REQ-P0-3 | T-003 | `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md` present and linked from README (README `## Contributing & security` + Specification link) | Review | pass (2026-09-22) | 7caa14d |
 | REQ-P0-4 | T-004 | Persistence: `--disk --persist` default dev path; bootstrap warns when `helix.toml` lacks `storage = "disk"`; **save → `helix restart dev` → still searchable** — artifact-backed rerun 2026-09-22: canary `p04canary1790108269`, BM25 hit on first post-restart attempt, full log in `evidence/p0-4-restart-canary.log` (original run: canary `228cdf69`, score 0.863, single-source) | E2E | pass (2026-09-22, artifact) | c551774 |
 | REQ-P0-5 | T-005 | Legacy `AGENTMEMORY_*` fallback: server started with only legacy names arms the guard (health 401 without / 200 with bearer), warns name-only; hooks stay silent | E2E (`scripts/verify-env.ts`) | pass — VERIFY PASS 21/21 (2026-09-22) | bb335e2 |
-| REQ-P0-6 | T-006 | `EADDRINUSE` prints `AGENT_MEMORY_PORT=3151` reroute + never-kill-upstream note; README states port ownership definitively | E2E + Review | pass — verify-env sections A/C green; README Known-limitations #1 states ownership (2026-09-22) | 1af2cde |
+| REQ-P0-6 | T-006 | `EADDRINUSE` prints `AGENT_MEMORY_PORT=3151` reroute + never-kill-upstream note; README states port ownership definitively | E2E + Review | pass — verify-env section C (hint present) green; section A is T-005 evidence; README Known-limitations #1 states ownership (2026-09-22) | 1af2cde |
 
 ## Coverage Summary
 
