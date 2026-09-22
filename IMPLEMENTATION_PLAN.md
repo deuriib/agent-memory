@@ -36,7 +36,7 @@ Each step maps to one commit (REQ-ID trace, see `TEST_MATRIX.md`).
 ## Quality Gates
 
 - [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — green after every commit, final run `TYPECHECK_OK`
-- [x] Engineering: `npm run verify` green including the new P3.1 section — `101 passed, 0 failed → VERIFY PASS` (run on `AGENT_MEMORY_PORT=3151`; `3111` held by upstream `iii`, untouched)
+- [x] Engineering: `npm run verify` green including the new P3.1 section — `102 passed, 0 failed → VERIFY PASS` (run on `AGENT_MEMORY_PORT=3151`; `3111` held by upstream `iii`, untouched; post-remediation count includes the identity-guard probe + recap membership assertion)
 - [x] Engineering/security: 4 new routes behind the same bearer guard (`livez`
   remains the only exemption); no secret or memory content in logs — inherited
   guard by path prefix; governance line logs caller-supplied `reason` + id only

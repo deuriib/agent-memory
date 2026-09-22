@@ -20,3 +20,23 @@
 - Evidence coverage: 6/6 REQ-IDs with linked artifact
 - Acceptance criteria covered: P3.1 ("each round-trips against the REST
   contract") → T-001 + T-004; MCP parity → T-002
+
+## Gate remediation evidence (quality-gate P3.1)
+
+| Item | Description | Type | Status | Commit / Artifact |
+|------|-------------|------|--------|-------------------|
+| COND-001 | single-line sanitize of delete `reason`/`memoryId`, both lanes (log forgery) | Fix | pass | `5df18b6` (re-proven after `addc589`) |
+| COND-002 | verify upstream identity guard — read-only probe before first write | Fix | pass | `bfc10c5` (plain run aborts pre-write) |
+| COND-003 | governance log purpose/store/retention/deletion + receipt semantics | Review | pass | `f2a65d4` |
+| COND-004 | recap per-bullet session-membership assertion | E2E | pass | `bfc10c5` |
+| COND-005 | shared `src/digest.ts` + 20s fan-out budget (drift + latency) | Refactor | pass | `3221b93` |
+| COND-006 | MCP-vs-REST strictness wording, table consistency, plan checkbox | Review | pass | `fff74ad` |
+| C3-R13 | governance-line field allowlist + masking/no-PII rule | Review | pass | `d7a7628` |
+| C3-R17 | restore advertised `minLength`/`maxLength` on delete schemas | Fix | pass | `addc589` (tools/list probe) |
+| W1–W4 | accepted-risk records, full three-block bar + owners + expiry | Sign-off | pass | `docs/specs/40_workspace/quality-gate/P31/waivers.md` |
+| GATE | consolidated report — 8 reviews + C3 17/17 | Review | pass | `docs/specs/40_workspace/quality-gate/P31/GATE_REPORT.md` |
+
+Final bar after remediation: `npm run verify` **102 passed, 0 failed →
+VERIFY PASS** (target = our server via `AGENT_MEMORY_URL`, identity guard
+proves abort for any other target); `npm run typecheck` green; MCP handshake
+exactly 11 tools with bounds advertised.
