@@ -128,9 +128,24 @@ REST (`src/server.ts`), all under `/agentmemory`, JSON in/out:
 | GET | `/agentmemory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
 | GET | `/agentmemory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
 | POST | `/agentmemory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
+| POST | `/agentmemory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
+| POST | `/agentmemory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
+| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required, 1..1000) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `sessionId` auto-generated (`crypto.randomUUID()`) when
 absent, `limit=10`, `importance=0.5`, `origin="rest"`.
+
+P3.1 composition rules: `recap` renders one bullet per memory
+(`- [sessionId] createdAt (origin): content`) for the given session, or for every
+session of the project when `sessionId` is absent; `handoff` prefixes those bullets
+with a `project=… memories=… sessions=… recent:` header from `healthCounts`. Both
+wrap every store call individually — a failed call lands in `signals` and the
+partial text still returns 200 (never a 500, same degradation rule as §3 fusion).
+`lesson` is `remember` with `origin` forced to `"lesson"`. `delete` is `forget`
+plus a required caller-supplied `reason`, logged as one governance line
+(`memoryId`, `reason`, `at`) — reason is metadata, never memory content and never
+the secret; the access log stays method/path/status/duration only.
 
 Result row shape (both searches): `{id, memoryId, content, score, sessionId, origin,
 importance, createdAt, source}` — plus `distance` (cosine, lower = closer) on
@@ -152,10 +167,12 @@ localhost open (matches upstream default). No secret value ever logged.
 `searchByText` until `index_not_found` clears (2s interval, ~30s cap) so first-run
 searches do not 500.
 
-MCP (`src/mcp.ts`) over **stdio**, official `@modelcontextprotocol/sdk`, 7 core tools:
+MCP (`src/mcp.ts`) over **stdio**, official `@modelcontextprotocol/sdk`, 11 tools:
 `memory_save`, `memory_search`, `memory_smart_search`, `memory_sessions`,
-`memory_session_memories`, `memory_forget`, `memory_health`. Same `MemoryStore`
-instance as REST. Same bearer auth when `AGENT_MEMORY_SECRET` is set.
+`memory_session_memories`, `memory_forget`, `memory_health`, `memory_recap`,
+`memory_handoff`, `memory_lesson`, `memory_delete`. Same `MemoryStore`
+instance as REST. Same bearer auth when `AGENT_MEMORY_SECRET` is set. The four
+P3.1 tools mirror the REST bodies/response shapes above.
 
 Hooks (`hooks/capture.mjs`) — plain Node ESM, no deps. Reads hook JSON on stdin,
 event name from `argv[2]`. Supported: `SessionStart`, `PostToolUse`, `Stop`.
@@ -186,11 +203,13 @@ N+1 query fix, rate limiting) then runs keyword + semantic searches and prints h
 ## 4. Out of scope for v1 (do not build)
 
 Decay, 4-tier consolidation, LLM auto-compress, viewer UI, Replay, JSONL import,
-20 agent adapters, full 54-tool MCP surface, lessons/recap/handoff routes.
+20 agent adapters, full 54-tool MCP surface.
 
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green. `scripts/verify.ts`
 end-to-end green: health → remember (with concepts) → bm25 search hits →
 smart-search hits → sessions list → session memories → forget → gone →
-`healthCount()` reflects it. Demo green.
+`healthCount()` reflects it → lesson (201) → bm25 search hits it → recap
+contains it → handoff contains it → governed delete (with reason) → gone →
+second delete 404 → `healthCount()` reflects it. Demo green.
