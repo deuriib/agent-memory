@@ -1,7 +1,9 @@
 # Quality Gate Report: P0 (publishable foundations) — agent-memory
 
 **Date:** 2026-09-22
-**Gate Status:** CLOSED
+**Gate Status:** CONDITIONAL (was CLOSED at first record; moved after W1..W6
+approval + COND-02..09 remediation — only COND-01 and the scoped recheck
+remain before OPEN)
 **Domains Touched:** engineering, security, legal, automation/ops
 
 > Data lens skipped — recorded assumption, not silence: P0 changes no schema, no
@@ -26,95 +28,98 @@
 (Finance, marketing/brand, people, revenue rows deleted — not touched.)
 
 **Totals:** Critical 0 · High 2 (QA-01 ≡ CE-01 — same root: unpushed CI) ·
-Medium ~24 (enumerated as COND-01..15 below) · Low ~50 → backlog per severity
-guardrail (none release-blocking).
+Medium ~24 (COND-01..15 below) · Low ~50 → backlog per severity guardrail
+(none release-blocking).
 
 **Execution:** 9 dedicated subagents, strictly 1 reviewer each, zero bundled
 reviews; wave 1 = 8 reviewers, wave 2 = quality-assurance strictly after
 review-refuter (ordering rule). Retries: refuter + risk re-dispatched after
 interruption, quality-assurance after cancellation — all 9 deliverables
-complete.
+complete. Remediation of COND-02..09 executed by one dedicated docs
+subagent, reviewed line-by-line by the orchestrator before commit.
 
-**Mechanisms green:** the refuter could NOT refute REQ-P0-1/3/5/6 (license,
-governance docs, env migration, port ownership all withstand falsification);
-risk traced the never-kill process surface clean (every `.kill()` targets only
+**Mechanisms green:** the refuter could NOT refute REQ-P0-1/3/5/6; risk
+traced the never-kill process surface clean (every `.kill()` targets only
 self-spawned children; repo-wide grep `pkill|pgrep|killall|process.kill` = 0);
 security found no Critical/High; `typecheck` + `verify-injection` 73/73 green
-reproduced by multiple reviewers.
+reproduced by multiple reviewers; CI genuinely ran (see Escalations).
 
-## Why CLOSED
+## Why it was CLOSED (first record) — and what moved it
 
 Skill rule: any ❌ → CLOSED. Two ❌ verdicts — one shared root plus evidence
-citation defects, all on the evidence-integrity side, none in shipped
-mechanisms:
+citation defects, all evidence-integrity, none in shipped mechanisms:
 
-1. **CE-01/QA-01 (High):** ROADMAP P0-2 ✅ tick + T-002 `pass` claimed "green
-   on `main`" while the workflow exists only in 6 unpushed local commits
-   (`origin/main = 069e1cf` has no `ci.yml`; GitHub Actions: zero workflow
-   runs). Local equivalents are green (reproduced); the acceptance is not
-   reachable without a push.
+1. **CE-01/QA-01 (High):** ROADMAP P0-2 tick + T-002 `pass` claimed "green on
+   `main`" while the workflow existed only in unpushed local commits
+   (`origin/main = 069e1cf`, no `ci.yml`, zero workflow runs).
 2. Evidence-citation defects (70→73, stale commit count, evidence-less
-   actionlint/canary numbers) — all remediated this date (ledger below).
+   actionlint/canary numbers).
+
+**Moved to CONDITIONAL on 2026-09-22** because: citation defects fixed and
+committed; COND-02..09 docs remediated and committed; W1..W6 approved and
+recorded; COND-01's decision (branch + PR) executed — PR **#1** open with
+green checks.
 
 ## Remediation ledger (updated 2026-09-22)
 
 | Finding(s) | Action | State |
 | --- | --- | --- |
-| CE-02 / QA-02 (70 → 73 assertions) | `IMPLEMENTATION_PLAN.md` gate + `ROADMAP.md:44` corrected to 73; reproduced by all reviewers | ✅ fixed |
-| CE-03 / QA-03 (stale "24 commits") | gitleaks basis re-cited: 25 scanned / 26 in history | ✅ fixed |
-| QA-05 (actionlint evidence-less) | artifact captured: `evidence/actionlint.log` (reproducible cmd, exit 0) | ✅ fixed |
-| QA-04 (canary single-source) | artifact-backed rerun: `evidence/p0-4-restart-canary.log` — token `p04canary1790108269` found on first post-restart attempt, `storage: disk` both sides | ✅ fixed |
-| CE-01 / QA-01 (green-on-main, High) | escalated — push decision (Escalations) | ⏳ COND-01 |
-| docs Mediums | COND-02..COND-09 (below) | ⏳ pending |
-| accepted-risk Mediums | waivers W1..W6 (below), approval pending | ⏳ pending |
+| CE-02 / QA-02 (70 → 73 assertions) | `IMPLEMENTATION_PLAN.md` + `ROADMAP.md:44` corrected; reproduced by all reviewers | ✅ fixed (commit `5687135`) |
+| CE-03 / QA-03 (stale "24 commits") | gitleaks basis re-cited: 25 scanned / 26 in history | ✅ fixed (`5687135`) |
+| QA-05 (actionlint evidence-less) | `evidence/actionlint.log` — reproducible cmd, exit 0 | ✅ fixed (`5687135`) |
+| QA-04 (canary single-source) | `evidence/p0-4-restart-canary.log` — token found first attempt post-restart, `storage: disk` both sides | ✅ fixed (`5687135`) |
+| CE-01 / QA-01 (green-on-main, **High**) | owner decision: branch + PR → **PR #1**, both CI jobs SUCCESS | ⏳ closes on merge + re-cite (COND-01) |
+| COND-02..09 (docs Mediums) | dedicated docs subagent, orchestrator-reviewed diff: ROADMAP parity + P0-6 title, README persistence/traps/reroute/durability/limitation #6, SECURITY scope/secrets/guard-open, CONTRIBUTING types/scripts (+ same-defect dev-setup coherence edit), TEST_MATRIX T-006 | ✅ fixed (this PR) |
+| COND-10..15 (accepted-risk Mediums) | W1..W6 approved by repo owner; full three-block text in `WAIVERS-P0.md` | ✅ waived (`6e5e153`) |
 
 ## Conditions for Opening
 
-Docs/evidence fixes (in-scope remediation of approved deliverables; no code):
+Docs/evidence fixes:
 
-- [ ] **COND-01** (refuter CE-01 + QA-01, **High**): resolve "green on `main`" — owner push decision (branch+PR / direct push / defer-with-honest-restatus), then re-cite ROADMAP P0.2 + T-002 after the first real run.
-- [ ] **COND-02** (RD-001): ROADMAP §1.1 parity table stale vs P0 ticks.
-- [ ] **COND-03** (RD-002 + CE-05): README persistence self-contradiction (`:88-90`, `:401-405` — the determinant is the `helix.toml` key, not the `--disk` flag) + limitation #6 stale in-memory recipe.
-- [ ] **COND-04** (RD-005, RD-006): CONTRIBUTING test-type list stale; ROADMAP "3111/3121" → port-ownership wording (3151).
-- [ ] **COND-05** (SEC-001): SECURITY.md scope omits the Antigravity plugin.
-- [ ] **COND-06** (SEC-002): env-only-secret policy contradicts the plugin `secret` option accepted from `opencode.json` — document actual precedence.
-- [ ] **COND-07** (RK-001): guard-open default (unset secret = unauthenticated server) and `AGENT_MEMORY_HOST` override silently killing the 127.0.0.1 compensating control — both absent from SECURITY.md.
-- [ ] **COND-08** (RK-002): dual-spell split-brain — both secrets set to *different* values: new name wins with zero warning, stale legacy value 401s with no server signal, no removal version documented → README migration note.
-- [ ] **COND-09** (RS-011 + CE-07 + QA-07): host-reboot availability undocumented (data survives on the volume; the container does not auto-start; degradation is symptom-free) → README "Durability & recovery" subsection, reroute client-`AGENT_MEMORY_URL` note, T-006 citation tidy.
+- [ ] **COND-01** (refuter CE-01 + QA-01, **High**): resolve "green on `main`" — **PR #1 open** (<https://github.com/deuriib/agent-memory/pull/1>), branch `feat/p0-publishable-foundations`, run 35780360945 green (`verify` + `secret-scan` SUCCESS). Closes when: final-tree run green → merge → post-merge re-cite of ROADMAP P0-2 + T-002 with the main run URL → scoped recheck by review-refuter + quality-assurance.
+- [x] **COND-02** (RD-001): ROADMAP §1.1 parity table refreshed to post-P0 reality (Tests/CI, Governance, Persistence rows; incompleteness honestly retained where true).
+- [x] **COND-03** (RD-002 + CE-05): README `:85` + limitation #2 rewritten flag-independent (the `storage = "disk"` key decides); limitation #6 updated to the durable default. Coherence edit applied to CONTRIBUTING's identical dev-setup sentence (same defect, same lane).
+- [x] **COND-04** (RD-005, RD-006): CONTRIBUTING types/scopes now match `git log`; script inventory + per-PR bar added; ROADMAP P0-6 title → `3111` default / `3151` reroute.
+- [x] **COND-05** (SEC-001): SECURITY.md scope now covers the Antigravity plugin hooks and the OpenCode plugin options surface.
+- [x] **COND-06** (SEC-002): SECURITY.md secrets policy states real precedence (servers = env only; plugin accepts `secret` option, prefer env, never commit it).
+- [x] **COND-07** (RK-001): SECURITY.md documents guard-open default (+ 127.0.0.1 compensating control) and the `AGENT_MEMORY_HOST` override caveat.
+- [x] **COND-08** (RK-002): README migration traps — split-brain dual-spell (silent new-wins, stale legacy 401s) + set-exactly-one-spelling guidance.
+- [x] **COND-09** (RS-011 + CE-07 + QA-07): README **Durability & recovery** note (host reboot = manual `helix start dev`, symptom-free failure, check `helix status`); reroute section states clients must set `AGENT_MEMORY_URL` explicitly; T-006 citation corrected to section C.
 
-Waiver-bound (three-block bar; approval pending — W-rows in C3):
+Waiver-bound (approved):
 
-- [ ] **COND-10** (LGL-001/LGL-002) → **W1**: license + CVE scan absent from CI, undocumented until now.
-- [ ] **COND-11** (AUT-001 + CE-08) → **W2**: `verify-env` (T-005/T-006's cited evidence) gated in neither CI nor CONTRIBUTING's PR bar.
-- [ ] **COND-12** (OPS-003 + RK-004 + CE-06/RL-002) → **W3**: no backup/DR automation; bootstrap advisory regex false-negatives (comment-out / wrong-table / container-created-before-key).
-- [ ] **COND-13** (RK-003 + CE-09) → **W4**: gitleaks checksum fetched from the same release URL as the artifact; actions tag-pinned, not SHA-pinned.
-- [ ] **COND-14** (QA-06 + coverage gaps) → **W5**: P0-5 precedence ("new name wins" both-set), bootstrap-advisory, hint-absence, whitespace, antigravity-output tests absent → deferred to P1.
-- [ ] **COND-15** (RL-001 + CE-04) → **W6**: empty-new-name divergence (server `nonEmpty` fallback vs hooks `??`) accepted as a documented residual pending P1 unification via the proposal lane.
+- [x] **COND-10** (LGL-001/LGL-002) → **W1** approved — `WAIVERS-P0.md`.
+- [x] **COND-11** (AUT-001 + CE-08) → **W2** approved.
+- [x] **COND-12** (OPS-003 + RK-004 + CE-06/RL-002) → **W3** approved.
+- [x] **COND-13** (RK-003 + CE-09) → **W4** approved.
+- [x] **COND-14** (QA-06 + coverage gaps) → **W5** approved.
+- [x] **COND-15** (RL-001 + CE-04) → **W6** approved (README never-empty guidance shipped in the COND-08 batch as its compensating control).
 
-Low findings (~50) → backlog per severity guardrail (Medium = this sprint,
-Low = backlog; only Critical/High block release — the 2 Highs are COND-01).
+Low findings (~50) → backlog per severity guardrail (owner: orchestrator
+triage); notable candidates: RD-003 hint-wording overstatement, README:92
+script list omits `verify-env` (incomplete, not false).
 
 ## C3 — CONDITIONAL/waiver review record (surgical, security-owned)
 
 > Every CONDITIONAL/waiver challenged against the normative three-block bar in
 > `references/waiver-template.md`. Missing block = FAIL, no promotion. Full
-> waiver text lands in `WAIVERS-P0.md` on approval.
+> waiver text: `WAIVERS-P0.md` (same directory), approved 2026-09-22.
 
 | Waiver / CONDITIONAL | Accepted-risk | Compensating-controls + owner | Expiry + re-review owner | Verdict |
 |---|---|---|---|---|
-| W1 (LGL-001/002) | pass — P0 scope = secret scan; manual 248-pkg license scan (all permissive, zero copyleft) recorded at `legal-reviewer.md` LGL-004 | pass — lockfile + manual scan evidence + gitleaks; owner: legal/orchestrator | pass — 2026-12-21 or P1 close, whichever first; re-review: legal owner | PENDING approval |
-| W2 (AUT-001/CE-08) | pass — verify-env not CI-gated is outside P0 acceptance as written | pass — recorded VERIFY PASS 21/21 + TEST_MATRIX cite; owner: engineering | pass — 2026-12-21 / P1 close; re-review: engineering owner | PENDING approval |
-| W3 (OPS-003/RK-004/CE-06) | pass — no automated backup/DR; advisory backstop can false-negative | pass — disk volume + README durability section (COND-09) + `helix status` shows `storage: disk`; owner: ops | pass — 2026-12-21 / P4-open, whichever first; re-review: ops owner | PENDING approval |
-| W4 (RK-003/CE-09) | pass — same-origin checksum guards corruption, not release compromise; mutable tag pins | pass — sha256 verification wired in CI + local docker gitleaks evidence + tags verified to exist; owner: security | pass — 2026-12-21 / P1 (pin literal sha256 + action SHAs); re-review: security owner | PENDING approval |
-| W5 (QA-06 + G-*) | pass — precedence/bootstrap/hint/whitespace/antigravity tests absent | pass — verify-injection 73/73 + verify-env 21/21 + 9-reviewer manual traces; owner: engineering | pass — 2026-12-21 / P1 close; re-review: engineering owner | PENDING approval |
-| W6 (RL-001/CE-04) | pass — empty-new-name divergence: hooks `??` vs server `nonEmpty` (narrow but legal config) | pass — README "never set empty" guidance in COND-03 batch; owner: engineering | pass — 2026-12-21 / P1 unify via proposal lane; re-review: engineering owner | PENDING approval |
-| COND-02..09 (docs fixes) | none — remediated by fix, never waived | docs diffs + scoped reviewer recheck; owner: orchestrator | n/a — closed by fix evidence | PENDING fix |
-| COND-01 (High) | none — no waiver below owner authority; escalated | push decision (owner) + post-push run citation; owner: repo owner/orchestrator | resolves on first green `main` run | ESCALATED |
+| W1 (LGL-001/002) | pass — P0 CI scope = secret scan; manual 248-pkg license scan (zero copyleft) at `legal-reviewer.md` LGL-004 | pass — lockfile pinning + manual scan + gitleaks; owner: legal/orchestrator | pass — 2026-12-21 or P1 close; re-review: legal owner | **PASS (approved)** |
+| W2 (AUT-001/CE-08) | pass — CI gating of verify-env outside P0 acceptance as written | pass — VERIFY PASS 21/21 recorded + CONTRIBUTING per-PR bar now names it; owner: engineering | pass — 2026-12-21 / P1; re-review: engineering owner | **PASS (approved)** |
+| W3 (OPS-003/RK-004/CE-06) | pass — no backup/DR automation; advisory can false-negative | pass — README *Durability & recovery* (COND-09) + `helix status` `storage: disk` + canary artifact; owner: ops | pass — 2026-12-21 / P4-open; re-review: ops owner | **PASS (approved)** |
+| W4 (RK-003/CE-09) | pass — same-origin checksum guards corruption not compromise; tag pins | pass — sha256 step wired + tags verified + independent docker scan evidence; owner: security | pass — 2026-12-21 / P1 (literal sha256 + action SHAs); re-review: security owner | **PASS (approved)** |
+| W5 (QA-06 + G-*) | pass — precedence/bootstrap/hint tests absent (code requires proposal) | pass — verify-injection 73/73 + verify-env 21/21 + 9-reviewer manual traces; owner: engineering | pass — 2026-12-21 / P1; re-review: engineering owner | **PASS (approved)** |
+| W6 (RL-001/CE-04) | pass — empty-new-name divergence, hooks vs server | pass — README never-empty + split-brain guidance shipped (COND-08 batch); owner: engineering | pass — 2026-12-21 / P1 unify via proposal lane; re-review: engineering owner | **PASS (approved)** |
+| COND-02..09 (docs fixes) | none — remediated by fix, never waived | docs diffs, orchestrator line-review, scoped reviewer recheck pending; owner: orchestrator | n/a — closed by fix evidence (this PR) | **FIXED** |
+| COND-01 (High) | none — escalated, no waiver below owner authority | PR #1 with green CI; post-merge re-cite + scoped recheck; owner: repo owner/orchestrator | closes on first green `main` run | **PENDING MERGE** |
 
-**Residual-risk:** unpushed CI until COND-01 resolves (owner: repo owner);
-six accepted-risk clusters W1..W6 with 90-day / P1–P4 expiries (owners per
-row); all Low findings to roadmap backlog (owner: orchestrator triage). No
-silent PASS: every row carries substance above; thin box-ticks FAIL by rule.
+**Residual-risk:** unpushed-to-main until PR #1 merges (owner: repo owner);
+six approved waivers W1..W6 with 90-day / P1–P4 expiries (owners per row);
+all Low findings to roadmap backlog (owner: orchestrator triage). No silent
+PASS: every row carries substance above.
 
 **PII checkpoint (REQ-SEC-003/004 + REQ-P-006 co-sign):** zero
 PII/secrets/tokens/credentials/sessions in any review, waiver, or evidence
@@ -125,32 +130,36 @@ history; deletion = history rewrite on request. Allowlisted fields only
 
 ## Load Evidence (HARD STOP — missing = CLOSED)
 
-- [x] Stage skill loaded: `skill(quality-gate)` — trigger match: "implementation ready for review".
-- [x] Domain owner/specialist role understood: engineering (7 reviewers), security, legal, automation/ops dispatched as distinct roles.
-- [x] Execution mode declared: `subagents` — 2 waves (wave 2 = quality-assurance strictly after review-refuter).
+- [x] Stage skill loaded: `skill(quality-gate)` — trigger match: "implementation ready for review"; `skill(pull-request)` loaded before branch/PR actions.
+- [x] Domain owner/specialist role understood: engineering (7 reviewers), security, legal, automation/ops dispatched as distinct roles; docs remediation by one dedicated subagent (1 = 1), orchestrator-reviewed.
+- [x] Execution mode declared: `subagents` — wave 1 (8 reviewers), wave 2 (QA after refuter), remediation lane (1 docs subagent).
 - [x] Reviewer independence verified: strictly 1 dedicated subagent per reviewer — 9/9, zero bundled reviews across domains or wave criteria.
 - [x] Packet intact: every dispatch carried `SPEC:<paths>#REQ-P0-1..6 / HARD:<AGENTS.md: never-kill, no-secrets/PII-in-logs> / GATE:<TEST_MATRIX + plan gates> / DOMAINS:<list>` by reference — no full-context paste.
 
 ## Escalations
 
-- **COND-01 (High; refuter + QA concur, security/legal evidence lines agree):**
-  escalated to the repo owner for the push decision (branch+PR recommended /
-  direct push / defer-with-honest-restatus). No reviewer can resolve it; the
-  gate cannot OPEN until it clears or the claim is honestly re-stated.
+- **COND-01 (High; refuter + QA concur):** escalated to repo owner → decided
+  branch + PR. Executed: **PR #1** open, both CI jobs SUCCESS
+  (<https://github.com/deuriib/agent-memory/pull/1>, run 35780360945).
+  Remaining: merge after final green → post-merge re-cite → scoped recheck
+  (refuter `ses_f3568d6baffeUe4…`, QA `ses_f354c71c1ffee8a…`).
 - Conflicting-verdict note: refuter RF-f1 found the persistence basis (Helix
-  docs: `--persist` … "future runs reuse them") while CE-05 shows README
-  self-negates — merged into COND-03 (wording), not a mechanism dispute.
+  docs: `--persist` … "future runs reuse them") while CE-05 showed README
+  self-negation — merged into COND-03 (wording), resolved; not a mechanism
+  dispute.
 - Data-lens skip recorded in header as an explicit assumption.
-- Retry ledger: refuter (`ses_f3568d6baffeUe4…`) + risk (`ses_f3568d6b5ffeUp8…`)
-  re-dispatched after interruption; QA (`ses_f354c71c1ffee8a…`) after
+- Retry ledger: refuter + risk re-dispatched after interruption; QA after
   cancellation — all final deliverables complete.
+- Post-push plan guard: merge strategy = **merge commit** (not squash/rebase)
+  so the commit SHAs cited across TEST_MATRIX, the plan, and all nine reviews
+  stay reachable (assumption stated to owner in PR body context).
 
 ## Sign-off
 
-- [ ] All reviewers pass or conditions met — **NOT met (CLOSED)**
-- [ ] Gate Keeper: owning domain owner (engineering) — after COND-01..15 clear
-- [ ] Final authority (if waived): domain owners + orchestrator — W1..W6 approval pending
+- [ ] All reviewers pass or conditions met — **CONDITIONAL: COND-01 open (merge + re-cite + recheck)**
+- [ ] Gate Keeper: owning domain owner (engineering) — after COND-01 clears
+- [ ] Final authority (if waived): domain owners + orchestrator — **W1..W6 approved 2026-09-22**
 
-**State machine:** CLOSED → (W1..W6 approval + COND-02..09 fixes) →
-CONDITIONAL → (COND-01 resolution + scoped recheck by review-refuter and
-quality-assurance of their ❌ findings) → OPEN → `verify-handoff`.
+**State machine:** CLOSED → *(W1..W6 approval + COND-02..09 fixes, both done)*
+→ **CONDITIONAL (now)** → *(PR #1 merge + green main re-cite + scoped
+recheck by review-refuter & quality-assurance)* → OPEN → `verify-handoff`.
