@@ -2,7 +2,7 @@
 
 **Reviewer:** quality-assurance (independent — ran the real suite, did not author this work)
 **Date:** 2026-09-22
-**Verdict:** ❌ **fail** (trace/evidence lane: one High verdict-overclaim + three unreproducible evidence numbers; mechanisms themselves are green)
+**Verdict:** initial: ❌ → recheck: ⚠️ — conditional (one condition: the two `evidence/*.log` artifacts must actually be committed to the repo; see `## Recheck`). Original ❌ rationale: trace/evidence lane had one High verdict-overclaim + three unreproducible evidence numbers; mechanisms themselves were green.
 
 Scope note: this review covers **traceability, evidence integrity, and test coverage** only.
 Findings from readability/reliability/refuter/resilience/risk/security/legal/automation reviews
@@ -137,3 +137,71 @@ is honestly declared. Line/branch coverage: N/A (no coverage tooling in repo bar
   the canary/actionlint numbers. G-1..G-8 route to engineering/ops owners as follow-ups, not
   blockers, except G-2 (untested core precedence rule) which should ride any P0.5 fix.
 - Reviewer made **no changes to anything** — findings only, per lane rules.
+
+---
+
+## Recheck (post-remediation, 2026-09-22)
+
+**Reviewer:** quality-assurance (same reviewer, scoped recheck only — evidence/trace findings
+QA-01..QA-08 against final state; no full re-review).
+**State rechecked:** local = `origin/main` = **`e4ca3ce`** (`git log origin/main..HEAD` and
+`HEAD..origin/main` both empty — synced, 0/0). Rules unchanged: no code changes, no fixes, no
+commits, no process signals; ports 3111/3112/3113 untouched; `verify-env.ts` not run.
+
+### Per-QA recheck table
+
+| QA | Original severity | Status now | Evidence I verified this session |
+|---|---|---|---|
+| QA-01 — CI "green on `main`" overclaim | **High** | ✅ **cleared** | `git ls-remote origin main` → **`e4ca3ce`** (advanced past `069e1cf`); `git cat-file -e origin/main:.github/workflows/ci.yml` → **PRESENT**; `gh api repos/deuriib/agent-memory/actions/runs` → **total_count 8** (was 0); `gh run list --branch main` → **35781376642 success** (PR #1 merge, 2026-09-22T20:36Z) + **35781958949 success** (PR #2 merge); `gh run view 35781376642` → jobs **verify ✓ (1m8s) + secret-scan ✓ (35s)**; `gh run view 35781906623` → PR #2 branch run **verify ✓ + secret-scan ✓**. `ROADMAP.md:74` and `TEST_MATRIX.md:10` now cite run **35781376642** (+ branch runs **35780360945**, **35781362973** — I viewed both: **verify ✓ + secret-scan ✓** each). Every cited run ID exists and is green; the acceptance "green on `main`" now holds verbatim. |
+| QA-02 — stale "70 assertions" | Medium | ✅ **cleared** (one Low residual, below) | Authoritative claims corrected: repo grep of `ROADMAP.md`/`IMPLEMENTATION_PLAN.md` → **zero** `70` occurrences; `TEST_MATRIX.md:24-25` records the correction (`70` → **73**, QA-02/CE-02). Fresh run: `npx tsx scripts/verify-injection.ts` → **ALL PASS, 73 `ok`, 0 FAIL**. Low residual **QA-02r**: `review-readability.md:46` still records `ALL PASS (70 assertions)` as its personal run result with no correction note — a fellow reviewer's evidence row, not the matrix of record (the remaining two grep hits are the falsified-number *findings* in `review-refuter.md` CE-02 and this file, which must quote the wrong number to document it). |
+| QA-03 — gitleaks "24 commits" | Medium | ✅ **cleared** | `IMPLEMENTATION_PLAN.md:51` now reads "`no leaks found` (v8.30.1; **QA re-run: 25 commits scanned of 26 in history**)" — matches my original run exactly (true at `8aba7b9`). Fresh docker gitleaks v8.30.1 now: **31 commits scanned … no leaks found, exit 0**, against `git rev-list --count HEAD` = **34** (delta = 2 merge commits + the consistent root/first-commit accounting also seen at 25/26 — same pattern, not drift). Substance and attribution both hold. |
+| QA-04 — canary `228cdf69`/`0.863` single-source | Medium | ⚠️ **still-open (narrowed; Medium)** — artifact real but **not in the repo** | Artifact exists and content is correct: `evidence/p0-4-restart-canary.log` contains token **`p04canary1790108269`**, storage `disk` pre/post, `helix restart dev`, **BM25 hit on attempt 1 after restart**, terminal **`RESULT: PASS — canary found after helix restart (disk persistence holds)`**; cited at `IMPLEMENTATION_PLAN.md:50` and `TEST_MATRIX.md:12`. **But:** `git check-ignore -v` → **`.gitignore:16:*.log`** matches both evidence files; `git ls-files …/evidence/` → empty; `git cat-file -e origin/main:…p0-4-restart-canary.log` → **absent**; `git log --all --diff-filter=A -- '…/evidence/*'` → **no commit ever added it**. `TEST_MATRIX.md:29` claims "restart canary re-run with **committed** artifact" — that word is **false**, and `IMPLEMENTATION_PLAN.md:50`'s "(closes QA-04 single-source)" only holds on this machine. Fix = `git add -f` the two files (or a `.gitignore` negation `!docs/**/evidence/*.log`) + push. |
+| QA-05 — "actionlint 0 errors" evidence-less | Medium | ⚠️ **still-open (narrowed; Low-Medium)** — same root cause as QA-04 | Artifact exists: `evidence/actionlint.log` (173 B) with reproducible command line (`docker run --rm -v $PWD:/repo:ro -w /repo rhysd/actionlint:latest -no-color /repo/.github/workflows/ci.yml`) and **`exit=0`**; cited at `TEST_MATRIX.md:10`. Same `.gitignore:16 *.log` block: **not tracked, absent at `origin/main`** → the cited path is dead for anyone cloning the repo. (Nit, not a finding: the actionlint image tag is `latest`, unpinned — acceptable for a lint artifact, noted for symmetry with W4.) |
+| QA-06 + G-1..G-8 — coverage gaps | Medium lane | ✅ **waived — W5, substance verified real** | `WAIVERS-P0.md` W5 carries all three normative blocks with genuine content: **accepted-risk** enumerates (a) new-name-wins precedence [= G-2/QA-06], (b) bootstrap advisory [= G-1], (c) hint absence [= G-5], (d) whitespace [= G-6], (e) antigravity zero-output [= G-4], (f) verify-env gating [= G-8] with reasons; **compensating-controls + owner** cite concrete artifacts (`verify-injection` 73/73, `verify-env` 21/21, `verify` 102/102, nine-reviewer manual traces; owner: engineering); **expiry + re-review owner**: 2026-12-21 or P1 close, engineering owner — plus sign-off (repo owner + orchestrator) and explicit residual-risk. Not a box-tick. Note: **G-7** (Low, legacy HOST value-path) is covered only by the "G-*" title, not the a–f enumeration — acceptable for a Low, flagged for the re-review owner. C3 rows W1..W4, W6 likewise each carry three non-vacuous cells (W1: 248-package license scan with license-family breakdown; W2: recorded 21/21 + CONTRIBUTING bar; W3: README Durability section + `helix status` + canary; W4: sha256 step + `ls-remote` tag verification + independent docker scans; W6: README never-empty guidance) — **none thin**. My High (QA-01) correctly *not* waived (W5 header + C3 COND-01: Highs not waivable below owner authority — resolved by PR instead). |
+| QA-07 — T-006 section mis-citation | Low | ✅ **cleared** | `TEST_MATRIX.md:14` now reads "verify-env **section C (hint present)** green; **section A is T-005 evidence**; README Known-limitations #1 states ownership" — exactly the correction requested. |
+| QA-08 — commit-scoping observation | Low (obs) | ✅ **acknowledged** | No action, per recheck scope. |
+
+**Waiver-report staleness (new, Low, non-blocking):** `GATE_REPORT.md` last changed at `14aae86`
+(pre-merge), so its C3 COND-01 row still reads "**PENDING MERGE**" / "unpushed-to-main until
+PR #1 merges" and the Sign-off box says "CONDITIONAL: COND-01 open". The row's own closure
+condition — "closes on first green `main` run" — is **already met** (run 35781376642); what
+remains is exactly this recheck, whose recording is the orchestrator's step. Flagged so the
+state machine isn't left claiming a stale "pending" after closure.
+
+### Trace verdict — does REQ→test→artifact→verdict now hold end-to-end?
+
+| REQ | Artifact & commit trace | Verdict/RUN trace | End-to-end |
+|---|---|---|---|
+| REQ-P0-1 | `LICENSE` at `44914e0` + `package.json` `license` — unchanged, verified | no verdict dependency | ✅ **holds** |
+| REQ-P0-2 | `ci.yml` at `4cf0f6a` **and now at `origin/main`** | T-002 `pass` → runs 35781376642 / 35780360945 / 35781362973 (all verified green by me); gitleaks clean; actionlint artifact content real | ✅ **holds**, with QA-05 dangling-path caveat (artifact not in repo) |
+| REQ-P0-3 | SECURITY/CONTRIBUTING/README links at `7caa14d` — unchanged, verified | review-verdict, no runtime number | ✅ **holds** |
+| REQ-P0-4 | `helix.toml` `storage="disk"` + advisory at `c551774` | T-004 `pass (artifact)` → canary log content verified token/hit/`RESULT: PASS` | ⚠️ **substance holds; durable citation broken** until the log is committed (QA-04) |
+| REQ-P0-5 | `src/env.ts` + `verify-env.ts` at `bb335e2` | 21/21 statically exact (recorded runtime); precedence gaps under **W5 waiver** with owner/expiry | ✅ **holds** (gaps = waived, not hidden) |
+| REQ-P0-6 | `portInUseHint` at `1af2cde` + README #1 | T-006 cites section C correctly now (QA-07) | ✅ **holds** |
+
+**Overall trace:** all six REQs resolve REQ→test→artifact→verdict at the cited commits, every
+cited run ID exists and is green, and both formerly-unreproducible numbers now reconcile —
+the only break in the chain is that **two cited artifact paths don't exist in the repository**
+(`.gitignore:16 *.log` swallowed them), one of which `TEST_MATRIX.md` explicitly labels
+"committed".
+
+### Numbers & run-IDs reproduced this recheck
+
+- `origin/main` = **`e4ca3ceb4edd3f8e7ee918cc62a403296c21da8a`**, local 0 ahead / 0 behind; `ci.yml` **PRESENT** at `origin/main`.
+- Actions API `total_count` = **8** (was 0). Green runs verified: **35781376642** (PR #1 merge → main; verify ✓ 1m8s, secret-scan ✓ 35s), **35781958949** (PR #2 merge → main), **35781906623** (PR #2 branch), **35780360945** + **35781362973** (PR #1 branch, both cited in T-002) — all verify ✓ + secret-scan ✓.
+- `npx tsx scripts/verify-injection.ts` → **ALL PASS, 73 ok, 0 FAIL** (matches corrected citation 73; stale `70` zero in ROADMAP/PLAN, 1 residual in `review-readability.md:46`).
+- `npm run typecheck` → **exit 0**. `curl 127.0.0.1:3151/agentmemory/livez` → `{"status":"ok"}`.
+- docker gitleaks v8.30.1 (fresh) → **31 commits scanned, no leaks found, exit 0**; `git rev-list --count HEAD` = **34**; cited "25 of 26" = my original run, attributed correctly.
+- Canary artifact: token `p04canary1790108269`, post-restart attempt-1 BM25 hit, `RESULT: PASS`. Actionlint artifact: `exit=0`, cmd line present.
+- Both evidence files: **`git check-ignore` → `.gitignore:16 *.log`; `ls-files` empty; absent at `origin/main`; never added in any commit.**
+
+### FINAL verdict
+
+**⚠️ conditional** (initial ❌ → recheck ⚠️). The High is fully cleared with external,
+runnable proof; all corrected numbers reproduce; waivers are substantive; five of six REQ
+traces hold end-to-end. **One condition to reach ✅:** commit the two evidence artifacts
+(force-add or `.gitignore` negation for `docs/**/evidence/*.log`) so `TEST_MATRIX.md`'s
+"committed artifact" and T-002's `evidence/actionlint.log` citation become true at
+`origin/main`, then confirm via `git cat-file -e origin/main:…`. Non-blocking follow-ups:
+QA-02r (`review-readability.md:46` `70` → `73` or an erratum note) and the stale C3
+COND-01/PENDING-MERGE row at gate close. Reviewer made **no changes** — findings only.

@@ -1,0 +1,8 @@
+# Reviewed false positive (2026-09-22, quality-gate PR #3):
+# evidence/p0-4-restart-canary.log:2 matches rule generic-api-key on the
+# line `token: p04canary<unixts><pid>` — a random non-secret probe string
+# minted by the P0.4 restart-canary script; it authenticates nothing.
+# Suppression is scoped to this exact fingerprint (commit:file:rule:line).
+# All default rules remain active everywhere else — proven by the
+# planted-secret test recorded in commit ci(gitleaks) below.
+edd07e54a069a21d77e7fcbf5fd4b3822d3dd3b7:docs/specs/40_workspace/quality-gate/P0/evidence/p0-4-restart-canary.log:generic-api-key:2

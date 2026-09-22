@@ -2,7 +2,7 @@
 
 **Reviewer:** review-refuter (adversarial, independent)
 **Date:** 2026-09-22
-**Verdict:** ❌ **counterexample found** (REQ-P0-2 refuted; REQ-P0-4 unverifiable-critical-detail; REQ-P0-1/3/5/6 withstand falsification)
+**Verdict:** initial: ❌ → recheck: ✅ (all refutations failed — claims hold now; see `## Recheck`)
 
 ## Mission
 
@@ -85,3 +85,86 @@ forbidden to this reviewer (static reconciliation used instead).
 - CE-04..CE-06 are Medium counterexamples to the *robustness* wording of REQ-P0-5/P0.4, with the core mechanisms otherwise proven.
 - REQ-P0-1/3/5/6 core claims withstood falsification; REQ-P0-4's basis is externally verified but its canary number and README wording carry the ⚠️.
 - Gate condition: **CLOSED** for REQ-P0-2 until the lane is pushed and a green run exists (owner: orchestrator); remediation of CE-02/CE-03 is number correction in `ROADMAP`/`IMPLEMENTATION_PLAN`/`TEST_MATRIX`; CE-04/05/06 route to their respective owners (engineering/docs) — refuter made **no changes** (rules).
+
+---
+
+## Recheck (post-remediation, 2026-09-22)
+
+**Reviewer:** review-refuter (same reviewer as the initial ❌; scoped re-run of
+CE-01..CE-09 only — no full re-review, no routing-table re-run)
+**State rechecked:** local `HEAD` = `origin/main` = **`e4ca3ce`** (verified by
+`git fetch` + `rev-parse` both sides); PR #1 (`1cb79c8`) and PR #2 (`e4ca3ce`)
+merged; all verdicts below re-derived from evidence gathered in this session.
+
+**FINAL VERDICT: ✅ — all refutations failed; the claims hold now.**
+Five counterexamples were remediated in live claims (CE-01/02/03/05/07); four
+are properly superseded by normative three-block waivers whose compensating
+controls demonstrably landed (CE-04/06/08/09); the process deviation is proven
+**process-only** (zero red runs, ever).
+
+### Per-CE table
+
+| CE | Original counterexample | Status | Evidence (this session) |
+|----|------------------------|--------|--------------------------|
+| CE-01 | zero workflow runs / workflow never pushed; "green on `main`" false | **refuted (remediated)** | Workflow now on `origin/main` (`e4ca3ce`). Citations landed: `ROADMAP.md:74` + `TEST_MATRIX.md:10` cite run **35781376642**. `gh run list` → **8 runs ever, `[{success ×8}]`, zero red**: main runs `35781376642` (PR #1 merge) and `35781958949` (PR #2 merge) both `completed success`, job detail `verify: success` + `secret-scan: success` on **both**; branch runs `35780360945`, `35781362973`, `35780527756`, `35781367274`, `35781900198`, `35781906623` all success. Acceptance "runs on every push; green on `main`" now holds with run-ID proof. |
+| CE-02 | "70 assertions" never true (actual 73) | **refuted (remediated)** — 1 residual nit | Live claims fixed: `ROADMAP.md:44` → "`verify-injection` (73)"; `IMPLEMENTATION_PLAN.md:47` → "73 assertions, … count corrected from an earlier mis-citation of 70" (commit `5687135`); `TEST_MATRIX.md:25` records the correction. Re-ran `npx tsx scripts/verify-injection.ts` at `e4ca3ce` → **exit 0, 73 ok, 0 FAIL, ALL PASS**. *Nit:* literal "70 assertions" survives only inside historical gate artifacts (`quality-assurance.md:39` = the finding text; `review-readability.md:46` = that reviewer's evidence cell; this file's CE-02 row) — no live claim carries it. |
+| CE-03 | "24 commits" stale | **refuted (remediated)** | Basis corrected to "**25 commits scanned of 26 in history**" at `TEST_MATRIX.md:10,:27` + `IMPLEMENTATION_PLAN.md:51` — exactly matching my original run. Counting rule resolved: gitleaks excludes root + merge commits (26−1root=25 ✓). Fresh re-run at `e4ca3ce` (allowed docker command): **31 commits scanned / 34 in history, `no leaks found`** — covers all newly merged gate artifacts too. |
+| CE-04 | empty-new-name hooks diverge; README "name wins" overstated | **superseded-by-waiver (W6)** + doc overstatement removed | Overstatement fixed: `README.md:377-378` now "When both spellings are set **to non-empty values**, the `AGENT_MEMORY_*` name wins" (carve-out matches `env.ts` nonEmpty vs hooks `??`). `README.md:382-393` "Two migration traps" documents split-brain **and** the empty-string trap verbatim (server falls back; hooks `""` → no bearer → 401 swallowed). `WAIVERS-P0.md` **W6** carries the full three-block (accepted-risk — incl. "server-side secret is never dropped — REQ-P0-5's server claim holds"; controls; expiry 2026-12-21 or P1-unify via proposal lane) + sign-off + residual. Code divergence accepted by design (behavior change = own proposal); **no claim overstates it anymore** → refutation fails. |
+| CE-05 | README self-contradiction on flag-vs-key (quick-start + limitation #2) | **refuted (remediated)** | Commit `f9c4e8d` (docs-only, `git show --stat`: CONTRIBUTING/README/ROADMAP/SECURITY/TEST_MATRIX). Quick-start `README.md:88-92`: "that **key — not the flag** — is what decides persistence… A project whose `helix.toml` has no `storage = \"disk\"` key runs memory storage". Limitation #2 `README.md:422-427`: same key-not-flag framing. Both former contradictions gone; wording now matches the official Helix `--persist` basis I verified in the initial review. |
+| CE-06 | bootstrap advisory regex false negatives | **superseded-by-waiver (W3)** + control landed | `WAIVERS-P0.md` **W3** names all three FN cases verbatim (commented-out key, wrong table, container-created-before-key), states advisory is non-blocking by design, and lists controls with owner/expiry/sign-off/residual. Control landed: `README.md:429-435` **Durability & recovery** (restart-volume survival, host-reboot runbook, symptom-free-failure warning, "check `helix status` first") + artifact `evidence/p0-4-restart-canary.log` exists (full pre/restart/post log, `storage: disk` pre+post, canary found attempt 1, `RESULT: PASS` — this also clears my original P0-4 ⚠️). |
+| CE-07 | clients default to 3111 after server reroute | **refuted (remediated)** | `README.md:413-417`: "Starting ours on `3151` does **not** move the clients: hooks, the plugin, and `verify` still default to `http://127.0.0.1:3111` … **every client process must set `AGENT_MEMORY_URL=…3151` explicitly**. Skip it and captures and recalls are silently aimed at whatever occupies `3111`." Matches my traced code exactly (`hooks/capture.mjs:117`, plugin `DEFAULT_BASE` `:69`, `verify.ts:28`, `recall.mjs:35` all default 3111; config table `README.md:362` states it too). Text ↔ code aligned. |
+| CE-08 | verify-env ungated in CI and PR bar | **superseded-by-waiver (W2)** + control landed | Bar text landed: `CONTRIBUTING.md:67-69` — "The per-PR bar is the three commands above; **also run `npm run verify-env` when your change touches env reading, the legacy fallback, or the port hint**" (script inventory also names its 21 assertions). `WAIVERS-P0.md` **W2** three-block honest ("gated in neither CI nor the PR bar"), controls = recorded 21/21 + that CONTRIBUTING line, expiry with the explicit decision (gate in CI or formally out-scope), owner/sign-off/residual. |
+| CE-09 | gitleaks same-origin checksum; tag-not-SHA actions; actionlint unverifiable | **superseded-by-waiver (W4)** + artifact landed | `evidence/actionlint.log` **exists**: records the exact cmd (docker `rhysd/actionlint`) + `exit=0` — actionlint is silent-on-success, so exit 0 = "0 errors" as claimed (QA-05 half). `WAIVERS-P0.md` **W4** three-block substance is complete: limitation restated verbatim (same-origin = corruption guard only, offline verification impossible as wired; mutable `v4.4.0` tags), honest rationale (no doc claims SHA-pinning; workflow editor already owns CI), controls (sha256 step + exact `8.30.1` + tags verified via `git ls-remote` + independent docker scans), concrete fix condition ("pin literal sha256 + action commit SHAs"), expiry 2026-12-21/P1, security sign-off, residual with likelihood/blast-radius. My fresh docker scan at `e4ca3ce` independently corroborates clean (31/34, no leaks). |
+
+**None of CE-01..CE-09 still holds.**
+
+### Process-deviation audit (PR #1 merged on `pending` checks)
+
+- `gh run list --limit 50 --json conclusion` → **`[{c: success, n: 8}]`** — every
+  run this repo has ever executed succeeded; **no run of this tree ever went
+  red** (no failure/cancelled/timed-out, ever).
+- The branch run pending at merge time, `gh run view 35781362973` →
+  `completed success` (created `2026-09-22T20:36:15Z`, branch
+  `feat/p0-publishable-foundations`).
+- The merge's main run `35781376642` → `completed success`, jobs
+  `verify: success` + `secret-scan: success`; PR #2's branch runs
+  (`35781900198`, `35781906623`) and main run (`35781958949`, both jobs
+  success) all green.
+- **Conclusion: the gate's "grepped FAIL instead of requiring green" slip is
+  process-only** — the tree it merged went green on the branch before/after
+  merge and green on `main`; no technical debt from the slip, but the check
+  discipline should require `success`, not absence-of-FAIL (observation only —
+  no process signal issued by this reviewer).
+
+### Fresh re-runs this session (allowed set)
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | exit 0 ✓ |
+| `npx tsx scripts/verify-injection.ts` | exit 0, **73 ok / 0 FAIL / ALL PASS** ✓ (re-confirms CE-02 fix) |
+| docker `zricethezav/gitleaks:v8.30.1 detect` @ `e4ca3ce` | **31 commits scanned (of 34), `no leaks found`** ✓ |
+| `git fetch` + `rev-parse` HEAD/origin/main | both `e4ca3ce` ✓ (state claim verified, not trusted) |
+| `gh run list` / `gh run view` (7 runs + jobs) | 8/8 success ever ✓ |
+
+### Residual nits (explicitly non-blocking, no counterexample)
+
+1. `review-readability.md:46` still cites "(70 assertions)" inside that
+   reviewer's historical evidence cell — artifact-of-record, not a live claim
+   (all live claims corrected, `TEST_MATRIX.md:25` documents the fix).
+2. Waived residuals with dated expiries remain by design: W2 (verify-env
+   ungated), W3 (regex FNs), W4 (same-origin checksum / tag-pinned actions),
+   W6 (empty-new-name code divergence) — all expire 2026-12-21 or their named
+   milestone, with re-review owners.
+3. gitleaks raw count ≠ `rev-list` count is inherent (root + merge commits
+   excluded); current honest basis: 31 scanned / 34 in history, no leaks.
+
+### Recheck verdict rationale
+
+- ✅ = "all refutations failed — claims hold now": every original
+  counterexample is either **killed by landed remediation with verifiable
+  evidence** (CE-01/02/03/05/07) or **legitimately superseded by a
+  normative three-block waiver whose compensating controls are present on disk
+  and accurate to the code** (CE-04/06/08/09). The one process deviation is
+  evidenced as never-red.
+- This reviewer issues **no fixes, no commits, no process signals**; the
+  deliverable append + verdict-line update are the only writes (rules).
