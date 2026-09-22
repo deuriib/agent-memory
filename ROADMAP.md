@@ -41,7 +41,7 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | None | Missing |
-| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `scripts/verify-injection.ts` (70 assertions) | Verified — far short |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `scripts/verify-injection.ts` (73 assertions) | Verified — far short |
 | Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | README, AGENTS, CONTRACT; **no LICENSE** | Verified — incomplete |
 | Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |

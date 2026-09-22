@@ -44,11 +44,11 @@ helix CLI). 5 after 4's behavior is final (README documents shipped code).
 ## Quality Gates
 
 - [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0, 2026-09-22 (re-run after bootstrap advisory landed)
-- [x] Engineering: `npx tsx scripts/verify-injection.ts` green — ALL PASS, 70 assertions, 2026-09-22
+- [x] Engineering: `npx tsx scripts/verify-injection.ts` green — ALL PASS, 73 assertions, 2026-09-22 (count corrected from an earlier mis-citation of 70; independently reproduced by all gate reviewers)
 - [x] Engineering: `npm run verify` green against **our** server (`AGENT_MEMORY_URL=http://127.0.0.1:3151`); upstream `iii` on 3111 untouched (identity guard proves it) — 102/102 VERIFY PASS, 2026-09-22
 - [x] Engineering: `npx tsx scripts/verify-env.ts` green (legacy env arms guard; EADDRINUSE prints reroute hint) — 21/21, 2026-09-22
 - [x] Ops/persistence: save → `helix restart dev` → same memory still searchable (P0.4 acceptance) — canary `228cdf69` BM25 0.863 post-restart, storage stayed `disk`, 2026-09-22
-- [x] Security: gitleaks scan clean locally and pinned in CI (P0.2 acceptance) — full history 24 commits `no leaks found` (v8.30.1), CI job pinned by sha256, 2026-09-22
+- [x] Security: gitleaks scan clean locally and pinned in CI (P0.2 acceptance) — full history `no leaks found` (v8.30.1; QA re-run: 25 commits scanned of 26 in history), CI job pinned by sha256, 2026-09-22
 - [x] Docs: `LICENSE` (P0.1, pre-existing) + `SECURITY.md` + `CONTRIBUTING.md` + `CHANGELOG.md` all present and linked from README (P0.3) — verified by review, 2026-09-22
 - [x] Automation/ops: no new required env vars; legacy names are read-only fallbacks; `AGENTMEMORY_*` warning never prints values — enforced by `scripts/verify-env.ts` (warn-name-never-value + hook-silence checks, 2026-09-22)
 - N/A: finance / legal / marketing / people / revenue (engineering + docs change)
