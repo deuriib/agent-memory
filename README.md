@@ -104,13 +104,17 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 | POST | `/agentmemory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
 | POST | `/agentmemory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
 | POST | `/agentmemory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (strict — no `origin`) | 201 `{id, sessionId, project, concepts}` / 400 |
-| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 400 / 404 |
+| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `limit=10`, `importance=0.5`, `origin="rest"`,
-`sessionId` auto-generated (`crypto.randomUUID()`) when absent. `lesson` is
-strict: sending `origin` → 400, and the row is always stored with
-`origin="lesson"`.
+`sessionId` auto-generated (`crypto.randomUUID()`) when absent. Every REST
+body is a strict zod object: **unknown keys are rejected with 400** — so
+`lesson` never accepts `origin` (sending it → 400; the row is always stored
+with `origin="lesson"`) and `delete` requires `reason`. MCP input schemas are
+SDK-mediated instead: unknown keys are **stripped, not rejected**, and `origin`
+is server-forced either way (`memory_lesson` stores `origin="lesson"` no
+matter what the caller sends).
 
 ### Examples
 
@@ -226,7 +230,7 @@ backed by the same `MemoryStore` as the REST server. Handshake exposes exactly
 | `memory_health` | Liveness + memory/session counts |
 | `memory_recap` | Text recap of one session's (or the project's) recent memories |
 | `memory_handoff` | Project handoff digest for the next agent session |
-| `memory_lesson` | Persist a lesson (strict body — stored with `origin="lesson"`) |
+| `memory_lesson` | Persist a lesson (stored with `origin="lesson"`; unknown input keys are stripped by the SDK, not rejected) |
 | `memory_delete` | Governed delete: `memoryId` + required `reason`, returns a receipt |
 
 ### OpenCode

@@ -43,4 +43,7 @@ Each step maps to one commit (REQ-ID trace, see `TEST_MATRIX.md`).
 - [x] Contract: `docs/CONTRACT.md` §3/§4/§5 consistent with shipped routes —
   MCP handshake probe lists exactly 11 tools incl. the 4 new
 - N/A: finance / legal / marketing / people / revenue (engineering-only change)
-- [ ] Automation/ops: no new env vars, ports, or deployment surface introduced
+- [x] Automation/ops: no new env vars, ports, or deployment surface introduced —
+      satisfied: P3.1 adds none (`package.json`, `helix.toml`, hooks untouched;
+      only the pre-existing `AGENT_MEMORY_URL`/`AGENT_MEMORY_PORT` overrides are
+      used)
