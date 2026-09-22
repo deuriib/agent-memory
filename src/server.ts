@@ -16,13 +16,15 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
-import { logSafeNote } from "./errors.js";
+import { failureSignal, logSafeNote } from "./errors.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
 const DEFAULT_PROJECT = "default";
 const DEFAULT_LIMIT = 10;
 const DEFAULT_ORIGIN = "rest";
+/** `/agentmemory/lesson` forces this origin (contract §3, P3.1). */
+const LESSON_ORIGIN = "lesson";
 const DEFAULT_IMPORTANCE = 0.5;
 const MAX_BODY_BYTES = 1_048_576; // 1 MiB
 
@@ -39,6 +41,7 @@ const queryTextSchema = z.string().trim().min(1).max(10_000);
 const limitSchema = z.number().int().min(1).max(100);
 const importanceSchema = z.number().min(0).max(1);
 const memoryIdSchema = z.string().trim().min(1).max(200);
+const reasonSchema = z.string().trim().min(1).max(1000);
 
 const rememberBodySchema = z
   .object({
@@ -69,6 +72,34 @@ const smartSearchBodySchema = z
   .strict();
 
 const forgetBodySchema = z.object({ memoryId: memoryIdSchema }).strict();
+
+/** Recap and handoff share this body (contract §3, P3.1). */
+const recapBodySchema = z
+  .object({
+    project: projectSchema.optional(),
+    sessionId: sessionIdSchema.optional(),
+    limit: limitSchema.optional(),
+  })
+  .strict();
+
+/** Lesson = remember without an `origin` field — origin is forced server-side. */
+const lessonBodySchema = z
+  .object({
+    content: contentSchema,
+    concepts: conceptsSchema.optional(),
+    project: projectSchema.optional(),
+    sessionId: sessionIdSchema.optional(),
+    importance: importanceSchema.optional(),
+  })
+  .strict();
+
+/** Governance delete: `reason` required, no `project` field. */
+const deleteBodySchema = z
+  .object({
+    memoryId: memoryIdSchema,
+    reason: reasonSchema,
+  })
+  .strict();
 
 const listQuerySchema = z.object({
   project: projectSchema.optional(),
@@ -161,6 +192,66 @@ function pathnameOf(req: IncomingMessage): string {
   const raw = req.url ?? "/";
   const cut = raw.indexOf("?");
   return cut === -1 ? raw : raw.slice(0, cut);
+}
+
+/* ------------------------------------------------------------------ */
+/* Recap/handoff digest (contract §3, P3.1 — degrades, never 500)      */
+/* ------------------------------------------------------------------ */
+
+interface DigestInput {
+  project?: string | undefined;
+  sessionId?: string | undefined;
+  limit?: number | undefined;
+}
+
+interface DigestLines {
+  lines: string[];
+  /** Number of memories summarized across all sessions. */
+  count: number;
+  /** Per-store-call failures as `<source>: <failure>` (src/search.ts style). */
+  signals: string[];
+}
+
+/**
+ * One bullet per memory: `- [sessionId] createdAt (origin): content`, in
+ * session order then memory order. Every store call is individually wrapped:
+ * a failure lands in `signals` while the remaining sessions still contribute
+ * lines — a digest never throws for store failures.
+ */
+async function buildDigestLines(store: MemoryStore, input: DigestInput): Promise<DigestLines> {
+  const project = input.project ?? DEFAULT_PROJECT;
+  const limit = input.limit ?? DEFAULT_LIMIT;
+  const lines: string[] = [];
+  const signals: string[] = [];
+  let count = 0;
+
+  const appendSession = async (sessionId: string): Promise<void> => {
+    try {
+      const memories = await store.sessionMemories({ sessionId, project, limit });
+      for (const memory of memories) {
+        lines.push(`- [${sessionId}] ${memory.createdAt} (${memory.origin}): ${memory.content}`);
+      }
+      count += memories.length;
+    } catch (err) {
+      signals.push(`memories(${sessionId}): ${failureSignal(err)}`);
+    }
+  };
+
+  if (input.sessionId !== undefined) {
+    await appendSession(input.sessionId);
+    return { lines, count, signals };
+  }
+
+  try {
+    // appendSession never throws (fully wrapped), so this catch is listSessions only.
+    const sessions = await store.listSessions({ project, limit });
+    for (const session of sessions) {
+      await appendSession(session.sessionId);
+    }
+  } catch (err) {
+    signals.push(`sessions: ${failureSignal(err)}`);
+  }
+  return { lines, count, signals };
 }
 
 /* ------------------------------------------------------------------ */
@@ -283,6 +374,78 @@ async function routeRequest(
       return 404;
     }
     sendJson(res, 200, { forgotten: true });
+    return 200;
+  }
+
+  // POST /agentmemory/recap
+  if (path === "/agentmemory/recap") {
+    requireMethod(method, "POST");
+    const body = parseOr400(recapBodySchema, await readJsonBody(req));
+    const digest = await buildDigestLines(store, body);
+    sendJson(res, 200, {
+      recap: digest.lines.join("\n"),
+      sessionId: body.sessionId ?? null,
+      count: digest.count,
+      signals: digest.signals,
+    });
+    return 200;
+  }
+
+  // POST /agentmemory/handoff (body identical to recap)
+  if (path === "/agentmemory/handoff") {
+    requireMethod(method, "POST");
+    const body = parseOr400(recapBodySchema, await readJsonBody(req));
+    const digest = await buildDigestLines(store, body);
+    const signals = digest.signals;
+    let counts: { memories: number; sessions: number } = { memories: 0, sessions: 0 };
+    try {
+      counts = await store.healthCounts(body.project ?? DEFAULT_PROJECT);
+    } catch (err) {
+      signals.push(`counts: ${failureSignal(err)}`);
+    }
+    const project = body.project ?? DEFAULT_PROJECT;
+    const header = `project=${project} memories=${counts.memories} sessions=${counts.sessions} recent:`;
+    sendJson(res, 200, {
+      handoff: [header, ...digest.lines].join("\n"),
+      sessionId: body.sessionId ?? null,
+      counts,
+      signals,
+    });
+    return 200;
+  }
+
+  // POST /agentmemory/lesson — remember with origin forced to "lesson"
+  if (path === "/agentmemory/lesson") {
+    requireMethod(method, "POST");
+    const body = parseOr400(lessonBodySchema, await readJsonBody(req));
+    const result = await store.remember({
+      content: body.content,
+      concepts: body.concepts ?? [],
+      project: body.project ?? DEFAULT_PROJECT,
+      sessionId: body.sessionId ?? randomUUID(),
+      origin: LESSON_ORIGIN,
+      importance: body.importance ?? DEFAULT_IMPORTANCE,
+    });
+    sendJson(res, 201, result);
+    return 201;
+  }
+
+  // POST /agentmemory/delete — governance delete (reason required)
+  if (path === "/agentmemory/delete") {
+    requireMethod(method, "POST");
+    const body = parseOr400(deleteBodySchema, await readJsonBody(req));
+    const deleted = await store.forget(body.memoryId);
+    if (!deleted) {
+      sendJson(res, 404, { error: "not_found" });
+      return 404;
+    }
+    const deletedAt = new Date().toISOString();
+    // One governance line: reason is caller-supplied metadata only — never
+    // memory content, never the secret. The access log below is unchanged.
+    console.log(
+      `[agentmemory] delete governance memoryId=${body.memoryId} reason=${body.reason} at=${deletedAt}`,
+    );
+    sendJson(res, 200, { deleted: true, receipt: { memoryId: body.memoryId, deletedAt } });
     return 200;
   }
 
