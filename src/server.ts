@@ -16,6 +16,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
+import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
@@ -207,66 +208,6 @@ function pathnameOf(req: IncomingMessage): string {
   const raw = req.url ?? "/";
   const cut = raw.indexOf("?");
   return cut === -1 ? raw : raw.slice(0, cut);
-}
-
-/* ------------------------------------------------------------------ */
-/* Recap/handoff digest (contract §3, P3.1 — degrades, never 500)      */
-/* ------------------------------------------------------------------ */
-
-interface DigestInput {
-  project?: string | undefined;
-  sessionId?: string | undefined;
-  limit?: number | undefined;
-}
-
-interface DigestLines {
-  lines: string[];
-  /** Number of memories summarized across all sessions. */
-  count: number;
-  /** Per-store-call failures as `<source>: <failure>` (src/search.ts style). */
-  signals: string[];
-}
-
-/**
- * One bullet per memory: `- [sessionId] createdAt (origin): content`, in
- * session order then memory order. Every store call is individually wrapped:
- * a failure lands in `signals` while the remaining sessions still contribute
- * lines — a digest never throws for store failures.
- */
-async function buildDigestLines(store: MemoryStore, input: DigestInput): Promise<DigestLines> {
-  const project = input.project ?? DEFAULT_PROJECT;
-  const limit = input.limit ?? DEFAULT_LIMIT;
-  const lines: string[] = [];
-  const signals: string[] = [];
-  let count = 0;
-
-  const appendSession = async (sessionId: string): Promise<void> => {
-    try {
-      const memories = await store.sessionMemories({ sessionId, project, limit });
-      for (const memory of memories) {
-        lines.push(`- [${sessionId}] ${memory.createdAt} (${memory.origin}): ${memory.content}`);
-      }
-      count += memories.length;
-    } catch (err) {
-      signals.push(`memories(${sessionId}): ${failureSignal(err)}`);
-    }
-  };
-
-  if (input.sessionId !== undefined) {
-    await appendSession(input.sessionId);
-    return { lines, count, signals };
-  }
-
-  try {
-    // appendSession never throws (fully wrapped), so this catch is listSessions only.
-    const sessions = await store.listSessions({ project, limit });
-    for (const session of sessions) {
-      await appendSession(session.sessionId);
-    }
-  } catch (err) {
-    signals.push(`sessions: ${failureSignal(err)}`);
-  }
-  return { lines, count, signals };
 }
 
 /* ------------------------------------------------------------------ */

@@ -15,6 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { isMetaAuthorized, secretFromEnv } from "./auth.js";
+import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
@@ -107,67 +108,8 @@ function failed(payload: { error: string }): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }], isError: true };
 }
 
-/* ------------------------------------------------------------------ */
-/* Recap/handoff digest (contract §3, P3.1 — degrades, never errors)   */
-/* Same assembly as `src/server.ts` recap/handoff; kept in-file because */
-/* only server.ts and mcp.ts are in scope for this change.              */
-/* ------------------------------------------------------------------ */
-
-interface DigestInput {
-  project?: string | undefined;
-  sessionId?: string | undefined;
-  limit?: number | undefined;
-}
-
-interface DigestLines {
-  lines: string[];
-  /** Number of memories summarized across all sessions. */
-  count: number;
-  /** Per-store-call failures as `<source>: <failure>` (src/search.ts style). */
-  signals: string[];
-}
-
-/**
- * One bullet per memory: `- [sessionId] createdAt (origin): content`, in
- * session order then memory order. Every store call is individually wrapped:
- * a failure lands in `signals` while the remaining sessions still contribute
- * lines — a digest never rejects for store failures.
- */
-async function buildDigestLines(store: MemoryStore, input: DigestInput): Promise<DigestLines> {
-  const project = input.project ?? DEFAULT_PROJECT;
-  const limit = input.limit ?? DEFAULT_LIMIT;
-  const lines: string[] = [];
-  const signals: string[] = [];
-  let count = 0;
-
-  const appendSession = async (sessionId: string): Promise<void> => {
-    try {
-      const memories = await store.sessionMemories({ sessionId, project, limit });
-      for (const memory of memories) {
-        lines.push(`- [${sessionId}] ${memory.createdAt} (${memory.origin}): ${memory.content}`);
-      }
-      count += memories.length;
-    } catch (err) {
-      signals.push(`memories(${sessionId}): ${failureSignal(err)}`);
-    }
-  };
-
-  if (input.sessionId !== undefined) {
-    await appendSession(input.sessionId);
-    return { lines, count, signals };
-  }
-
-  try {
-    // appendSession never rejects (fully wrapped), so this catch is listSessions only.
-    const sessions = await store.listSessions({ project, limit });
-    for (const session of sessions) {
-      await appendSession(session.sessionId);
-    }
-  } catch (err) {
-    signals.push(`sessions: ${failureSignal(err)}`);
-  }
-  return { lines, count, signals };
-}
+/* Recap/handoff digest assembly lives in `src/digest.ts` — shared with the
+ * REST lane so the frozen REST↔MCP mirror cannot drift (contract §3). */
 
 function registerTools(mcp: McpServer, store: MemoryStore, secret: string | undefined): void {
   /**
