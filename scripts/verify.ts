@@ -7,7 +7,9 @@
  *           vector, L2 ≈ 1), default-value proof, and boundary validation.
  *
  * Talks to a RUNNING agent-memory REST server (default
- * http://127.0.0.1:3111, override with AGENT_MEMORY_URL). Uses a unique
+ * http://127.0.0.1:3111, override with AGENT_MEMORY_URL). A read-only
+ * identity probe runs first and aborts (exit 1, nothing written) when the
+ * target does not answer as our P3.1 server. Uses a unique
  * project per run so counts are isolated from demo data and re-runs stay
  * clean. Attaches Authorization automatically when AGENT_MEMORY_SECRET is
  * set in this shell (same env as the server).
@@ -247,6 +249,34 @@ async function main(): Promise<void> {
     goldenActual === GOLDEN,
     `got ${goldenActual}, want ${GOLDEN}`,
   );
+
+  /* Identity guard (read-only) — BEFORE the first write. The default target
+   * 127.0.0.1:3111 is where the upstream `agentmemory` normally lives, and a
+   * plain run would otherwise write test rows into it. POST
+   * /agentmemory/recap with `{}` is our P3.1 surface (every recap field is
+   * optional) and reads nothing: 200 => the target is OUR server, anything
+   * else (404 from upstream, connection failure, 401) => abort with no writes. */
+  const identity = await call("POST", "/agentmemory/recap", undefined, {});
+  if (identity.status !== 200) {
+    console.error(
+      [
+        "",
+        `identity guard: POST ${endpoint("agentmemory/recap").href} -> ${identity.status}` +
+          (identity.status === -1
+            ? ` (unreachable: ${String(identity.body)})`
+            : ` (body=${brief(identity.body)})`),
+        "expected 200 from OUR P3.1 server — the upstream `agentmemory` most likely holds this",
+        `port (3111 is its default; see README "Known limitations" → port conflict). Point verify`,
+        "at OUR server instead, per the README conflict procedure, then re-run:",
+        "",
+        "  AGENT_MEMORY_URL=http://127.0.0.1:<your-port> npm run verify",
+        "",
+        "No data was written.",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+  console.log("identity: POST /agentmemory/recap -> 200 (our P3.1 server), proceeding");
 
   /* B. Server reachable? */
   const livez = await call("GET", "/agentmemory/livez");
@@ -531,6 +561,17 @@ async function main(): Promise<void> {
     check("P3.1 recap: echoes sessionId", rcp1.sessionId === p31sid, String(rcp1.sessionId));
     check("P3.1 recap: count >= 1", rcp1.count >= 1, String(rcp1.count));
     check("P3.1 recap: contains the lesson content", rcp1.recap.includes(p31content));
+    /* CE-003: the sessionId echo is `body.sessionId ?? null` — a request echo,
+     * not store evidence. Assert session MEMBERSHIP instead: every bullet line
+     * must match `^- [<requested sessionId>] `, so a store that returned other
+     * sessions' bullets (while still echoing the request) cannot pass. */
+    const bullets = rcp1.recap.split("\n").filter((line) => line.length > 0);
+    const foreign = bullets.filter((line) => !line.startsWith(`- [${p31sid}] `));
+    check(
+      "P3.1 recap: every bullet line belongs to the requested session",
+      bullets.length > 0 && foreign.length === 0,
+      bullets.length === 0 ? "(no bullet lines)" : foreign.join(" | ").slice(0, 200),
+    );
   }
 
   /* N5. project-wide handoff: typed counts, frozen first line, and the

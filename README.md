@@ -404,12 +404,18 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`101 passed, 0 failed` →
-  `VERIFY PASS`** (health → remember with concepts → BM25 hits → smart-search
-  hits → sessions list → session memories → forget → gone → counts reflect it,
-  plus embedder determinism, defaults, boundary validation, and the P3.1
-  round-trip: lesson → search hits with `origin:"lesson"` → recap → handoff →
-  governed delete with receipt → gone → second delete 404 → counts).
+- `npm run verify` (`scripts/verify.ts`) — **`102 passed, 0 failed` →
+  `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
+  → smart-search hits → sessions list → session memories → forget → gone →
+  counts reflect it, plus embedder determinism, defaults, boundary validation,
+  and the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
+  recap (every bullet session-scoped) → handoff → governed delete with receipt
+  → gone → second delete 404 → counts). Before the first write it probes
+  `POST /agentmemory/recap` and aborts (exit 1, no writes) unless the target
+  answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
+  it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
+  `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
+  procedure).
 - `npm run bootstrap` — `bootstrapIndexes: OK (7 indexes ensured)` then
   `READY — searchByText responding`.
 - `npm run demo` — `demo OK`: BM25 hits at scores 2.54 / 1.59 / 0.88, vector
