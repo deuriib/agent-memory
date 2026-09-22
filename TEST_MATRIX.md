@@ -27,8 +27,11 @@
   corrected to 25 scanned / 26 in history (QA-03); actionlint artifact attached
   (`evidence/actionlint.log`, QA-05); restart canary re-run with committed
   artifact (`evidence/p0-4-restart-canary.log`, QA-04).
-- Full 9-reviewer record: `GATE_REPORT.md` (same directory) — advanced
-  **CLOSED → CONDITIONAL**: COND-02..09 remediated (docs), COND-10..15 waived
-  (`WAIVERS-P0.md` W1..W6), COND-01 resolved by the PR #1 merge — green on
-  `main` run 35781376642 (`verify` + `secret-scan` success). OPEN pending the
-  scoped recheck by review-refuter + quality-assurance.
+- Full 9-reviewer record: `GATE_REPORT.md` (same directory) — status trail
+  **CLOSED → CONDITIONAL → OPEN** (2026-09-22): COND-02..09 remediated
+  (docs), COND-10..15 waived (`WAIVERS-P0.md` W1..W6), COND-01 resolved by
+  the PR #1 merge — green on `main` run 35781376642 (`verify` +
+  `secret-scan` success) — and **both scoped rechecks cleared**:
+  review-refuter ✅ (all nine counterexamples failed) and
+  quality-assurance ✅ (evidence artifacts committed at `edd07e5` / PR #3,
+  verified byte-identical at `origin/main` `da285a6`).
