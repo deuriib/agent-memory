@@ -1,0 +1,35 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent memory for AI coding agents, built on HelixDB (graph + vector + BM25 hybrid retrieval)",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": "./.opencode/plugins/agent-memory.ts"
+  },
+  "files": [
+    ".opencode/plugins/agent-memory.ts"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "bootstrap": "tsx scripts/bootstrap.ts",
+    "dev": "tsx src/server.ts",
+    "demo": "tsx src/demo.ts",
+    "verify": "tsx scripts/verify.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@helix-db/helix-db": "3.0.4",
+    "@opencode/plugin": "^2.0.9",
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

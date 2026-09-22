@@ -1,0 +1,148 @@
+# Roadmap
+
+Gap analysis and phased plan against the reference implementation,
+[`rohitg00/agentmemory`](https://github.com/rohitg00/agentmemory) (28.7k★,
+Apache-2.0, built on the [iii engine](https://github.com/iii-hq/iii) + SQLite).
+
+**How to read this file.** Every gap below is stated as *upstream has X, we have
+Y*, with a phase and an acceptance criterion. "Verified" means confirmed against
+this repository's source during the audit that produced this document; anything
+not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
+
+> **Relationship to upstream.** This is an independent implementation of the
+> same REST + MCP contract on a different storage engine (HelixDB, not iii). We
+> intentionally mirror upstream's route shapes and tool names so clients can
+> switch between them, and we deliberately do **not** compete with it: never
+> kill a running upstream instance, and do not claim its benchmark numbers as
+> ours. See *Deliberate divergences* below.
+
+---
+
+## 1. Where we stand
+
+### 1.1 Surface parity
+
+| Capability | Upstream | This repo | Status |
+|---|---|---|---|
+| Storage engine | iii engine + SQLite, 0 external DBs | HelixDB v3 (graph + vector + BM25) in Docker | Divergent by design |
+| REST routes | `/agentmemory/*` | 8 routes: `livez`, `health`, `remember`, `search`, `smart-search`, `sessions`, `sessions/:id/memories`, `forget` | Verified |
+| MCP tools | 54 | 7: `memory_save`, `memory_search`, `memory_smart_search`, `memory_forget`, `memory_health`, `memory_sessions`, `memory_session_memories` | Verified — 47 short |
+| Bearer auth | `AGENTMEMORY_SECRET` | `AGENT_MEMORY_SECRET`, `livez` exempt, empty = open localhost | Verified |
+| Hybrid retrieval | BM25 + vector + graph, RRF | Same fusion in `src/search.ts`, with explicit degradation `signals` | Verified |
+| Auto-capture hooks | 12 (Claude Code), 22 (OpenCode), 6 (Codex), 7 (Cursor) | 4 plugin hooks (`prompt`, `context`, `compaction`, `tool.execute.after`) + `hooks/capture.mjs` for `SessionStart`/`PostToolUse`/`Stop` | Verified — far short |
+| Context injection | Hook-driven | Marker-idempotent `[agent-memory v…]`, compaction-safe, TTL+LRU cache, write invalidation | Verified — our strongest area |
+| Skills | 17 `SKILL.md` (9 invocable + 8 reference) | 0 | Missing |
+| Real-time viewer | Yes, port 3113, incl. Replay timeline | None | Missing |
+| Memory lifecycle | 4-tier consolidation + decay + auto-forget | `remember` / `forget` only; static `importance` | Missing |
+| Confidence scoring | Yes | `importance` 0..1 supplied by caller, defaults `0.5` | Partial |
+| Transcript import | `import-jsonl` (Claude Code JSONL) | None | Missing |
+| Multi-agent coordination | MCP + REST + leases + signals | None (single-tenant `project` scope) | Missing |
+| CLI | `agentmemory`, `stop`, `connect`, `doctor`, `remove`, `upgrade`, `status`, `demo` | npm scripts only | Missing |
+| Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
+| Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
+| Eval harness | LongMemEval-S + in-house corpus, published scorecards | None | Missing |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `scripts/verify-injection.ts` (70 assertions) | Verified — far short |
+| Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | README, AGENTS, CONTRACT; **no LICENSE** | Verified — incomplete |
+| Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
+| Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
+| Persistence | On-disk data dir, survives restart | Helix dev runs `storage: memory` — **data lost on restart** | Verified defect |
+| i18n | 12 README languages | 1 | Missing |
+
+### 1.2 What we do better today
+
+- **Degradation is explicit.** Every search returns a `signals[]` list naming
+  which upstream source failed, so a partial recall is *visible* instead of
+  silently thinning results. An all-sources-down search still returns 200.
+- **Injection is idempotent and compaction-safe.** A versioned marker plus a
+  `compaction` hook means recalled context survives compression without
+  stacking duplicates; a bounded TTL+LRU cache keeps it off the hot path.
+- **Graph-native storage.** Concepts, memories and their `HAS_CONCEPT` edges are
+  first-class nodes, so the graph branch of fusion is a traversal, not a join.
+
+---
+
+## 2. Phased plan
+
+Each phase has an acceptance criterion. A phase is done when its criterion
+passes, not when its tickets are "mostly" closed.
+
+### P0 — Publishable foundations *(blocking: repo is public)*
+
+| # | Item | Acceptance criterion |
+|---|---|---|
+| P0.1 | Add a license | `LICENSE` present; GitHub reports the correct license |
+| P0.2 | CI workflow | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` |
+| P0.3 | SECURITY.md, CONTRIBUTING.md, CHANGELOG.md | Three files present, linked from README |
+| P0.4 | **Fix persistence** | `helix start dev --disk` documented *and* the default dev path no longer silently loses data; a save survives a Helix restart |
+| P0.5 | **Resolve env migration** | Servers started under the old `AGENTMEMORY_*` names are migrated to `AGENT_MEMORY_*`; a restart cannot silently drop the bearer secret or fall back to the upstream-occupied port |
+| P0.6 | Resolve the 3111/3121 ownership conflict | README states definitively which port is ours and how to point the plugin at it |
+
+### P1 — Recall quality & lifecycle
+
+| # | Item | Acceptance criterion |
+|---|---|---|
+| P1.1 | Memory lifecycle: importance decay, TTL, auto-forget | A memory not recalled in N days loses weight and is eventually removable; nothing grows unbounded |
+| P1.2 | Consolidation tiers | Near-duplicate memories merge instead of accumulating; merged set still recalls the originals |
+| P1.3 | Auto concept extraction | `remember` derives concepts without an explicit `concepts[]`, so the graph branch fires on plain saves |
+| P1.4 | Derived confidence | `importance` is computed from provenance + recall history, not just caller-supplied `0.5` |
+| P1.5 | Eval harness | An adapter-pluggable harness scores retrieval on a public corpus; a scorecard lands in `docs/benchmarks/` with *our* numbers |
+| P1.6 | Dedup on write | Saving the same fact twice does not create two retrievable rows |
+
+### P2 — Capture breadth
+
+| # | Item | Acceptance criterion |
+|---|---|---|
+| P2.1 | Expand hook coverage | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` |
+| P2.2 | Capture file edits and failures | A failed tool call and an edited file both produce an observation |
+| P2.3 | Transcript import | Import a persisted session transcript and have it searchable afterwards |
+| P2.4 | Session summarization / lessons | A closed session yields a compact summary + mined lessons, retrievable by `session` |
+
+### P3 — Surfaces
+
+| # | Item | Acceptance criterion |
+|---|---|---|
+| P3.1 | MCP tool parity for the useful subset | Add `recap`, `handoff`, `lesson`, governance-style delete; each round-trips against the REST contract |
+| P3.2 | Ship a skill set | `SKILL.md` files for `recall`, `remember`, `recap`, `handoff`, `forget`, `lesson`, `commit-context`, `session-history` |
+| P3.3 | Real-time viewer | A local page streams live memory writes (upstream uses port 3113) |
+| P3.4 | Session replay | Scrub a session's prompts / tool calls / results as a timeline |
+| P3.5 | Additional agent adapters | Claude Code, Cursor, Gemini CLI wired through the existing REST + MCP surface, no per-agent rewrite |
+
+### P4 — Ops, packaging, scale
+
+| # | Item | Acceptance criterion |
+|---|---|---|
+| P4.1 | CLI | `start`, `stop`, `status`, `doctor` beyond npm scripts |
+| P4.2 | Deployment | `docker-compose.yml`; k8s manifests under `deploy/` |
+| P4.3 | Multi-instance | A second instance runs on a non-conflicting port quartet without editing source |
+| P4.4 | Data-dir control | An explicit data directory survives restarts and is documented |
+| P4.5 | Published package | A public npm package installable without cloning |
+| P4.6 | Zero-container mode | If the HelixDB SDK supports embedded execution, a no-Docker path exists — this is our biggest onboarding gap versus upstream |
+| P4.7 | Governance docs | CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, DESIGN |
+| P4.8 | i18n | Translated READMEs |
+
+---
+
+## 3. Deliberate divergences
+
+These are decisions, not gaps. Do not "fix" them by copying upstream.
+
+1. **Engine.** HelixDB gives graph-native concept traversal; upstream's
+   SQLite + iii gives a simpler install. Trade: we need a container, they don't.
+2. **Env prefix.** `AGENT_MEMORY_*` here, `AGENTMEMORY_*` upstream. Ours follows
+   a consistent `WORD_WORD_*` convention; it means our env vars are **not**
+   drop-in compatible with upstream's, by choice.
+3. **Focused surface.** 7 tools, not 54. We add surface only when a concrete
+   retrieval or capture gap is proven, not for parity's own sake.
+4. **Explicit degradation over silent thinning.** `signals[]` stays.
+5. **Never displace upstream.** Coexistence rule from `README.md` is permanent.
+
+---
+
+## 4. Non-goals
+
+- Competing with upstream on star count, tool count, or adapter count.
+- Re-implementing the iii engine.
+- Claiming upstream's benchmark results (`95.2%` R@5, etc.) as ours — P1.5 is
+  how we earn our own number.
+- Cloud/hosted multi-tenancy. `project` scoping is enough for a self-hosted
+  single-user deployment.

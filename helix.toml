@@ -1,0 +1,11 @@
+[project]
+name = "agent-memory"
+queries = "db"
+container_runtime = "docker"
+
+[local.dev]
+port = 6969
+image = "ghcr.io/helixdb/helixdb"
+tag = "v0.0.6"
+
+[enterprise]
