@@ -7,7 +7,11 @@
  *   route except `livez` requires `Authorization: Bearer <secret>`;
  *   mismatch -> 401. The secret value is never logged or echoed.
  * - binds 127.0.0.1 by default (AGENT_MEMORY_HOST overrides); port from
- *   AGENT_MEMORY_PORT, default 3111.
+ *   AGENT_MEMORY_PORT, default 3111. Legacy AGENTMEMORY_PORT/_HOST names are
+ *   accepted as a deprecated fallback (new name wins; ONE name-only stderr
+ *   warning per variable, never values — `src/env.ts`).
+ * - EADDRINUSE prints the port-ownership + `AGENT_MEMORY_PORT=3151` reroute
+ *   hint (never-kill-upstream) before exiting (REQ-P0-6).
  * - access log: method, path, status, duration only — never bodies,
  *   query strings, headers, or secrets.
  */
@@ -18,6 +22,7 @@ import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
 import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
+import { readLegacyEnv } from "./env.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
@@ -477,14 +482,52 @@ function parsePort(raw: string | undefined): number {
   return value;
 }
 
+/**
+ * Narrow structural read of a Node system error's `code` — typeof/`in`
+ * narrowing only, no `any`, no cast (strict-TS rule).
+ */
+function systemErrorCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  if (!("code" in err)) return undefined;
+  const code: unknown = err.code; // err narrowed to object & Record<"code", unknown>
+  return typeof code === "string" ? code : undefined;
+}
+
+/** Reroute port README/CONTRACT prescribe when upstream holds 3111/3112/3113. */
+const REROUTE_PORT = 3151;
+
+/**
+ * Actionable EADDRINUSE hint (REQ-P0-6), two lines on stderr before exit:
+ *   1. port-ownership statement — upstream agentmemory (iii) may hold
+ *      3111/3112/3113, NEVER kill it, start ours elsewhere with the 3151
+ *      example;
+ *   2. the client instruction — point clients at the port ours runs on via
+ *      AGENT_MEMORY_URL.
+ * Commands and ports only; no env values and never the secret.
+ */
+function portInUseHint(port: number): string {
+  return [
+    `[agentmemory] port ${port} is already in use — if the upstream agentmemory (iii) holds ` +
+      `3111/3112/3113, NEVER kill it; start ours elsewhere: ` +
+      `AGENT_MEMORY_PORT=${REROUTE_PORT} npm run dev`,
+    `[agentmemory] then point clients at the port ours runs on: ` +
+      `AGENT_MEMORY_URL=http://127.0.0.1:${REROUTE_PORT} (example)`,
+  ].join("\n");
+}
+
 function main(): void {
-  const port = parsePort(process.env["AGENT_MEMORY_PORT"]);
-  const host = process.env["AGENT_MEMORY_HOST"] ?? "127.0.0.1";
+  // New name wins; legacy AGENTMEMORY_PORT/_HOST fall back with a one-time,
+  // name-only stderr warning (src/env.ts).
+  const port = parsePort(readLegacyEnv("AGENT_MEMORY_PORT", "AGENTMEMORY_PORT"));
+  const host = readLegacyEnv("AGENT_MEMORY_HOST", "AGENTMEMORY_HOST") ?? "127.0.0.1";
   const secret = secretFromEnv();
 
   const server = createAgentMemoryServer({ secret });
-  server.on("error", (err) => {
+  server.on("error", (err: Error) => {
     console.error(`[agentmemory] server error: ${logSafeNote(err)}`);
+    if (systemErrorCode(err) === "EADDRINUSE") {
+      console.error(portInUseHint(port));
+    }
     process.exit(1);
   });
   server.listen(port, host, () => {

@@ -1,0 +1,84 @@
+# Automation Review: P0 (Quality Gate)
+
+**Reviewer:** automation-reviewer (automation owner) + ops lens — independent, did not author this work
+**Date:** 2026-09-22
+**Verdict:** ⚠️ CONDITIONAL (pass once AUT-001 and OPS-003 are acknowledged as owned residuals or remediated)
+**Belongs to:** automation/ops domain — one reviewer, one verdict; ops is the attached lens, not a second reviewer.
+**Packet:** `ROADMAP.md` P0 (REQ-P0-2/4/6), `IMPLEMENTATION_PLAN.md` (P0 lane), commits `4cf0f6a` `7caa14d` `c551774` `bb335e2` `1af2cde` `8aba7b9`, GATE: plan Quality Gates + `TEST_MATRIX.md`, HARD: `AGENTS.md`.
+
+## Checklist — automation
+
+- [x] **Workflow/port/adapter/event boundary mapped (PII checkpoint).** CI has two boundaries: the checkout→build path and the untrusted-download path (GitHub release → sha256 → install); the download is checksum-verified, `permissions: contents: read` caps blast radius. No PII or secret material crosses CI (`gitleaks --redact`, no `env:` block). Port boundaries are enumerated in `scripts/verify-env.ts:45-50` (3199 test / 6969 read-only probe / never 3111-3113-3151).
+- [x] **Least-privilege scopes verified.** `permissions: contents: read` at workflow level (ci.yml:8-9); no secrets referenced; gitleaks needs no token (public release download); `GITHUB_TOKEN` never elevated.
+- [ ] **Idempotency + retry budget (retry N=2 → escalate).** Scripts are idempotent where it matters (`bootstrapIndexes` ensure-semantics; `demo` non-idempotent but explicitly documented as limitation 6). **CI infra flakes have no retry budget** — one unauthenticated `curl`, fail-closed → spurious red possible (AUT-005). Flagged, not blocking.
+- [ ] **Deployment plan + rollback tested.** Plan + rollback points exist (`IMPLEMENTATION_PLAN.md:34-42`, assumption stated). Forward persistence tested (canary `228cdf69`, `helix restart dev`, storage stayed `disk`); **reverse path documented-but-not-rehearsed** (OPS-002). Flagged, not blocking.
+- [x] **Monitoring/alerting + runbook updated.** Persistence advisory in `scripts/bootstrap.ts:37-49` is the monitoring for the persistence defect class (coverage caveat OPS-004); README runbook updated for P0 (drift findings OPS-001/005/007). Prod alerting N/A — no deployed service.
+- [x] **Capacity/scaling + feature flags (if needed).** N/A at single-user local-dev scale; no feature flags required — every P0 change is reversible config/code (rollback points declared). No flag debt carried.
+- [x] **No freelance fixes.** This review made zero code, config, or process changes; findings only.
+
+## Checklist — ops lens
+
+- [x] **Deployment plan defined** — `helix start dev --disk --persist` → `helix.toml [local.dev] storage = "disk"` (verified live in config, line 10).
+- [ ] **Rollback tested** — forward rehearsed with evidence; reverse (memory mode) only written down in plan rollback points, never executed (OPS-002).
+- [x] **Monitoring/alerting updated** — bootstrap advisory (fail-open, never blocks); on-call N/A (no prod surface, no rotation).
+- [x] **Runbook updated** — README Quick start + Known-limitations #1/#2 carry the P0 procedures; three drift items logged (OPS-001/005/007).
+- [x] **On-call impact assessed** — none; coexistence rule honored by every script (evidence below, lens i).
+- [x] **Capacity/scaling reviewed** — N/A now; P4.2/P4.3 backlog owns it.
+- [x] **Feature flags (if needed)** — none needed; persistence opt-out is a config revert.
+
+## Findings — BOTH lenses
+
+| ID | Severity | Finding (location) | Evidence | Mitigation / Owner |
+|----|----------|--------------------|----------|--------------------|
+| AUT-001 | **Medium** | Evidence not gated: `scripts/verify-env.ts` backs REQ-P0-5/T-005 and REQ-P0-6/T-006 in `TEST_MATRIX.md:13-14`, but runs in **neither** CI (`.github/workflows/ci.yml:21-25` runs `typecheck` + `verify-injection` only; the line-24 comment justifies omitting `verify`, silent on `verify-env`) **nor** the PR evidence bar (`CONTRIBUTING.md:52-54`: typecheck / verify / verify-injection). A future `src/env.ts`/`server.ts` refactor can break legacy migration or the reroute hint with a fully green main. | Recorded 21/21 is a one-off local run (`IMPLEMENTATION_PLAN.md:21,49`; step 6 says "locally"). Gap nowhere stated as "manual, not regression-gated". | State the gap in `TEST_MATRIX.md` (manual E2E, not CI-gated) + add `verify-env` to the CONTRIBUTING bar; schedule CI job (ubuntu-latest has Docker for Helix). **Owner:** orchestrator/author — gate condition. |
+| OPS-003 | **Medium** | No backup/restore/DR story for disk storage. `--disk` = MinIO-backed local volume; repo-wide grep `backup|restore|disaster|snapshot` returns only unrelated hits (embedder "golden snapshot", plan wording). Volume loss (docker prune, disk failure) = permanent loss of the memories P0.4 just made durable — guardrail "backups tested regularly; DR documented" unmet. | README durability claim (lines 88-90, 401-405) has no recovery counterpart anywhere. | Document a minimal backup/restore (volume export or export-from-REST) in the P4.2/P4.4 lane. **Owner:** ops — post-P0 backlog, expiry P4. Residual risk accepted until then. |
+| AUT-002 | Low | `ci.yml:4-6` — `on: push` + `pull_request` with no branch filter: every branch push runs, and internal PR branches run **twice** (push + PR). Two statuses per PR, duplicated minutes. Does not undermine "green on main" (main pushes are directly gated). | Line-by-line read; no `branches:`/`concurrency:` key. | `branches: [main]` on push + `concurrency` group. **Owner:** author, backlog. |
+| AUT-003 | Low | `ci.yml:36-48` — failed secret scan yields redacted stdout only: no `--report-path`, no `actions/upload-artifact` anywhere → no machine-readable finding report for triage. Observability of *failure* is thin (success path unaffected). | No report/artifact flag or step in workflow. | `--report-format json` + upload-on-failure. **Owner:** author, backlog. |
+| AUT-004 | Low | `ci.yml:16-17,31` — actions pinned by **mutable tags** (`actions/checkout@v4.4.0`, `setup-node@v4.4.0`), not commit SHA — asymmetric with the sha256-verified gitleaks binary (download path IS hardened, the action path is softer). Supply-chain residual. | Tag refs in both jobs; gitleaks gets checksum verification (lines 41-43). | SHA-pin both actions. **Owner:** security/automation, backlog. |
+| AUT-005 | Low | `ci.yml:41-42` — unauthenticated `curl -sSLf` to GitHub releases, no `--retry`, no retry budget (guardrail retry N=2) → transient network/rate-limit = spurious red on main, fixed only by manual re-run. Fail-closed is correct; the missing budget is the finding. | Two bare curls, job `timeout-minutes: 10` is the only backstop. | `curl --retry 2` or documented manual re-run policy. **Owner:** author, backlog. |
+| OPS-001 | Low | `README.md:401-405` (limitation 2) internally contradicts `README.md:88-90`: "a plain `helix start dev` keeps data across restarts" then "An instance started *without* `--disk` still runs `storage: memory`" — a plain start **is** without the flag; the second sentence means "config lacks `storage = "disk"`". Operator confusion, not data loss (safe direction). | Both passages read; live behavior confirmed correct (`helix status` → `storage: disk`), so this is wording only. | Reword to "an instance whose `helix.toml` lacks `storage = "disk"`". **Owner:** author, backlog. |
+| OPS-002 | Low | Rollback path not in the runbook and never rehearsed: revert-to-memory is documented only in `IMPLEMENTATION_PLAN.md:38-41` (assumption stated: in-memory data disposable); README has no revert line; no evidence of the reverse path being executed. | Plan rollback points vs README silence; recorded evidence covers forward direction only. | One README revert line + a single smoke of the reverse path. **Owner:** author, backlog. |
+| OPS-004 | Low | `scripts/bootstrap.ts:37-49` — persistence advisory fires **only** on `npm run bootstrap` and reads `helix.toml` by regex (config ≠ runtime storage mode): an operator running `npm run dev` alone never sees it; config/runtime drift unverifiable. **Design itself is correct for ops** — fail-open, never blocks automation, skips unreadable config (right call for a dev bootstrap; blocking it would break scripts). Currently dormant: `helix.toml:10` has `storage = "disk"` (verified). | Read the function; `package.json` wiring; live config. | Also emit from `dev` server startup. **Owner:** author, backlog. |
+| OPS-005 | Low | `README.md:424-427` (limitation 6) — stale cleanup recipe: "Restart Helix (data is in-memory anyway)" — false after P0.4; restart no longer wipes disk-backed demo rows. Second remedy (fresh `project`) still valid, so no dead end. | README limitation 6 vs `helix.toml storage = "disk"` + canary evidence. | Drop the restart remedy, keep "seed into a fresh project". **Owner:** author, backlog. |
+| OPS-006 | Low | `scripts/verify-env.ts` — no `SIGINT`/`SIGTERM` handler; `cleanup()` (lines 443-458) runs only via `try/finally`. Ctrl-C mid-run orphans child servers on 3199 until manual kill. Normal and error paths are fully covered (SIGTERM → 5 s → SIGKILL → 2 s per child, blocker listener closed, section A kills its server before B/C), and the next run's port-3199 preflight (line 274-280) detects leftovers with an actionable message — self-healing. | Read the full file; no `process.on` signal registration. | Signal handler → `cleanup()` then exit. **Owner:** author, backlog. |
+| OPS-007 | Low | `README.md:92-93` — "Scripts (from package.json): `bootstrap`, `dev`, `demo`, `verify`, `typecheck`" omits `verify-env` (added `bb335e2`) → docs drift. (Info: `verify-injection` has no npm script and runs via `npx tsx` — consistent everywhere it is cited: ci.yml:25, plan, CONTRIBUTING:54; no broken reference.) | README list vs `package.json:17-24`. | Refresh the script list. **Owner:** author, backlog. |
+
+**Severity roll-up:** 0 Critical, 0 High, 2 Medium (AUT-001, OPS-003), 9 Low. Per guardrails, Medium = conditional impact → conditional verdict; no Critical/High → nothing blocks this session.
+
+## Verified good (lens coverage a–i)
+
+- **(a) ci.yml line-by-line:** triggers gate every push **and** PR (main pushes gated directly → "green on main" measured); two parallel jobs, both must pass; `node-version: 20` satisfies `engines: ">=20.0.0"`; `package-lock.json` present (190 KB) → `npm ci` deterministic and `setup-node cache: npm` valid; no `env:`/secrets; `permissions: contents: read`; `timeout-minutes: 10` on both jobs; `fetch-depth: 0` present in `secret-scan` (ci.yml:33) so history-based `gitleaks detect --source=.` scans full history (correct flag pair for v8.30.1: `detect` = git-history mode; `--no-git` would be the working-tree mode); checksum logic correct — `grep <artifact> checksums | sha256sum --check -` fails closed under Actions' default `bash -e` (no-match → sha256sum exits 1); `gitleaks version` sanity check; fail-closed exit codes throughout.
+- **(b) verify-env gap:** confirmed NOT in CI → AUT-001 (Medium).
+- **(c) npm wiring:** `bootstrap`/`dev`/`demo`/`verify`/`verify-env`/`typecheck` all resolve to the right entrypoints; `verify-injection` runs via `npx tsx` consistently (Info → OPS-007).
+- **(d) Runbook executability:** `helix start --help` confirms **both** `--disk` ("on-disk storage backed by a local MinIO container") and `--persist` ("Persist the resolved port, storage, and image settings back to helix.toml") exist — README wording matches flag semantics nearly verbatim. `helix restart --help` confirms the command (no flags — restart relies on persisted config, consistent with README's "plain `helix start dev` keeps data"). `helix status` live: `dev (local): http://localhost:6969 - Up 13 minutes - storage: disk`. Docs claim wording matches evidence (canary `228cdf69`), except the OPS-001 ambiguity.
+- **(e) Rollback:** documented in plan rollback points, absent from runbook, untested → OPS-002.
+- **(f) Port ops:** reroute executable as written — `src/server.ts:521` reads `AGENT_MEMORY_PORT`/legacy, `scripts/verify.ts:27-30` reads `AGENT_MEMORY_URL`/legacy. Hint (`server.ts:508-516`) matches README:393-399 near-verbatim: `AGENT_MEMORY_PORT=3151 npm run dev`, `AGENT_MEMORY_URL=http://127.0.0.1:3151`, `NEVER kill`, `3111/3112/3113` — all four substrings asserted by verify-env section C (recorded 21/21). My live `curl :3151` → `{"status":"ok"}`.
+- **(g) Advisory:** non-blocking design accepted for ops (see OPS-004) — right trade for a dev-path warning; coverage is the finding, not the posture.
+- **(h) DR:** absent → OPS-003 (Medium, owner + post-P0 slot named).
+- **(i) Process hygiene / never-kill:** verify-env uses only 3199 + read-only 6969 TCP probe (header lines 45-50); cleanup covers normal/error paths (OPS-006 = signals only); `verify.ts` identity guard aborts before any write when the target isn't ours; server exits 1 with hint, never kills (`server.ts:528-531`); `demo` talks direct to Helix via `MemoryStore` (`demo.ts:11-17`) and never touches 3111; `verify-injection` binds ephemeral `listen(0)` (line 304) and expects-failure against `127.0.0.1:1` — never-kill coexistence honored by every script in the packet.
+
+## Residual risks + owner
+
+| Residual risk | Severity | Owner | Expiry / slot |
+|---|---|---|---|
+| REQ-P0-5/P0-6 evidence has no recurring gate (AUT-001) | Medium | orchestrator/author — **gate condition**: state gap in TEST_MATRIX + add to CONTRIBUTING bar now; CI job ticket | Gap stated: this gate; CI job: next lane |
+| No backup/restore for disk storage (OPS-003) | Medium | ops | P4.2/P4.4 backlog (post-P0 accepted) |
+| CI hygiene quartet AUT-002…005 (branch filter, artifact report, SHA-pin, curl retry) | Low | author | backlog, next CI touch |
+| Runbook drift + hygiene OPS-001/002/004/005/006/007 | Low | author | backlog, next README/script touch |
+| actionlint 0-error claim not personally re-run (binary not installed in this environment) | Low (note) | reviewer → orchestrator | Recorded actionlint evidence stands; GitHub itself rejects invalid workflow YAML on push |
+
+## Verdict Rationale
+
+⚠️ **CONDITIONAL.** The automation core for REQ-P0-2 is genuinely solid — least-privilege permissions, timeouts, deterministic install, correct full-history secret scan with checksum-verified binary, fail-closed everywhere — and I re-ran the load-bearing evidence green myself (typecheck 0, injection ALL PASS, gitleaks clean across the **final** tip including `8aba7b9`). Ops mechanics check out: the documented persistence flags exist exactly as written, the live instance is disk-backed, the reroute procedure is executable and asserted string-for-string, and never-kill coexistence is honored by every script. Two Mediums prevent an unconditional pass: (1) the acceptance evidence for REQ-P0-5/P0-6 is cited but gated nowhere — not CI, not the contributing bar (AUT-001); (2) the durability P0.4 just shipped has no recovery story (OPS-003). Both are conditional-impact, both have named owners and slots — acknowledge them as owned residuals (or remediate) and this gate closes. The nine Lows are backlog hygiene, none block ship.
+
+## Personal evidence (run by this reviewer, 2026-09-22)
+
+- Read both role checklists (`automation-review.md`, `ops-review.md`) before acting; packet read by reference only.
+- Line-by-line read of `.github/workflows/ci.yml` (48 lines), `package.json`, `TEST_MATRIX.md`, `ROADMAP.md` P0, `IMPLEMENTATION_PLAN.md`, `README.md`, `CONTRIBUTING.md`, `src/server.ts` (hint region), `scripts/verify-env.ts` (full 482 lines), `scripts/bootstrap.ts`, `scripts/verify.ts`, `src/demo.ts`, `scripts/verify-injection.ts` (port grep first), `helix.toml`.
+- `npm run typecheck` → **exit 0**.
+- `npx tsx scripts/verify-injection.ts` → **ALL PASS** (confirmed beforehand it binds only `listen(0)`, never 3111/3112/3113/3151).
+- `docker run --rm -v "$PWD":/repo:ro zricethezav/gitleaks:v8.30.1 detect --source=/repo --no-banner --redact` → **"25 commits scanned … no leaks found", exit 0**. Count reconciled: repo has 26 commits, 0 merges; gitleaks' counter reports actual−1; recorded "24" = scan at `1af2cde` (25 actual) per plan's "step 6 last, then 7" — my run extends clean coverage to the final tip.
+- `helix start --help` → `--disk` and `--persist` exist with README-matching semantics; `helix restart --help` → command exists; `helix status` → `storage: disk`, instance Up.
+- `curl :3151/agentmemory/livez` → `{"status":"ok"}`; read-only probe of :3111 (upstream) → not answering our route, **left untouched**.
+- `package-lock.json` present (190 KB); `git status` clean except untracked gate workspace; `actionlint` **not installed** (re-run impossible here).
+- **Not run, per rules:** `scripts/verify-env.ts`, any signal/kill, any `helix start/stop/restart`, any server start; ports 3111/3112/3113 never touched. Zero code/process changes; no commits.

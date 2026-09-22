@@ -20,6 +20,10 @@
  *     the raw Helix instance, which serves no /agentmemory/* route — posting
  *     there could never store anything. 3111 matches src/server.ts's default;
  *     override with AGENT_MEMORY_URL either way.)
+ *   - Legacy AGENTMEMORY_* names (URL / SECRET / PROJECT) are accepted as a
+ *     SILENT fallback (new name wins). Deliberately NO deprecation warning:
+ *     the zero-output rule above is absolute — this hook never prints
+ *     anything, ever.
  */
 import { randomUUID } from "node:crypto";
 
@@ -50,7 +54,9 @@ function observationFor(event, hook) {
 }
 
 function projectFor(hook) {
-  const override = process.env.AGENT_MEMORY_PROJECT;
+  // SILENT legacy fallback (AGENTMEMORY_PROJECT) — deliberate: hook contract
+  // is zero output, ever. New name wins when both are set.
+  const override = process.env.AGENT_MEMORY_PROJECT ?? process.env.AGENTMEMORY_PROJECT;
   if (typeof override === "string" && override.trim().length > 0) {
     const cleaned = clean(override, 200);
     if (cleaned.length > 0) return cleaned;
@@ -106,7 +112,9 @@ async function main() {
     origin: `hook:${event}`, // frozen origin format from contract §3
   };
 
-  const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
+  // SILENT legacy fallback (AGENTMEMORY_URL) — no warning, ever; the
+  // zero-output hook contract is absolute. New name wins when both are set.
+  const base = process.env.AGENT_MEMORY_URL ?? process.env.AGENTMEMORY_URL ?? "http://127.0.0.1:3111";
   let url;
   try {
     // URL API does the joining — no hand-built request strings, and the
@@ -117,7 +125,9 @@ async function main() {
   }
 
   const headers = { "content-type": "application/json" };
-  const secret = process.env.AGENT_MEMORY_SECRET;
+  // SILENT legacy fallback (AGENTMEMORY_SECRET) — new name wins; never warn,
+  // never log: the hook prints nothing, ever (contract §3).
+  const secret = process.env.AGENT_MEMORY_SECRET ?? process.env.AGENTMEMORY_SECRET;
   if (typeof secret === "string" && secret.length > 0) {
     headers.authorization = `Bearer ${secret}`; // same guard as REST, never logged
   }

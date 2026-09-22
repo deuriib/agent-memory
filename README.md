@@ -76,7 +76,7 @@ BM25-only path with the same degradation rule.
 Requires **Node 20+** and a running Helix dev instance (Docker/Podman):
 
 ```bash
-helix start dev                 # add --disk to persist data across restarts
+helix start dev --disk --persist   # durable default: persists storage mode into helix.toml
 
 npm install
 npm run bootstrap               # create the 7 indexes, poll until ready
@@ -84,6 +84,12 @@ npm run demo                    # seed 3 sessions, run keyword/semantic/hybrid s
 npm run dev                     # REST server on http://127.0.0.1:3111
 npm run verify                  # end-to-end verification against the running server
 ```
+
+`--disk --persist` writes `storage = "disk"` into `helix.toml`, and that key —
+not the flag — is what decides persistence. This repo's `helix.toml` already
+sets it, so a plain `helix start dev` keeps data across restarts. A project
+whose `helix.toml` has no `storage = "disk"` key runs memory storage, and
+every restart wipes it.
 
 Scripts (from `package.json`): `bootstrap`, `dev`, `demo`, `verify`,
 `typecheck`.
@@ -366,26 +372,67 @@ The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
 environment variable.
 
+**Legacy names.** `AGENTMEMORY_SECRET`, `AGENTMEMORY_PORT`,
+`AGENTMEMORY_URL`, `AGENTMEMORY_HOST`, and `AGENTMEMORY_PROJECT` are accepted
+as **deprecated fallbacks** (the upstream spelling). When both spellings are
+set to non-empty values, the `AGENT_MEMORY_*` name wins. The servers warn on
+stderr naming the legacy variable — **never printing its value**; the capture
+hooks fall back silently to keep their zero-output guarantee.
+
+Two migration traps:
+
+- **Both set to different values (split-brain):** the new name wins with **no
+  warning** — the stale legacy value is silently ignored, and a client still
+  presenting the legacy secret then gets `401` with **no server-side signal**
+  that its secret is out of date. Set exactly one spelling.
+- **Never set a new name to an empty string** — unset it instead. Empty and
+  unset mean different things on different surfaces: the server treats
+  `AGENT_MEMORY_SECRET=""` as unset (falls back to the legacy name), while the
+  capture hooks treat any set value as authoritative — so `""` means *no
+  bearer sent*, every capture `401`s, and their zero-output guarantee swallows
+  it.
+
 ## Known limitations
 
 Stated plainly — these are real, not hypothetical:
 
-1. **Port conflict with upstream agentmemory.** Ports `3111/3112/3113` may
-   already be held by the real upstream `agentmemory`
-   (`npx` → `node …/bin/agentmemory` → `iii`). We keep `3111` as our default
-   for drop-in parity, but when upstream is running, start ours elsewhere and
-   point clients at it:
+1. **Port conflict with upstream agentmemory.** Port `3111` is **our default**,
+   chosen deliberately for drop-in parity with upstream. Ports
+   `3111/3112/3113` may be held by the real upstream `agentmemory`
+   (`npx` → `node …/bin/agentmemory` → `iii`; verified live on this machine).
+   When `3111` is occupied, start ours on `3151` and point **every HTTP
+   client — hooks, plugin, and `verify`** — at it via
+   `AGENT_MEMORY_URL=http://127.0.0.1:3151` (the MCP server needs no reroute:
+   it is stdio and talks to HelixDB directly via `HELIX_URL`):
 
    ```bash
    AGENT_MEMORY_PORT=3151 npm run dev
    AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify
    ```
 
-   **Never kill the user's upstream instance.**
+   Starting ours on `3151` does **not** move the clients: hooks, the plugin,
+   and `verify` still default to `http://127.0.0.1:3111` — which upstream may
+   hold — so **every client process must set
+   `AGENT_MEMORY_URL=http://127.0.0.1:3151` explicitly**. Skip it and captures
+   and recalls are silently aimed at whatever occupies `3111`.
 
-2. **Development runs against a Helix instance with `storage: memory`.**
-   Restarting Helix loses all data. Use `helix start dev --disk` when you need
-   persistence.
+   The server prints this exact reroute hint on `EADDRINUSE`.
+   **Never kill or displace the upstream instance.**
+
+2. **Persistence is the default; in-memory is opt-in.** Persistence is decided
+   by the `storage = "disk"` key in `helix.toml`, not by any start flag: the
+   Quick start's `--disk --persist` is what writes that key, and this repo's
+   `helix.toml` already carries it — so a plain `helix start dev` keeps data
+   across restarts. A project whose `helix.toml` lacks the key runs memory
+   storage and loses everything on restart.
+
+   **Durability & recovery.** Data survives `helix restart dev` on the Docker
+   volume while `storage = "disk"` is set. After a **host reboot** the
+   container does **not** auto-start (no restart policy is configured) — run
+   `helix start dev` to bring it back. The failure mode is symptom-free:
+   captures keep exiting `0` silently and auto-recall is simply skipped, so
+   the memory stack goes dark with no error anywhere. If recall suddenly
+   returns nothing, check `helix status` first.
 
 3. **Listings are ordered by node `$id` descending (insertion order), not by
    timestamp.** The engine cannot correctly sort `dateTime` properties —
@@ -406,8 +453,11 @@ Stated plainly — these are real, not hypothetical:
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
-   duplicate rows in later results. Restart Helix (data is in-memory anyway)
-   or seed into a fresh `project` for a clean demonstration.
+   duplicate rows in later results. Storage is durable by default
+   (`storage = "disk"`), so a restart no longer clears them — seed into a
+   fresh `project` for a clean demonstration. Data persists now; what is still
+   pending is the P4 hardening story (backup/DR, data-dir control), not an
+   in-memory reset.
 
 7. **Vector hits carry `distance`, BM25 hits carry `score`.** Vector rows are
    projected as `$distance` (cosine, lower = closer), so a raw vector hit's
@@ -448,6 +498,16 @@ All run clean:
   malformed stdin, and with an unsupported event; valid observation stored when
   up; all 3 events work; only the tool NAME is stored (planted path
   `/tmp/secret-should-not-be-captured.txt` confirmed NOT stored).
+
+## Contributing & security
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — prerequisites, exact dev-setup
+  commands, Conventional Commits, the PR/evidence bar, strict-TS rules, and
+  the never-kill-upstream coexistence rule.
+- [`SECURITY.md`](SECURITY.md) — supported versions, private reporting via
+  GitHub Security Advisories (never a public issue), scope, the
+  `AGENT_MEMORY_SECRET` policy, and response expectations.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
 
 ## Specification
 

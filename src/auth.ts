@@ -5,14 +5,22 @@
  * every surface except `livez` requires `Authorization: Bearer <secret>`;
  * mismatch -> reject. Unset/empty -> open (local-dev default).
  *
+ * Migration (REQ-P0-5): the legacy `AGENTMEMORY_SECRET` name is accepted as
+ * a fallback via `readLegacyEnv` — the new name always wins, and using the
+ * legacy name emits ONE name-only stderr warning per process.
+ *
  * The secret value is never logged, echoed, or included in error text.
  */
 import { timingSafeEqual } from "node:crypto";
+import { readLegacyEnv } from "./env.js";
 
-/** Non-empty secret arms the guard; unset or empty disarms it. */
+/**
+ * Non-empty secret arms the guard; unset or empty disarms it (semantics
+ * unchanged — `readLegacyEnv` only ever returns a non-empty value or
+ * `undefined`, and never prints the value).
+ */
 export function secretFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const value = env["AGENT_MEMORY_SECRET"];
-  return value !== undefined && value.length > 0 ? value : undefined;
+  return readLegacyEnv("AGENT_MEMORY_SECRET", "AGENTMEMORY_SECRET", env);
 }
 
 /** Constant-time comparison of the presented bearer against `secret`. */

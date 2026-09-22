@@ -1,0 +1,48 @@
+name: CI
+
+# REQ-P0-2 / T-002: typecheck + verify-injection + pinned secret scan on every push/PR.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.4.0
+      - uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # Local-only test HTTP server; needs no Helix instance, no network beyond localhost.
+      # (npm run verify is deliberately NOT run here: it requires a live server + Helix.)
+      - run: npx tsx scripts/verify-injection.ts
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4.4.0
+        with:
+          fetch-depth: 0 # full history for gitleaks
+      # Pinned binary instead of gitleaks/gitleaks-action@v2: no GITLEAKS_LICENSE
+      # needed (license-free for personal repos), exact version, checksum-verified.
+      - name: Install gitleaks v8.30.1 (pinned)
+        run: |
+          VERSION=8.30.1
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}"
+          ARTIFACT="gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -sSLf -o "${ARTIFACT}" "${BASE}/${ARTIFACT}"
+          curl -sSLf -o "gitleaks_${VERSION}_checksums.txt" "${BASE}/gitleaks_${VERSION}_checksums.txt"
+          grep "${ARTIFACT}" "gitleaks_${VERSION}_checksums.txt" | sha256sum --check -
+          tar -xzf "${ARTIFACT}" gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      # Default rules over the full git history; redacts findings in logs.
+      - run: gitleaks detect --source=. --no-banner --redact

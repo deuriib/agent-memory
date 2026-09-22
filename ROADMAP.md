@@ -41,11 +41,11 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | None | Missing |
-| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `scripts/verify-injection.ts` (70 assertions) | Verified — far short |
-| Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | README, AGENTS, CONTRACT; **no LICENSE** | Verified — incomplete |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (102) + `verify-injection` (73) + `verify-env` (21), plus GitHub Actions CI (typecheck, injection, gitleaks) | Verified — CI present; no unit suite |
+| Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | LICENSE, SECURITY, CONTRIBUTING, CHANGELOG (plus README, AGENTS, CONTRACT); no CODE_OF_CONDUCT / GOVERNANCE / MAINTAINERS / DESIGN | Verified — incomplete (P4.7) |
 | Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
-| Persistence | On-disk data dir, survives restart | Helix dev runs `storage: memory` — **data lost on restart** | Verified defect |
+| Persistence | On-disk data dir, survives restart | Helix dev runs `storage = "disk"` (set in `helix.toml`) — data survives restarts; host-reboot availability in README *Durability & recovery* | Verified (fixed by P0.4) |
 | i18n | 12 README languages | 1 | Missing |
 
 ### 1.2 What we do better today
@@ -70,12 +70,12 @@ passes, not when its tickets are "mostly" closed.
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P0.1 | Add a license | `LICENSE` present; GitHub reports the correct license |
-| P0.2 | CI workflow | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` |
-| P0.3 | SECURITY.md, CONTRIBUTING.md, CHANGELOG.md | Three files present, linked from README |
-| P0.4 | **Fix persistence** | `helix start dev --disk` documented *and* the default dev path no longer silently loses data; a save survives a Helix restart |
-| P0.5 | **Resolve env migration** | Servers started under the old `AGENTMEMORY_*` names are migrated to `AGENT_MEMORY_*`; a restart cannot silently drop the bearer secret or fall back to the upstream-occupied port |
-| P0.6 | Resolve the 3111/3121 ownership conflict | README states definitively which port is ours and how to point the plugin at it |
+| P0.1 | Add a license ✅ done (pre-existing at lane start, 2026-09-22) | `LICENSE` present; GitHub reports the correct license |
+| P0.2 | CI workflow ✅ done (2026-09-22) | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` |
+| P0.3 | SECURITY.md, CONTRIBUTING.md, CHANGELOG.md ✅ done (2026-09-22) | Three files present, linked from README |
+| P0.4 | **Fix persistence** ✅ done (2026-09-22) | `helix start dev --disk` documented *and* the default dev path no longer silently loses data; a save survives a Helix restart |
+| P0.5 | **Resolve env migration** ✅ done (2026-09-22) | Servers started under the old `AGENTMEMORY_*` names are migrated to `AGENT_MEMORY_*`; a restart cannot silently drop the bearer secret or fall back to the upstream-occupied port |
+| P0.6 | Resolve the port-ownership conflict — `3111` default / `3151` reroute ✅ done (2026-09-22) | README states definitively which port is ours and how to point the plugin at it |
 
 ### P1 — Recall quality & lifecycle
 
