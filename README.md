@@ -7,7 +7,7 @@ provides **graph + vector + full-text (BM25) + temporal** storage with
 traversal-scoped prefiltering, so hybrid retrieval (vector, keyword, concept
 graph) lives in a single query layer — no external search service, no API keys,
 no model downloads. It ships a dependency-light REST server, a stdio MCP server
-with 7 tools, and a zero-dependency capture hook, all backed by the same store.
+with 11 tools, and a zero-dependency capture hook, all backed by the same store.
 
 The frozen spec this repo implements is [`docs/CONTRACT.md`](docs/CONTRACT.md).
 
@@ -102,9 +102,15 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 | GET | `/agentmemory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
 | GET | `/agentmemory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
 | POST | `/agentmemory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
+| POST | `/agentmemory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
+| POST | `/agentmemory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
+| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (strict — no `origin`) | 201 `{id, sessionId, project, concepts}` / 400 |
+| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 400 / 404 |
 
 Defaults: `project="default"`, `limit=10`, `importance=0.5`, `origin="rest"`,
-`sessionId` auto-generated (`crypto.randomUUID()`) when absent.
+`sessionId` auto-generated (`crypto.randomUUID()`) when absent. `lesson` is
+strict: sending `origin` → 400, and the row is always stored with
+`origin="lesson"`.
 
 ### Examples
 
@@ -185,11 +191,29 @@ curl -s -X POST http://127.0.0.1:3111/agentmemory/forget \
 # {"forgotten":true}   (404 {"error":"not_found"} when the id does not exist)
 ```
 
+**lesson → governed delete** (P3.1 — reason is required, receipt is auditable):
+
+```bash
+# store a lesson (strict body: origin is rejected; row gets origin="lesson")
+curl -s -X POST http://127.0.0.1:3111/agentmemory/lesson \
+  -H 'content-type: application/json' \
+  -d '{"content":"Always pass an explicit reason on deletes: audit trails depend on it.","concepts":["governance"],"project":"readme","sessionId":"readme-example"}'
+# 201
+# {"id":"…","sessionId":"readme-example","project":"readme","concepts":["governance"]}
+
+# governed delete with the required reason
+curl -s -X POST http://127.0.0.1:3111/agentmemory/delete \
+  -H 'content-type: application/json' \
+  -d '{"memoryId":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","reason":"superseded by docs/CONTRACT.md"}'
+# {"deleted":true,"receipt":{"memoryId":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","deletedAt":"2026-09-22T13:31:02.114Z"}}
+# 400 when reason is missing; 404 {"error":"not_found"} for an unknown id
+```
+
 ## MCP server
 
 `src/mcp.ts` runs over **stdio** with the official `@modelcontextprotocol/sdk`,
 backed by the same `MemoryStore` as the REST server. Handshake exposes exactly
-**7 tools**:
+**11 tools**:
 
 | Tool | Purpose |
 |---|---|
@@ -200,6 +224,10 @@ backed by the same `MemoryStore` as the REST server. Handshake exposes exactly
 | `memory_session_memories` | List memories of one `sessionId` |
 | `memory_forget` | Hard-delete one memory by id |
 | `memory_health` | Liveness + memory/session counts |
+| `memory_recap` | Text recap of one session's (or the project's) recent memories |
+| `memory_handoff` | Project handoff digest for the next agent session |
+| `memory_lesson` | Persist a lesson (strict body — stored with `origin="lesson"`) |
+| `memory_delete` | Governed delete: `memoryId` + required `reason`, returns a receipt |
 
 ### OpenCode
 
@@ -357,8 +385,7 @@ Stated plainly — these are real, not hypothetical:
 
 5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): decay, 4-tier
    consolidation, LLM auto-compress, viewer UI, session replay, JSONL import,
-   multi-agent adapters (20 upstream), the full 54-tool MCP surface, and
-   lessons/recap/handoff routes.
+   multi-agent adapters (20 upstream), and the full 54-tool MCP surface.
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
@@ -377,10 +404,12 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`61 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`101 passed, 0 failed` →
   `VERIFY PASS`** (health → remember with concepts → BM25 hits → smart-search
   hits → sessions list → session memories → forget → gone → counts reflect it,
-  plus embedder determinism, defaults, and boundary validation).
+  plus embedder determinism, defaults, boundary validation, and the P3.1
+  round-trip: lesson → search hits with `origin:"lesson"` → recap → handoff →
+  governed delete with receipt → gone → second delete 404 → counts).
 - `npm run bootstrap` — `bootstrapIndexes: OK (7 indexes ensured)` then
   `READY — searchByText responding`.
 - `npm run demo` — `demo OK`: BM25 hits at scores 2.54 / 1.59 / 0.88, vector
@@ -390,7 +419,7 @@ All run clean:
 - Auth matrix: `livez` exempt 200; no header 401; wrong bearer 401; correct
   bearer 200/201; 401 body `{"error":"unauthorized"}`; secret appears 0 times
   in server logs; auth off when `AGENT_MEMORY_SECRET` is unset.
-- MCP stdio handshake → exactly the 7 tools listed above; live `tools/call`
+- MCP stdio handshake → exactly the 11 tools listed above; live `tools/call`
   round-trips confirmed.
 - Hook guarantees: exit code 0 and zero output with the server DOWN, with
   malformed stdin, and with an unsupported event; valid observation stored when
