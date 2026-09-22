@@ -196,6 +196,29 @@ const sessionsEnvelopeSchema = z.object({
 
 const memoriesEnvelopeSchema = z.object({ memories: z.array(z.object(memoryRowShape)) });
 
+/* P3.1 frozen shapes (contract §3): recap, handoff, lesson 201 reuses
+ * rememberResultSchema ({id, sessionId, project, concepts}), delete receipt. */
+const recapEnvelopeSchema = z.object({
+  recap: z.string(),
+  sessionId: z.string().nullable(),
+  count: z.number(),
+  signals: z.array(z.string()),
+});
+
+const handoffEnvelopeSchema = z.object({
+  handoff: z.string(),
+  sessionId: z.string().nullable(),
+  counts: z.object({ memories: z.number(), sessions: z.number() }),
+  signals: z.array(z.string()),
+});
+
+const deleteResultSchema = z.object({
+  deleted: z.literal(true),
+  receipt: z.object({ memoryId: z.string(), deletedAt: z.string().min(1) }),
+});
+
+const notFoundSchema = z.object({ error: z.literal("not_found") });
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /* ------------------------------------------------------------------ */
@@ -436,6 +459,168 @@ async function main(): Promise<void> {
     console.log(`      (415 probe error: ${logSafeNote(err)})`);
   }
   check("boundary: non-JSON content-type -> 415", bad5Status === 415, `got ${bad5Status}`);
+
+  /* N. P3.1 parity — lesson → search → recap → handoff → governed delete →
+   * gone, each round-tripped against the REST contract (REQ-P31-4).
+   *
+   * Runs on a SECOND fresh, unique project so the count math already asserted
+   * in K (3 memories / 4 sessions on `project`) is never disturbed; the
+   * run-unique `nonce` is reused, and the separate tenant scope keeps this
+   * section isolated from the earlier one. MCP mirrors (memory_recap,
+   * memory_handoff, memory_lesson, memory_delete) are NOT asserted here —
+   * they are REQ-P31-2 (T-002) evidence in TEST_MATRIX.md; this script stays
+   * REST-only and dependency-free. */
+  const p31project = `verify-p31-${randomUUID().slice(0, 8)}`;
+  const p31sid = `verify-p31-${randomUUID().slice(0, 8)}`;
+  const p31content = `P3.1 governed lesson round-trip: strict lesson payloads and audited deletes ${nonce}`;
+
+  /* N1. lesson → 201 with echoed sessionId / project / concepts, uuid id. */
+  const les = await call("POST", "/agentmemory/lesson", undefined, {
+    content: p31content,
+    concepts: ["governance", "p31"],
+    project: p31project,
+    sessionId: p31sid,
+    importance: 0.9,
+  });
+  check("P3.1 lesson: status 201", les.status === 201, `got ${les.status}; body=${brief(les.body)}`);
+  const rL = shape("P3.1 lesson: {id, sessionId, project, concepts}", les.body, rememberResultSchema);
+  if (rL !== undefined) {
+    check("P3.1 lesson: echoes sessionId", rL.sessionId === p31sid, rL.sessionId);
+    check("P3.1 lesson: echoes project", rL.project === p31project, rL.project);
+    check(
+      "P3.1 lesson: echoes concepts",
+      JSON.stringify(rL.concepts) === JSON.stringify(["governance", "p31"]),
+      JSON.stringify(rL.concepts),
+    );
+    check("P3.1 lesson: id is a uuid", UUID_RE.test(rL.id), rL.id);
+  }
+
+  /* N2. lesson body is STRICT — `origin` is server-owned and must be
+   * rejected outright (400), not silently accepted. */
+  const lesOrigin = await call("POST", "/agentmemory/lesson", undefined, {
+    content: p31content,
+    project: p31project,
+    origin: "hook:Stop",
+  });
+  check(
+    "P3.1 lesson: extra origin key -> 400",
+    lesOrigin.status === 400,
+    `got ${lesOrigin.status}; body=${brief(lesOrigin.body)}`,
+  );
+
+  if (rL === undefined) {
+    throw new Error("aborting: P3.1 lesson step failed (see FAIL lines above)");
+  }
+
+  /* N3. bm25 search for the nonce finds the lesson row with origin "lesson". */
+  const ps1 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project: p31project, limit: 10 });
+  check("P3.1 search: status 200", ps1.status === 200, `got ${ps1.status}; body=${brief(ps1.body)}`);
+  const pbm = shape("P3.1 search: {mode:'bm25', results, signals}", ps1.body, bm25EnvelopeSchema);
+  if (pbm !== undefined) {
+    const lessonRow = pbm.results.find((row) => row.memoryId === rL.id);
+    check("P3.1 search: finds the lesson row", lessonRow !== undefined, `hits=${pbm.results.length}`);
+    check("P3.1 search: lesson row origin === 'lesson'", lessonRow?.origin === "lesson", lessonRow?.origin);
+  }
+
+  /* N4. recap of the lesson's session echoes the sessionId, count >= 1, and
+   * the recap string contains the exact lesson content. */
+  const rc1 = await call("POST", "/agentmemory/recap", undefined, { sessionId: p31sid, project: p31project });
+  check("P3.1 recap: status 200", rc1.status === 200, `got ${rc1.status}; body=${brief(rc1.body)}`);
+  const rcp1 = shape("P3.1 recap: {recap, sessionId, count, signals}", rc1.body, recapEnvelopeSchema);
+  if (rcp1 !== undefined) {
+    check("P3.1 recap: echoes sessionId", rcp1.sessionId === p31sid, String(rcp1.sessionId));
+    check("P3.1 recap: count >= 1", rcp1.count >= 1, String(rcp1.count));
+    check("P3.1 recap: contains the lesson content", rcp1.recap.includes(p31content));
+  }
+
+  /* N5. project-wide handoff: typed counts, frozen first line, and the
+   * lesson content (or its session line) present in the digest. */
+  const hd1 = await call("POST", "/agentmemory/handoff", undefined, { project: p31project });
+  check("P3.1 handoff: status 200", hd1.status === 200, `got ${hd1.status}; body=${brief(hd1.body)}`);
+  const hnd1 = shape("P3.1 handoff: {handoff, sessionId, counts, signals}", hd1.body, handoffEnvelopeSchema);
+  if (hnd1 !== undefined) {
+    check(
+      "P3.1 handoff: first line project=<project> memories=<N> sessions=<M> recent:",
+      hnd1.handoff.startsWith(`project=${p31project} memories=`),
+      hnd1.handoff.slice(0, 80),
+    );
+    check("P3.1 handoff: counts.memories >= 1", hnd1.counts.memories >= 1, String(hnd1.counts.memories));
+    check(
+      "P3.1 handoff: contains lesson content or its sessionId line",
+      hnd1.handoff.includes(p31content) || hnd1.handoff.includes(p31sid),
+    );
+  }
+
+  /* N6. health baseline before the delete — exactly 1 memory / 1 session,
+   * which also proves the rejected origin-key lesson (N2) stored nothing. */
+  const hBres = await call("GET", "/agentmemory/health", { project: p31project });
+  const hB = shape("P3.1 health before delete: envelope", hBres.body, healthEnvelopeSchema);
+  check("P3.1 health: 1 memory before delete", hB?.counts.memories === 1, `got ${hB?.counts.memories}`);
+  check("P3.1 health: 1 session before delete", hB?.counts.sessions === 1, `got ${hB?.counts.sessions}`);
+
+  /* N7. governed delete with the required reason → auditable receipt. */
+  const del1 = await call("POST", "/agentmemory/delete", undefined, {
+    memoryId: rL.id,
+    reason: "p3.1 round-trip test",
+  });
+  check("P3.1 delete: status 200", del1.status === 200, `got ${del1.status}; body=${brief(del1.body)}`);
+  const delBody = shape(
+    "P3.1 delete: {deleted:true, receipt:{memoryId, deletedAt}}",
+    del1.body,
+    deleteResultSchema,
+  );
+  if (delBody !== undefined) {
+    check("P3.1 delete: receipt.memoryId matches", delBody.receipt.memoryId === rL.id, delBody.receipt.memoryId);
+    check(
+      "P3.1 delete: receipt.deletedAt is a non-empty string",
+      delBody.receipt.deletedAt.length > 0,
+      delBody.receipt.deletedAt,
+    );
+  }
+
+  /* N8. gone — five independent proofs the row is really gone. */
+  const ps2 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project: p31project, limit: 10 });
+  const pbm2 = shape("P3.1 gone: bm25 envelope after delete", ps2.body, bm25EnvelopeSchema);
+  check(
+    "P3.1 gone: bm25 no longer returns the lesson row",
+    pbm2 !== undefined && !pbm2.results.some((row) => row.memoryId === rL.id),
+    pbm2 === undefined ? "no envelope" : `got ${pbm2.results.length} rows`,
+  );
+
+  const hAres = await call("GET", "/agentmemory/health", { project: p31project });
+  const hA = shape("P3.1 health after delete: envelope", hAres.body, healthEnvelopeSchema);
+  check(
+    "P3.1 health: memories dropped to 0 after delete",
+    hA?.counts.memories === 0,
+    `got ${hA?.counts.memories}`,
+  );
+
+  const del2 = await call("POST", "/agentmemory/delete", undefined, { memoryId: rL.id, reason: "repeat delete" });
+  check(
+    "P3.1 delete: second delete of same id -> 404",
+    del2.status === 404,
+    `got ${del2.status}; body=${brief(del2.body)}`,
+  );
+  shape("P3.1 delete: 404 body is {error:'not_found'}", del2.body, notFoundSchema);
+
+  const del3 = await call("POST", "/agentmemory/delete", undefined, { memoryId: rL.id });
+  check("P3.1 delete: missing reason -> 400", del3.status === 400, `got ${del3.status}; body=${brief(del3.body)}`);
+
+  const del4 = await call("POST", "/agentmemory/delete", undefined, {
+    memoryId: randomUUID(),
+    reason: "unknown id probe",
+  });
+  check("P3.1 delete: unknown memoryId -> 404", del4.status === 404, `got ${del4.status}; body=${brief(del4.body)}`);
+  shape("P3.1 delete: unknown-id 404 body is {error:'not_found'}", del4.body, notFoundSchema);
+
+  const rc2 = await call("POST", "/agentmemory/recap", undefined, { sessionId: p31sid, project: p31project });
+  check("P3.1 recap after delete: status 200", rc2.status === 200, `got ${rc2.status}; body=${brief(rc2.body)}`);
+  const rcp2 = shape("P3.1 recap after delete: envelope", rc2.body, recapEnvelopeSchema);
+  check(
+    "P3.1 recap after delete: count 0 and lesson content gone",
+    rcp2 !== undefined && rcp2.count === 0 && !rcp2.recap.includes(p31content),
+    rcp2 === undefined ? "no envelope" : `count=${rcp2.count}`,
+  );
 
   /* M. Summary. */
   console.log(`\n${passed} passed, ${failures.length} failed`);
