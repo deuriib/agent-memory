@@ -11,13 +11,13 @@
 | Artifact | Location / Evidence | Status |
 |----------|---------------------|--------|
 | REQ-P0-1 — license | `LICENSE` (Apache-2.0) + `package.json` `"license": "Apache-2.0"` at `origin/main`; commit `44914e0` | done |
-| REQ-P0-2 — CI workflow | `.github/workflows/ci.yml` at `origin/main` (typecheck + verify-injection + pinned gitleaks v8.30.1); runs `35781376642`, `35781958949`, `35784838135`, `35786040704` all `conclusion=success`; `docs/specs/40_workspace/quality-gate/P0/evidence/actionlint.log` (tracked at `edd07e5`, reproducible cmd + `exit=0`); gitleaks evidence: fresh docker v8.30.1 scan `no leaks found, exit 0` (`P0/quality-assurance.md` §QA-03 clearance) + CI `secret-scan` job success | done |
+| REQ-P0-2 — CI workflow | `.github/workflows/ci.yml` at `origin/main` (typecheck + verify-injection + pinned gitleaks v8.30.1); runs `35781376642`, `35781958949`, `35784838135`, `35786040704` all `conclusion=success`; `docs/specs/50_archive/P0/evidence/actionlint.log` (tracked at `edd07e5`, reproducible cmd + `exit=0`); gitleaks evidence: fresh docker v8.30.1 scan `no leaks found, exit 0` (`P0/quality-assurance.md` §QA-03 clearance) + CI `secret-scan` job success | done |
 | REQ-P0-3 — governance docs | `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md` at `origin/main`, linked from README `## Contributing & security` (`README.md:504,507,510` → files resolve); commit `7caa14d` | done |
-| REQ-P0-4 — persistence | `docs/specs/40_workspace/quality-gate/P0/evidence/p0-4-restart-canary.log` (tracked at `edd07e5`; token `p04canary1790108269`, BM25 hit attempt 1, `RESULT: PASS`, `storage: disk` both sides); `helix.toml:10 storage = "disk"`; bootstrap advisory `scripts/bootstrap.ts:40-42` | done |
+| REQ-P0-4 — persistence | `docs/specs/50_archive/P0/evidence/p0-4-restart-canary.log` (tracked at `edd07e5`; token `p04canary1790108269`, BM25 hit attempt 1, `RESULT: PASS`, `storage: disk` both sides); `helix.toml:10 storage = "disk"`; bootstrap advisory `scripts/bootstrap.ts:40-42` | done |
 | REQ-P0-5 — env migration | commit `bb335e2`; `scripts/verify-env.ts` tracked at `origin/main`; `TEST_MATRIX.md` T-005 `VERIFY PASS 21/21 (2026-09-22)`; static reconciliation 19 sites + loop×3 = 21 (`P0/quality-assurance.md`); refutation failed (`P0/review-refuter.md` REQ-P0-5 row) | done |
 | REQ-P0-6 — port ownership | commit `1af2cde`; reroute hint `src/server.ts:497-528` (`AGENT_MEMORY_PORT=3151`, `NEVER kill`, `3111/3112/3113`); verify-env section C green recorded (`TEST_MATRIX.md` T-006); README `## Known limitations` #1 (`README.md:399-416`) states ownership definitively; reviewer trace + live `curl :3151` (`P0/automation-reviewer.md` §f) | done |
-| Gate record | `docs/specs/40_workspace/quality-gate/P0/GATE_REPORT.md` — **OPEN** (CLOSED → CONDITIONAL → OPEN; all 15 conditions closed; both ❌ verdicts cleared on scoped recheck); Gate Keeper tick folded into this verify-handoff under the recorded solo-repo default | done |
-| Waivers | `docs/specs/40_workspace/quality-gate/P0/WAIVERS-P0.md` — W1..W6, three-block text each, signed repo owner + orchestrator, expiry 2026-12-21 / named milestone | done |
+| Gate record | `docs/specs/50_archive/P0/GATE_REPORT.md` — **OPEN** (CLOSED → CONDITIONAL → OPEN; all 15 conditions closed; both ❌ verdicts cleared on scoped recheck); Gate Keeper tick folded into this verify-handoff under the recorded solo-repo default | done |
+| Waivers | `docs/specs/50_archive/P0/WAIVERS-P0.md` — W1..W6, three-block text each, signed repo owner + orchestrator, expiry 2026-12-21 / named milestone | done |
 | CI runs | GitHub Actions runs 35781376642 (PR #1), 35781958949 (PR #2), 35784838135 (PR #3), 35786040704 (PR #4) — all `conclusion=success` (verified via `gh run view` this session) | done |
 | Docs set | `README.md` (persistence, traps, reroute, durability, limitations), `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `ROADMAP.md` P0 ticks, `IMPLEMENTATION_PLAN.md` gates, `TEST_MATRIX.md` T-001..T-006, nine reviewer artifacts in `P0/` | done |
 | Release notes + P0 changelog entry | `docs/specs/30_delivery/RELEASE_NOTES.md` draft + `[Unreleased]` P0 entry in `CHANGELOG.md` | pending (ship-release mandate — see Blockers) |
@@ -56,7 +56,7 @@
 
 ### Documentation
 
-- [x] **API docs / domain artifact filed** — no route/tool change in P0 (`docs/CONTRACT.md` untouched, correct); domain artifacts filed at agreed location `docs/specs/40_workspace/quality-gate/P0/` (gate + 9 reviews + waivers + evidence logs).
+- [x] **API docs / domain artifact filed** — no route/tool change in P0 (`docs/CONTRACT.md` untouched, correct); domain artifacts filed at agreed location `docs/specs/50_archive/P0/` (gate + 9 reviews + waivers + evidence logs).
 - [~] **Changelog entry** — **pending at ship-release, owner: ship-release**: `CHANGELOG.md` `[Unreleased]` empty; no P0 entry yet. Justification for not FAILing here: chain contract assigns changelog/release-notes to ship-release (precedent v0.2.0, "ship-release step 3"); user-facing docs are updated. Surfaced in Next Agent — not silently skipped.
 - [x] **ADR if architecture contract changed** — N/A: no public API, data-model, or cross-cutting contract change (license/CI/docs/persistence-config/env-fallback/port-statement); `docs/CONTRACT.md` unchanged by design.
 
@@ -87,7 +87,7 @@
 
 What it needs:
 1. This `HANDOFF.md` (canonical singleton, Status: complete).
-2. `docs/specs/40_workspace/quality-gate/P0/GATE_REPORT.md` — **OPEN** (sign-off note: Gate Keeper tick folded into this verify-handoff under the recorded solo-repo default; conditions satisfied).
-3. `docs/specs/40_workspace/quality-gate/P0/WAIVERS-P0.md` — W1..W6 with owners/expiries for release-notes disclosure.
+2. `docs/specs/50_archive/P0/GATE_REPORT.md` — **OPEN** (sign-off note: Gate Keeper tick folded into this verify-handoff under the recorded solo-repo default; conditions satisfied).
+3. `docs/specs/50_archive/P0/WAIVERS-P0.md` — W1..W6 with owners/expiries for release-notes disclosure.
 4. RELEASE_NOTES draft (`docs/specs/30_delivery/RELEASE_NOTES.md`) + add the P0 entry under `CHANGELOG.md` `[Unreleased]` (open item 1 above).
 5. Evidence pointers: `TEST_MATRIX.md`, `evidence/*.log`, the four green CI run IDs.

@@ -4,7 +4,7 @@
 
 | Version | Supported |
 |---|---|
-| `v0.2.x` (current line) | ✅ yes |
+| `v0.3.x` (current line) | ✅ yes |
 | `< v0.2` | ❌ no |
 
 Only the current release line is supported. Older versions receive no security
