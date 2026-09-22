@@ -370,6 +370,13 @@ The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
 environment variable.
 
+**Legacy names.** `AGENTMEMORY_SECRET`, `AGENTMEMORY_PORT`,
+`AGENTMEMORY_URL`, `AGENTMEMORY_HOST`, and `AGENTMEMORY_PROJECT` are accepted
+as **deprecated fallbacks** (the upstream spelling). When both spellings are
+set, the `AGENT_MEMORY_*` name wins. The servers warn on stderr naming the
+legacy variable — **never printing its value**; the capture hooks fall back
+silently to keep their zero-output guarantee.
+
 ## Known limitations
 
 Stated plainly — these are real, not hypothetical:

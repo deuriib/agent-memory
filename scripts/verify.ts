@@ -12,7 +12,10 @@
  * target does not answer as our P3.1 server. Uses a unique
  * project per run so counts are isolated from demo data and re-runs stay
  * clean. Attaches Authorization automatically when AGENT_MEMORY_SECRET is
- * set in this shell (same env as the server).
+ * set in this shell (same env as the server). Legacy AGENTMEMORY_URL /
+ * AGENTMEMORY_SECRET are accepted as a SILENT fallback (new name wins); no
+ * stderr note is emitted — the CLI keeps its output machine-clean and the
+ * server itself carries the one-time, name-only deprecation warning.
  *
  * Exit 0 only when every assertion passes.
  */
@@ -21,9 +24,10 @@ import { z } from "zod";
 import { embed } from "../src/embed.js";
 import { logSafeNote } from "../src/errors.js";
 
-const BASE_RAW = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
+const BASE_RAW =
+  process.env.AGENT_MEMORY_URL ?? process.env.AGENTMEMORY_URL ?? "http://127.0.0.1:3111";
 const BASE = new URL(BASE_RAW.endsWith("/") ? BASE_RAW : `${BASE_RAW}/`);
-const SECRET = process.env["AGENT_MEMORY_SECRET"];
+const SECRET = process.env["AGENT_MEMORY_SECRET"] ?? process.env["AGENTMEMORY_SECRET"];
 
 /**
  * Golden snapshot: the first 6 non-zero (index, value) pairs of

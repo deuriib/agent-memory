@@ -22,6 +22,9 @@
  *     Tool args may contain file paths, commands, and user data — they are
  *     deliberately NOT captured.
  *   - AGENT_MEMORY_URL default: http://127.0.0.1:3111 (the REST service).
+ *   - Legacy AGENTMEMORY_* names (URL / SECRET / PROJECT) are accepted as a
+ *     SILENT fallback (new name wins). Deliberately NO deprecation warning —
+ *     stderr stays empty, ever (same zero-output rule as hooks/capture.mjs).
  */
 import { randomUUID } from "node:crypto";
 
@@ -72,7 +75,9 @@ function observationFor(event, payload) {
 
 /** Tenant key: env override > first workspace dir name > "default". */
 function projectFor(payload) {
-  const override = process.env.AGENT_MEMORY_PROJECT;
+  // SILENT legacy fallback (AGENTMEMORY_PROJECT) — deliberate: hooks print
+  // nothing, ever. New name wins when both are set.
+  const override = process.env.AGENT_MEMORY_PROJECT ?? process.env.AGENTMEMORY_PROJECT;
   if (typeof override === "string" && override.trim().length > 0) {
     const cleaned = clean(override, 200);
     if (cleaned.length > 0) return cleaned;
@@ -134,7 +139,9 @@ async function main() {
     origin: `hook:${event}`, // frozen origin format from contract §3
   };
 
-  const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
+  // SILENT legacy fallback (AGENTMEMORY_URL) — no warning, ever; stderr
+  // stays empty (hook contract). New name wins when both are set.
+  const base = process.env.AGENT_MEMORY_URL ?? process.env.AGENTMEMORY_URL ?? "http://127.0.0.1:3111";
   let url;
   try {
     // URL API does the joining — no hand-built request strings, and the
@@ -145,7 +152,9 @@ async function main() {
   }
 
   const headers = { "content-type": "application/json", accept: "application/json" };
-  const secret = process.env.AGENT_MEMORY_SECRET;
+  // SILENT legacy fallback (AGENTMEMORY_SECRET) — new name wins; never warn,
+  // never log: this hook prints nothing, ever.
+  const secret = process.env.AGENT_MEMORY_SECRET ?? process.env.AGENTMEMORY_SECRET;
   if (typeof secret === "string" && secret.length > 0) {
     headers.authorization = `Bearer ${secret}`; // same guard as REST, never logged
   }

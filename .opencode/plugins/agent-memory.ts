@@ -52,6 +52,8 @@
  *   - CONFIG precedence: plugin option > environment variable > default.
  *     `project` falls back to the workspace directory name (same derivation as
  *     `hooks/capture.mjs`) so hook captures and plugin saves share a tenant key.
+ *     Legacy `AGENTMEMORY_*` names are accepted as a SILENT fallback (new
+ *     name wins) — no warning ever prints from the plugin surface.
  *
  * VERSION is kept in lockstep with package.json by hand (there is no shared
  * module here, unlike `~/.config/opencode/plugins/shared.ts`).
@@ -140,9 +142,29 @@ function option(options: Readonly<Record<string, unknown>>, key: string): string
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+const NEW_ENV_PREFIX = "AGENT_MEMORY_";
+
+/** AGENT_MEMORY_FOO -> AGENTMEMORY_FOO; passthrough for any other name. */
+function legacyEnvName(name: string): string {
+  return name.startsWith(NEW_ENV_PREFIX)
+    ? `AGENTMEMORY_${name.slice(NEW_ENV_PREFIX.length)}`
+    : name;
+}
+
+/**
+ * Non-empty env read with a SILENT legacy fallback: AGENT_MEMORY_X falls
+ * back to AGENTMEMORY_X when the new name is unset/empty (new name wins).
+ * Deliberately prints NOTHING — plugin config runs inside the agent process,
+ * so a deprecation line here would pollute the prompt/log. The plugin surface
+ * stays quiet; the visible name-only warning belongs to the servers
+ * (`src/env.ts`). Covers SECRET, URL, PROJECT, INJECT, INJECT_LIMIT and
+ * INJECT_TTL_MS (all config reads route through here).
+ */
 function env(name: string): string | undefined {
   const value: string | undefined = process.env[name];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  if (typeof value === "string" && value.length > 0) return value;
+  const legacy: string | undefined = process.env[legacyEnvName(name)];
+  return typeof legacy === "string" && legacy.length > 0 ? legacy : undefined;
 }
 
 function parseBool(value: unknown): boolean | undefined {

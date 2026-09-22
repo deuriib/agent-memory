@@ -19,6 +19,7 @@
     "dev": "tsx src/server.ts",
     "demo": "tsx src/demo.ts",
     "verify": "tsx scripts/verify.ts",
+    "verify-env": "tsx scripts/verify-env.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

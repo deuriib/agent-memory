@@ -7,7 +7,9 @@
  *   route except `livez` requires `Authorization: Bearer <secret>`;
  *   mismatch -> 401. The secret value is never logged or echoed.
  * - binds 127.0.0.1 by default (AGENT_MEMORY_HOST overrides); port from
- *   AGENT_MEMORY_PORT, default 3111.
+ *   AGENT_MEMORY_PORT, default 3111. Legacy AGENTMEMORY_PORT/_HOST names are
+ *   accepted as a deprecated fallback (new name wins; ONE name-only stderr
+ *   warning per variable, never values — `src/env.ts`).
  * - access log: method, path, status, duration only — never bodies,
  *   query strings, headers, or secrets.
  */
@@ -18,6 +20,7 @@ import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
 import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
+import { readLegacyEnv } from "./env.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
@@ -478,8 +481,10 @@ function parsePort(raw: string | undefined): number {
 }
 
 function main(): void {
-  const port = parsePort(process.env["AGENT_MEMORY_PORT"]);
-  const host = process.env["AGENT_MEMORY_HOST"] ?? "127.0.0.1";
+  // New name wins; legacy AGENTMEMORY_PORT/_HOST fall back with a one-time,
+  // name-only stderr warning (src/env.ts).
+  const port = parsePort(readLegacyEnv("AGENT_MEMORY_PORT", "AGENTMEMORY_PORT"));
+  const host = readLegacyEnv("AGENT_MEMORY_HOST", "AGENTMEMORY_HOST") ?? "127.0.0.1";
   const secret = secretFromEnv();
 
   const server = createAgentMemoryServer({ secret });
