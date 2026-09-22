@@ -2,7 +2,7 @@
 
 **Reviewer:** quality-assurance (independent — ran the real suite, did not author this work)
 **Date:** 2026-09-22
-**Verdict:** initial: ❌ → recheck: ⚠️ — conditional (one condition: the two `evidence/*.log` artifacts must actually be committed to the repo; see `## Recheck`). Original ❌ rationale: trace/evidence lane had one High verdict-overclaim + three unreproducible evidence numbers; mechanisms themselves were green.
+**Verdict:** initial: ❌ → recheck: ⚠️ → cleared: ✅ (evidence tracked at edd07e5, PR #3, verified at origin/main da285a6) — trail: original ❌ (one High verdict-overclaim + three unreproducible evidence numbers) → ⚠️ (one open condition: `evidence/*.log` never committed) → ✅ (condition verified closed in `## Condition clearance` below).
 
 Scope note: this review covers **traceability, evidence integrity, and test coverage** only.
 Findings from readability/reliability/refuter/resilience/risk/security/legal/automation reviews
@@ -205,3 +205,54 @@ traces hold end-to-end. **One condition to reach ✅:** commit the two evidence 
 `origin/main`, then confirm via `git cat-file -e origin/main:…`. Non-blocking follow-ups:
 QA-02r (`review-readability.md:46` `70` → `73` or an erratum note) and the stale C3
 COND-01/PENDING-MERGE row at gate close. Reviewer made **no changes** — findings only.
+
+---
+
+## Condition clearance (2026-09-22)
+
+**Reviewer:** quality-assurance (same reviewer; condition-clearance check only — the single
+open condition from the ⚠️ recheck plus its directly related claims; no full re-review).
+**State verified:** `git ls-remote origin main` = `git rev-parse HEAD` = `origin/main` =
+**`da285a6748f2b0139026547347081acd0736e472`**, working tree clean and identical to
+`origin/main` before this file's edit. Rules unchanged: no code changes, no commits by this
+reviewer (edits limited to this own artifact), no process signals, ports 3111/3112/3113
+untouched, `verify-env.ts` not run.
+
+### Per-item clearance table
+
+| # | Item | Status | Evidence I reproduced this session |
+|---|---|---|---|
+| 1 | **QA-04 artifact tracked at `edd07e5`** | ✅ cleared | `git ls-tree -r origin/main --name-only -- …/quality-gate/P0/evidence/` → **exactly** `docs/specs/40_workspace/quality-gate/P0/evidence/actionlint.log` and `…/p0-4-restart-canary.log` (2 lines, no extras). `git show --stat edd07e5` → 3 files: `.gitignore +3`, `actionlint.log +3`, `p0-4-restart-canary.log +33`. Content at `origin/main`: token **`p04canary1790108269`** (line 2), `storage = "disk"` preflight (line 4), `storage: disk` pre-restart (line 12) **and** post-restart (line 28), **`attempt 1:` BM25 hit** with the canary content (line 30), **`RESULT: PASS — canary found after helix restart (disk persistence holds)`** (line 32). `git show origin/main:…canary.log \| diff - <working copy>` → **IDENTICAL** (artifact kept byte-identical, not sanitized). |
+| 2 | **QA-05 artifact tracked** | ✅ cleared | `git show origin/main:…/evidence/actionlint.log` → 3 lines: header, `# cmd: docker run --rm -v $PWD:/repo:ro -w /repo rhysd/actionlint:latest -no-color /repo/.github/workflows/ci.yml` (reproducible command line), **`exit=0`**. Cited path in `TEST_MATRIX.md:10` now resolves at `origin/main`. |
+| 3 | **`.gitignore` root-cause fix** | ✅ cleared | `git show origin/main:.gitignore` → `*.log` **stays**, followed by the scoped exception **`!docs/specs/**/evidence/*.log`** plus two comment lines naming the root cause (QA-04/05). `git check-ignore -v` on both evidence paths → **exit 1, no output: neither path is ignored anymore.** |
+| 4 | **QA-02r erratum** | ✅ cleared | `git show --stat e7c105c` → `review-readability.md` 1+/1−. Row 46 at `origin/main` now reads: `` `ALL PASS` (73 assertions — erratum: originally recorded here as 70; corrected 2026-09-22 per QA-02, output reproduced as 73 by all reviewers) `` — corrected **with attribution**. Repo-wide stale `70` outside falsified-number findings: zero. |
+| 5 | **Recheck records on `origin/main`** | ✅ cleared | `git show --stat 04dec9f` → `quality-assurance.md +70`, `review-refuter.md +85`. At `origin/main`: my file carries `## Recheck (post-remediation, 2026-09-22)` (line 143) and the `initial: ❌ → recheck: ⚠️` line; refuter file carries its recheck with `initial: ❌ → recheck: ✅`. `git diff origin/main -- quality-assurance.md` (pre-edit) → empty. |
+| 6 | **FP suppression narrowness** | ✅ **acceptably narrow** | `git show origin/main:.gitleaksignore` → 7 comment lines + **exactly 1** non-comment line (`grep -v '^#' \| grep -vc '^$'` → **1**): `edd07e54a069a21d77e7fcbf5fd4b3822d3dd3b7:docs/specs/40_workspace/quality-gate/P0/evidence/p0-4-restart-canary.log:generic-api-key:2` — gitleaks' commit:file:rule:line fingerprint, scoped to **one occurrence, one file, one rule, one line**, and **commit-anchored**: any future occurrence anywhere else still fires. `git show --stat 9723a9e` → **only** `.gitleaksignore +8`; **no `.gitleaks.toml`/`gitleaks.toml` exists**; PR #3 range `e4ca3ce..da285a6` touches 7 files (2 ignore/evidence config, 2 logs, 3 md) — **no workflow or rule surface changed**, so nothing that could weaken scanning was touched. Substance of the FP independently assessed: match value is `p04canary` + unix ts (`1790108269` ≈ 2026-09-22) + pid, used as a search term against an auth-open localhost server — authenticates nothing; I recomputed its Shannon entropy by hand from the string = **3.682 ≈ 3.68**, matching the recorded figure (keyword `token:` triggered `generic-api-key`). Verdict: legitimate FP, sanctioned narrow mechanism, artifact rightly kept byte-identical (sanitizing would have broken the token the citation depends on). |
+| 7 | **Honest CI record (red + green)** | ✅ cleared (with 1 record note) | `gh run list`: **two** failures visible — `35784112073` (push of `e7c105c`, pre-fix) and **`35784118133`** (PR #3 event) — then `35784767493` (push of `9723a9e`, fix) ✓, **`35784777072`** (PR #3, merge gate) ✓, **`35784838135`** (**main**, post-merge) ✓ — timeline: red exactly on the two pushes while the evidence file lacked the fingerprint, green from the fix onward, main green after merge. `gh run view 35784118133`: **secret-scan job X** at `Run gitleaks detect …` exit 1, **verify ✓ 20s** — as claimed. Note (record completeness, not a defect): the briefing cited one red run; the honest record contains **two**, both visible and unhidden; `gh run view --log-failed 35784118133` grep for the finding text returned nothing, so the finding's identity rests on the job-level failure plus `.gitleaksignore` line + the `9723a9e` commit body (rule `generic-api-key`, line 2, introducing commit `edd07e5`, entropy 3.68) — mutually consistent. |
+| 8 | **Fresh scan on clean `origin/main`** | ✅ **exit 0** | Tree proven identical to `origin/main` (`git status --porcelain` empty, `git diff origin/main --stat` 0 lines, HEAD = ls-remote) → `docker run --rm -v "$PWD":/repo:ro zricethezav/gitleaks:v8.30.1 detect --source=/repo --no-banner --redact` → **`35 commits scanned … no leaks found`, EXIT=0**. Against `git rev-list --count HEAD` = **39**: 39 − 3 merges − 1 first-commit accounting = 35 — the same consistent pattern as my earlier runs (25/26, 31/34). The fingerprint suppressed exactly the one FP; scan machinery demonstrably ran over the full history. |
+| 9 | Belt-and-braces | ✅ | `npm run typecheck` → **exit 0**; `npx tsx scripts/verify-injection.ts` → **ALL PASS, exit 0**; `curl 127.0.0.1:3151/agentmemory/livez` → `{"status":"ok"}`. |
+
+**Observations (non-blocking, for the record):** (i) the `.gitleaksignore` comment cites a
+"planted-secret test recorded in commit ci(gitleaks)" — it is recorded in `9723a9e`'s commit
+body (throwaway clone, not retained → self-attested); the **load-bearing proof** that default
+rules remain active is structural instead: no gitleaks config exists to weaken, PR #3 changed
+no workflow/rule/CI file, and my fresh 35-commit scan ran the real ruleset to exit 0. (ii)
+Both pre-fix red runs remain visible in `gh run list` — the CI history is honest. Neither
+affects clearance.
+
+### FINAL verdict
+
+**✅ cleared** — `initial: ❌ → recheck: ⚠️ → cleared: ✅ (evidence tracked at edd07e5, PR #3, verified at origin/main da285a6)`.
+
+The single open condition is verified closed by independent evidence: both `evidence/*.log`
+artifacts are tracked at `edd07e5`, resolve at `origin/main` with content byte-identical to
+the originally inspected files (token / attempt-1 hit / `RESULT: PASS` / `storage: disk`
+both sides; `exit=0` + reproducible cmd), the `.gitignore` exception is scoped to
+`docs/specs/**/evidence/*.log` with the blanket `*.log` rule intact, `git check-ignore`
+reports both paths unignored (exit 1), the QA-02r erratum landed with attribution, the FP
+suppression is exactly one commit-anchored fingerprint with no rule or CI surface touched,
+the red→green CI history is honestly recorded (two reds visible, not hidden), and a fresh
+gitleaks scan of the clean `origin/main` tree exits **0 / no leaks found**. All former
+findings QA-01..QA-08 are now cleared, waived (W5, substance verified), or acknowledged.
+**Zero open findings remain in this lane.** Reviewer made **no changes** — edits limited to
+this own artifact file; no commits, no process signals.
