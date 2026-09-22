@@ -449,6 +449,16 @@ All run clean:
   up; all 3 events work; only the tool NAME is stored (planted path
   `/tmp/secret-should-not-be-captured.txt` confirmed NOT stored).
 
+## Contributing & security
+
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — prerequisites, exact dev-setup
+  commands, Conventional Commits, the PR/evidence bar, strict-TS rules, and
+  the never-kill-upstream coexistence rule.
+- [`SECURITY.md`](SECURITY.md) — supported versions, private reporting via
+  GitHub Security Advisories (never a public issue), scope, the
+  `AGENT_MEMORY_SECRET` policy, and response expectations.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+
 ## Specification
 
 The frozen contract this implementation follows — labels, routes, query
