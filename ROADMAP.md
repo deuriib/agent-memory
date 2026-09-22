@@ -101,7 +101,7 @@ passes, not when its tickets are "mostly" closed.
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P3.1 | MCP tool parity for the useful subset | Add `recap`, `handoff`, `lesson`, governance-style delete; each round-trips against the REST contract |
+| P3.1 | MCP tool parity for the useful subset ✅ done (v0.2.0, 2026-09-22) | Add `recap`, `handoff`, `lesson`, governance-style delete; each round-trips against the REST contract |
 | P3.2 | Ship a skill set | `SKILL.md` files for `recall`, `remember`, `recap`, `handoff`, `forget`, `lesson`, `commit-context`, `session-history` |
 | P3.3 | Real-time viewer | A local page streams live memory writes (upstream uses port 3113) |
 | P3.4 | Session replay | Scrub a session's prompts / tool calls / results as a timeline |

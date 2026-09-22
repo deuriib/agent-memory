@@ -1,5 +1,7 @@
 # agent-memory
 
+[![Version](https://img.shields.io/badge/version-v0.2.0-blue.svg)](CHANGELOG.md)
+
 Persistent memory for AI coding agents — a v1 replica of
 [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) rebuilt on
 [HelixDB](https://docs.helix-db.com) instead of iii-engine + SQLite. One engine
@@ -451,7 +453,9 @@ All run clean:
 
 The frozen contract this implementation follows — labels, routes, query
 surface, MCP tools, scope, and §4 out-of-scope list — is
-[`docs/CONTRACT.md`](docs/CONTRACT.md).
+[`docs/CONTRACT.md`](docs/CONTRACT.md). Release history lives in
+[`CHANGELOG.md`](CHANGELOG.md); per-release notes in
+[`docs/specs/30_delivery/RELEASE_NOTES.md`](docs/specs/30_delivery/RELEASE_NOTES.md).
 
 ---
 

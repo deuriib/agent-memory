@@ -372,7 +372,7 @@ function registerTools(mcp: McpServer, store: MemoryStore, secret: string | unde
 async function main(): Promise<void> {
   const store = createDefaultStore();
   const secret = secretFromEnv();
-  const mcp = new McpServer({ name: "agent-memory", version: "0.1.0" });
+  const mcp = new McpServer({ name: "agent-memory", version: "0.2.0" });
   registerTools(mcp, store, secret);
   // stdout is the protocol channel: never console.log from here.
   await mcp.connect(new StdioServerTransport());
