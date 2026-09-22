@@ -14,4 +14,7 @@ target/
 
 # Logs & OS noise
 *.log
+# ...except gate evidence artifacts — REQ→artifact trace must be committable
+# (root cause of QA-04/05: *.log silently excluded evidence/ at add time)
+!docs/specs/**/evidence/*.log
 .DS_Store

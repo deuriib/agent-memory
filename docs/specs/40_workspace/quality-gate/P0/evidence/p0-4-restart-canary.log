@@ -1,0 +1,33 @@
+== P0.4 persistence canary (QA-04 evidence) — 2026-09-22T16:17:49-04:00 ==
+token: p04canary1790108269
+-- preflight: helix.toml storage + server livez --
+10:storage = "disk"
+{"status":"ok"}
+-- pre-restart helix status --
+[4m[1mHelix Project Status[0m[0m
+  [1m[97mProject[39m[0m: agent-memory
+  [1m[97mRoot[39m[0m: /mnt/DATA/GitHub/agent-memory
+
+[4m[1mInstances[0m[0m
+  [1m[97mdev (local)[39m[0m: http://localhost:6969 - Up About an hour - storage: disk
+-- save canary --
+{"id":"85730f43-3aaf-4c89-b8e9-40a0f59f1a97","sessionId":"d2707f3d-2fc3-46cf-8105-616b3363a8e2","project":"gate-evidence","concepts":["canary","persistence","p0"]}
+-- baseline search BEFORE restart --
+{"mode":"bm25","results":[{"id":"20001","memoryId":"85730f43-3aaf-4c89-b8e9-40a0f59f1a97","content":"P0.4 persistence canary p04canary1790108269 survives helix restart","sessionId":"d2707f3d-2fc3-46cf-8105-616b3363a8e2","origin":"rest","importance":0.5,"createdAt":"2026-09-22T20:17:49.632Z","score":0.28768211603164673,"source":"text"}],"signals":[]}
+-- helix restart dev --
+Restarting 'dev'
+
+[1mRestarted 'dev' successfully[0m
+-- wait for :6969 --
+helix listening after ~1s
+[4m[1mHelix Project Status[0m[0m
+  [1m[97mProject[39m[0m: agent-memory
+  [1m[97mRoot[39m[0m: /mnt/DATA/GitHub/agent-memory
+
+[4m[1mInstances[0m[0m
+  [1m[97mdev (local)[39m[0m: http://localhost:6969 - Up Less than a second - storage: disk
+-- search AFTER restart (persist proof) --
+attempt 1: {"mode":"bm25","results":[{"id":"20001","memoryId":"85730f43-3aaf-4c89-b8e9-40a0f59f1a97","content":"P0.4 persistence canary p04canary1790108269 survives helix restart","sessionId":"d2707f3d-2fc3-46cf-8105-616b3363a8e2","origin":"rest","importance":0.5,"createdAt":"2026-09-22T20:17:49.632Z","score":0.28768211603164673,"source":"text"}],"signals":[]}
+
+RESULT: PASS — canary found after helix restart (disk persistence holds)
+== end 2026-09-22T16:17:51-04:00 ==
