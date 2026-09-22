@@ -335,6 +335,10 @@ Guarantees (verified):
   rotation or process exit — and the delete receipt's `deletedAt` is server
   time captured immediately after the store confirms the delete, with the
   receipt omitting `reason` by design (reason lives only in that log line).
+  Its fields are a strict **allowlist** (`memoryId`, normalized `reason`,
+  `at` — never memory content, embeddings, or headers): don't put PII or
+  secrets in `reason` (caller responsibility, bearer-auth + length bound), and
+  apply standard log masking/retention on the host that streams it.
 - The MCP server applies the same rule over `_meta.authorization`.
 - Never commit or print real secret values.
 

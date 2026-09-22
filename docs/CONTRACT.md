@@ -150,8 +150,18 @@ the secret; the access log stays method/path/status/duration only.
 Governance-log data declaration: **purpose** = operational audit of destructive
 deletes (the only permitted use of `reason`); **store** = process stdout/stderr
 only — this repository keeps no durable store for it; **retention** = host log
-retention/rotation; **deletion** = log rotation or process exit. Receipt
-semantics: `deletedAt` is the server time captured immediately after the store
+retention/rotation; **deletion** = log rotation or process exit. **Masking /
+minimization (SEC-002 control 1):** the governance line's fields are a strict
+**ALLOWLIST** — only `memoryId`, the normalized `reason` (collapsed to a single
+line, ≤1000 chars), and `at` are ever emitted; no other memory content, no
+embedding, and no request header ever reaches the line (the line is rendered by
+hand from those three values on both lanes, `src/server.ts`/`src/mcp.ts`, never
+by stringifying a stored object). Operators must not place PII or secrets in
+`reason` — that is the caller's responsibility, bounded by the required
+`reason` schema and gated by bearer auth (`AGENT_MEMORY_SECRET`) on every
+governance route — and hosts should apply their standard log masking/retention
+to the stdout/stderr stream carrying these lines. Receipt semantics:
+`deletedAt` is the server time captured immediately after the store
 confirms the delete, and the receipt `{memoryId, deletedAt}` omits `reason` BY
 DESIGN — the reason lives only in the governance log line above.
 
