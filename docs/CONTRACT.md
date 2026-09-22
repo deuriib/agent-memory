@@ -147,6 +147,14 @@ plus a required caller-supplied `reason`, logged as one governance line
 (`memoryId`, `reason`, `at`) — reason is metadata, never memory content and never
 the secret; the access log stays method/path/status/duration only.
 
+Governance-log data declaration: **purpose** = operational audit of destructive
+deletes (the only permitted use of `reason`); **store** = process stdout/stderr
+only — this repository keeps no durable store for it; **retention** = host log
+retention/rotation; **deletion** = log rotation or process exit. Receipt
+semantics: `deletedAt` is the server time captured immediately after the store
+confirms the delete, and the receipt `{memoryId, deletedAt}` omits `reason` BY
+DESIGN — the reason lives only in the governance log line above.
+
 Result row shape (both searches): `{id, memoryId, content, score, sessionId, origin,
 importance, createdAt, source}` — plus `distance` (cosine, lower = closer) on
 vector-sourced rows, which are projected as `$distance` rather than `$score`, so a

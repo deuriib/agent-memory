@@ -324,6 +324,13 @@ Guarantees (verified):
   default).
 - The secret value is never logged, echoed, or included in error text; the
   access log records method, path, status, and duration only.
+- The delete governance line (`memoryId`, `reason`, `at`) exists for
+  **operational audit of destructive deletes only**: it goes to process
+  stdout/stderr and nowhere else (this repo keeps no durable store for it),
+  is retained per the host's log retention/rotation, and is deleted by log
+  rotation or process exit — and the delete receipt's `deletedAt` is server
+  time captured immediately after the store confirms the delete, with the
+  receipt omitting `reason` by design (reason lives only in that log line).
 - The MCP server applies the same rule over `_meta.authorization`.
 - Never commit or print real secret values.
 
