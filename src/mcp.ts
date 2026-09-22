@@ -82,10 +82,21 @@ const lessonInput = {
   importance: z.number().min(0).max(1).optional(),
 };
 
-/** Governance delete: `reason` required, no `project` field. */
+/**
+ * Governance delete: `reason` required, no `project` field. Both fields are
+ * collapsed to a single line BEFORE the bounds — they are interpolated
+ * verbatim into the single-line governance log on stderr, so an embedded `\n`
+ * must not be able to forge a second line (CWE-117). No-op for real UUIDs.
+ */
 const deleteInput = {
-  memoryId: z.string().trim().min(1).max(200),
-  reason: z.string().trim().min(1).max(1000),
+  memoryId: z
+    .string()
+    .transform((value) => value.replace(/\s+/g, " ").trim())
+    .pipe(z.string().min(1).max(200)),
+  reason: z
+    .string()
+    .transform((value) => value.replace(/\s+/g, " ").trim())
+    .pipe(z.string().min(1).max(1000)),
 };
 
 function ok(payload: unknown): CallToolResult {
@@ -394,8 +405,10 @@ function registerTools(mcp: McpServer, store: MemoryStore, secret: string | unde
         const deleted = await store.forget(args.memoryId);
         if (!deleted) return failed({ error: "not_found" });
         const deletedAt = new Date().toISOString();
-        // stderr, not stdout: stdout carries ONLY the MCP protocol. Reason is
-        // caller-supplied metadata — never memory content, never the secret.
+        // stderr, not stdout: stdout carries ONLY the MCP protocol. memoryId
+        // and reason arrive already single-line from the schema (log-forgery
+        // guard); reason is caller-supplied metadata — never memory content,
+        // never the secret.
         console.error(
           `[agentmemory] delete governance memoryId=${args.memoryId} reason=${args.reason} at=${deletedAt}`,
         );

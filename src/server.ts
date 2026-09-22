@@ -41,7 +41,22 @@ const queryTextSchema = z.string().trim().min(1).max(10_000);
 const limitSchema = z.number().int().min(1).max(100);
 const importanceSchema = z.number().min(0).max(1);
 const memoryIdSchema = z.string().trim().min(1).max(200);
-const reasonSchema = z.string().trim().min(1).max(1000);
+/**
+ * Governance-delete `memoryId`/`reason` are interpolated verbatim into the
+ * single-line governance log, so collapse whitespace runs to one space FIRST
+ * and apply the bounds to the normalized value: an embedded `\n` can no longer
+ * forge a second log line (CWE-117). Collapsing is a no-op for real UUIDs;
+ * memory content is NOT normalized (newlines are legitimate there) and content
+ * is never logged.
+ */
+const deleteMemoryIdSchema = z
+  .string()
+  .transform((value) => value.replace(/\s+/g, " ").trim())
+  .pipe(z.string().min(1).max(200));
+const deleteReasonSchema = z
+  .string()
+  .transform((value) => value.replace(/\s+/g, " ").trim())
+  .pipe(z.string().min(1).max(1000));
 
 const rememberBodySchema = z
   .object({
@@ -96,8 +111,8 @@ const lessonBodySchema = z
 /** Governance delete: `reason` required, no `project` field. */
 const deleteBodySchema = z
   .object({
-    memoryId: memoryIdSchema,
-    reason: reasonSchema,
+    memoryId: deleteMemoryIdSchema,
+    reason: deleteReasonSchema,
   })
   .strict();
 
@@ -440,8 +455,10 @@ async function routeRequest(
       return 404;
     }
     const deletedAt = new Date().toISOString();
-    // One governance line: reason is caller-supplied metadata only — never
-    // memory content, never the secret. The access log below is unchanged.
+    // One governance line: memoryId/reason arrive already collapsed to a
+    // single line by the schema (log-forgery guard); reason is caller-supplied
+    // metadata only — never memory content, never the secret. The access log
+    // below is unchanged.
     console.log(
       `[agentmemory] delete governance memoryId=${body.memoryId} reason=${body.reason} at=${deletedAt}`,
     );
