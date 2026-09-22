@@ -71,7 +71,7 @@ passes, not when its tickets are "mostly" closed.
 | # | Item | Acceptance criterion |
 |---|---|---|
 | P0.1 | Add a license ✅ done (pre-existing at lane start, 2026-09-22) | `LICENSE` present; GitHub reports the correct license |
-| P0.2 | CI workflow ✅ done (2026-09-22) | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` |
+| P0.2 | CI workflow ✅ done (2026-09-22) | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` — run [35781376642](https://github.com/deuriib/agent-memory/actions/runs/35781376642) (`verify` + `secret-scan` success, merge of PR #1; branch runs 35780360945 / 35781362973 green too) |
 | P0.3 | SECURITY.md, CONTRIBUTING.md, CHANGELOG.md ✅ done (2026-09-22) | Three files present, linked from README |
 | P0.4 | **Fix persistence** ✅ done (2026-09-22) | `helix start dev --disk` documented *and* the default dev path no longer silently loses data; a save survives a Helix restart |
 | P0.5 | **Resolve env migration** ✅ done (2026-09-22) | Servers started under the old `AGENTMEMORY_*` names are migrated to `AGENT_MEMORY_*`; a restart cannot silently drop the bearer secret or fall back to the upstream-occupied port |
