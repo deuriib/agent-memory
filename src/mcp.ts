@@ -84,18 +84,28 @@ const lessonInput = {
 };
 
 /**
- * Governance delete: `reason` required, no `project` field. Both fields are
- * collapsed to a single line BEFORE the bounds — they are interpolated
- * verbatim into the single-line governance log on stderr, so an embedded `\n`
- * must not be able to forge a second line (CWE-117). No-op for real UUIDs.
+ * Governance delete: `reason` required, no `project` field. Bounds are declared
+ * on BOTH sides of the normalize: the INPUT side (`z.string().min().max()`
+ * before `.transform()`) is what the MCP SDK's zod→JSON-schema conversion
+ * reads for `tools/list`, so `minLength`/`maxLength` stay advertised (C3-R17);
+ * the POST-normalize `.pipe()` bounds keep the COND-001 guarantee — both fields
+ * are collapsed to a single line BEFORE those bounds, so an embedded `\n`
+ * cannot forge a second line in the governance log (CWE-117) and whitespace-only
+ * input still rejects. Whitespace-heavy input that exceeds the raw bound rejects
+ * earlier now (pre-normalize), which only tightens validation. No-op for real
+ * UUIDs.
  */
 const deleteInput = {
   memoryId: z
     .string()
+    .min(1)
+    .max(200)
     .transform((value) => value.replace(/\s+/g, " ").trim())
     .pipe(z.string().min(1).max(200)),
   reason: z
     .string()
+    .min(1)
+    .max(1000)
     .transform((value) => value.replace(/\s+/g, " ").trim())
     .pipe(z.string().min(1).max(1000)),
 };

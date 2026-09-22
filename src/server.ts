@@ -46,16 +46,23 @@ const memoryIdSchema = z.string().trim().min(1).max(200);
  * Governance-delete `memoryId`/`reason` are interpolated verbatim into the
  * single-line governance log, so collapse whitespace runs to one space FIRST
  * and apply the bounds to the normalized value: an embedded `\n` can no longer
- * forge a second log line (CWE-117). Collapsing is a no-op for real UUIDs;
- * memory content is NOT normalized (newlines are legitimate there) and content
- * is never logged.
+ * forge a second log line (CWE-117). Bounds are declared on BOTH sides — the
+ * input side rejects empty/over-long input early and the post-normalize
+ * `.pipe()` bounds keep whitespace-only input a 400 — and the shape mirrors
+ * `src/mcp.ts` so the two lanes cannot drift (C3-R17). Collapsing is a no-op
+ * for real UUIDs; memory content is NOT normalized (newlines are legitimate
+ * there) and content is never logged.
  */
 const deleteMemoryIdSchema = z
   .string()
+  .min(1)
+  .max(200)
   .transform((value) => value.replace(/\s+/g, " ").trim())
   .pipe(z.string().min(1).max(200));
 const deleteReasonSchema = z
   .string()
+  .min(1)
+  .max(1000)
   .transform((value) => value.replace(/\s+/g, " ").trim())
   .pipe(z.string().min(1).max(1000));
 
