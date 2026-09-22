@@ -1,0 +1,34 @@
+{
+  "agent-memory-capture": {
+    "enabled": true,
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node plugins/antigravity/scripts/capture.mjs PostToolUse",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "node plugins/antigravity/scripts/capture.mjs Stop",
+        "timeout": 5
+      }
+    ]
+  },
+  "agent-memory-recall": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "node plugins/antigravity/scripts/recall.mjs",
+        "timeout": 5
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-memory": {
+      "command": "npx",
+      "args": ["tsx", "src/mcp.ts"],
+      "cwd": "/mnt/DATA/GitHub/agent-memory",
+      "env": {
+        "HELIX_URL": "http://localhost:6969"
+      }
+    }
+  }
+}
