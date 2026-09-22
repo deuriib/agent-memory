@@ -1,42 +1,25 @@
-# Test / Evidence Matrix: P3.1
+# Test / Evidence Matrix: P0
 
 **Agent:** orchestrator (execute-spec lane)
 **Date:** 2026-09-22
-**Domains-Touched:** engineering
+**Domains-Touched:** engineering, security, ops (persistence), docs
 
 | REQ-ID | Evidence ID | Description | Type | Status | Commit |
 |--------|-------------|-------------|------|--------|--------|
-| REQ-P31-1 | T-001 | 4 REST routes (`recap`, `handoff`, `lesson`, `delete`) round-trip per contract §3: 201/200 shapes, 404 on unknown delete, 400 on bad bodies | Integration | pass | d724f66 |
-| REQ-P31-2 | T-002 | 4 MCP tools (`memory_recap`, `memory_handoff`, `memory_lesson`, `memory_delete`) registered; input schemas mirror REST; `_meta.authorization` gate unchanged | Integration | pass | fb2e451 |
-| REQ-P31-3 | T-003 | `docs/CONTRACT.md` §3 lists 4 new rows, §4 no longer excludes lessons/recap/handoff, §5 verification bar extended | Review | pass | 33849ee |
-| REQ-P31-4 | T-004 | `scripts/verify.ts` P3.1 section: lesson → bm25 search hits it → recap contains content → handoff contains content → governed delete removes it → second delete 404 → health count reflects it | E2E | pass | e3abc6e |
-| REQ-P31-5 | T-005 | README route table, MCP tool table, and examples updated for the 4 additions | Review | pass | 77f292f |
-| REQ-P31-6 | T-006 | `npm run typecheck` clean after the change (no `any`, no `@ts-ignore`, no TODO) — green after every lane commit and after `verify.ts` changes | Unit | pass | fb2e451 |
+| REQ-P0-1 | T-001 | `LICENSE` present (Apache-2.0), `package.json` `license` field matches | Review | pass | 44914e0 (pre-existing) |
+| REQ-P0-2 | T-002 | CI workflow runs `typecheck` + `verify-injection` + pinned gitleaks v8.30.1 secret scan on every push/PR — actionlint 0 errors, local equivalents green, gitleaks `no leaks found` | Review + local equivalent | pass (2026-09-22) | 4cf0f6a |
+| REQ-P0-3 | T-003 | `SECURITY.md`, `CONTRIBUTING.md`, `CHANGELOG.md` present and linked from README (README `## Contributing & security` + Specification link) | Review | pass (2026-09-22) | 7caa14d |
+| REQ-P0-4 | T-004 | Persistence: `--disk --persist` default dev path; bootstrap warns when `helix.toml` lacks `storage = "disk"`; **save → `helix restart dev` → still searchable** (canary `228cdf69`, BM25 hit score 0.863 post-restart) | E2E | pass (2026-09-22) | c551774 |
+| REQ-P0-5 | T-005 | Legacy `AGENTMEMORY_*` fallback: server started with only legacy names arms the guard (health 401 without / 200 with bearer), warns name-only; hooks stay silent | E2E (`scripts/verify-env.ts`) | pass — VERIFY PASS 21/21 (2026-09-22) | bb335e2 |
+| REQ-P0-6 | T-006 | `EADDRINUSE` prints `AGENT_MEMORY_PORT=3151` reroute + never-kill-upstream note; README states port ownership definitively | E2E + Review | pass — verify-env sections A/C green; README Known-limitations #1 states ownership (2026-09-22) | 1af2cde |
 
 ## Coverage Summary
 
-- Unit coverage: N/A (no unit framework in repo — repo bar is `typecheck` + E2E `verify`)
-- Integration coverage: 4/4 new surfaces exercised by `scripts/verify.ts`
-- Evidence coverage: 6/6 REQ-IDs with linked artifact
-- Acceptance criteria covered: P3.1 ("each round-trips against the REST
-  contract") → T-001 + T-004; MCP parity → T-002
+- Unit coverage: N/A (repo bar is `typecheck` + E2E `verify` + `verify-injection`)
+- Evidence coverage: target 6/6 REQ-IDs with linked artifact
+- Acceptance criteria covered: P0.1 → T-001; P0.2 → T-002; P0.3 → T-003;
+  P0.4 → T-004; P0.5 → T-005; P0.6 → T-006
 
-## Gate remediation evidence (quality-gate P3.1)
+## Gate remediation evidence
 
-| Item | Description | Type | Status | Commit / Artifact |
-|------|-------------|------|--------|-------------------|
-| COND-001 | single-line sanitize of delete `reason`/`memoryId`, both lanes (log forgery) | Fix | pass | `5df18b6` (re-proven after `addc589`) |
-| COND-002 | verify upstream identity guard — read-only probe before first write | Fix | pass | `bfc10c5` (plain run aborts pre-write) |
-| COND-003 | governance log purpose/store/retention/deletion + receipt semantics | Review | pass | `f2a65d4` |
-| COND-004 | recap per-bullet session-membership assertion | E2E | pass | `bfc10c5` |
-| COND-005 | shared `src/digest.ts` + 20s fan-out budget (drift + latency) | Refactor | pass | `3221b93` |
-| COND-006 | MCP-vs-REST strictness wording, table consistency, plan checkbox | Review | pass | `fff74ad` |
-| C3-R13 | governance-line field allowlist + masking/no-PII rule | Review | pass | `d7a7628` |
-| C3-R17 | restore advertised `minLength`/`maxLength` on delete schemas | Fix | pass | `addc589` (tools/list probe) |
-| W1–W4 | accepted-risk records, full three-block bar + owners + expiry | Sign-off | pass | `docs/specs/40_workspace/quality-gate/P31/waivers.md` |
-| GATE | consolidated report — 8 reviews + C3 17/17 | Review | pass | `docs/specs/40_workspace/quality-gate/P31/GATE_REPORT.md` |
-
-Final bar after remediation: `npm run verify` **102 passed, 0 failed →
-VERIFY PASS** (target = our server via `AGENT_MEMORY_URL`, identity guard
-proves abort for any other target); `npm run typecheck` green; MCP handshake
-exactly 11 tools with bounds advertised.
+(filled by quality-gate when it runs)
