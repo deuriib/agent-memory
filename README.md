@@ -76,7 +76,7 @@ BM25-only path with the same degradation rule.
 Requires **Node 20+** and a running Helix dev instance (Docker/Podman):
 
 ```bash
-helix start dev                 # add --disk to persist data across restarts
+helix start dev --disk --persist   # durable default: persists storage mode into helix.toml
 
 npm install
 npm run bootstrap               # create the 7 indexes, poll until ready
@@ -84,6 +84,10 @@ npm run demo                    # seed 3 sessions, run keyword/semantic/hybrid s
 npm run dev                     # REST server on http://127.0.0.1:3111
 npm run verify                  # end-to-end verification against the running server
 ```
+
+`--disk --persist` writes the storage mode into `helix.toml`, so a plain
+`helix start dev` afterwards keeps data across restarts. **Without `--disk`
+the instance is in-memory and every restart wipes it.**
 
 Scripts (from `package.json`): `bootstrap`, `dev`, `demo`, `verify`,
 `typecheck`.
@@ -383,9 +387,11 @@ Stated plainly — these are real, not hypothetical:
 
    **Never kill the user's upstream instance.**
 
-2. **Development runs against a Helix instance with `storage: memory`.**
-   Restarting Helix loses all data. Use `helix start dev --disk` when you need
-   persistence.
+2. **Persistence is the default; in-memory is opt-in.** The Quick start's
+   `helix start dev --disk --persist` writes the storage mode into
+   `helix.toml`, so a plain `helix start dev` keeps data across restarts. An
+   instance started *without* `--disk` still runs `storage: memory` and loses
+   everything on restart.
 
 3. **Listings are ordered by node `$id` descending (insertion order), not by
    timestamp.** The engine cannot correctly sort `dateTime` properties —

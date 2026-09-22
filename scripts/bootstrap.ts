@@ -7,6 +7,7 @@
  *
  * Run: npx tsx scripts/bootstrap.ts
  */
+import { readFileSync } from "node:fs";
 import { Client, HelixError } from "@helix-db/helix-db";
 import { bootstrapIndexes, searchByText, searchByTextParams } from "../db/queries";
 
@@ -27,7 +28,28 @@ function describeError(err: unknown): string {
   return String(err);
 }
 
+/**
+ * P0.4 advisory: helix.toml declares the dev instance's storage mode. When
+ * `storage = "disk"` is absent the instance is IN-MEMORY — every Helix
+ * restart wipes it — so say so loudly instead of losing data silently.
+ * Advisory only: never blocks bootstrap (unreadable helix.toml -> skip).
+ */
+function warnIfVolatileStorage(): void {
+  try {
+    const toml = readFileSync(new URL("../helix.toml", import.meta.url), "utf8");
+    if (!/storage\s*=\s*"disk"/.test(toml)) {
+      console.error(
+        `[agentmemory] WARNING: helix.toml lacks storage = "disk" — this Helix dev ` +
+          `instance is in-memory: EVERY restart wipes it. Run: helix start dev --disk --persist`,
+      );
+    }
+  } catch {
+    // helix.toml unreadable: skip the advisory (bootstrap must not fail on it).
+  }
+}
+
 async function main(): Promise<void> {
+  warnIfVolatileStorage();
   const client = Client.server(url);
 
   try {
