@@ -43,7 +43,7 @@ this lane's own deliverables (plan steps 5 and 7).
 | Claim | How I checked | Result |
 |---|---|---|
 | typecheck clean | `npm run typecheck` | exit 0 |
-| injection green | `npx tsx scripts/verify-injection.ts` | `ALL PASS` (70 assertions) |
+| injection green | `npx tsx scripts/verify-injection.ts` | `ALL PASS` (73 assertions — erratum: originally recorded here as 70; corrected 2026-09-22 per QA-02, output reproduced as 73 by all reviewers) |
 | our server alive on 3151 | `curl http://127.0.0.1:3151/agentmemory/livez` | `{"status":"ok"}` / HTTP 200 |
 | EADDRINUSE hint exists + matches docs | read `src/server.ts:508-516`; statically cross-checked `scripts/verify-env.ts:393-431` assertions (`port N is already in use`, `NEVER kill`, `3111/3112/3113`, `AGENT_MEMORY_PORT=3151 npm run dev`) | code and assertions agree; `verify-env` not executed (forbidden — port conflict with parallel reviewers) |
 | legacy warning is name-only | read `src/env.ts:46-50` | `[agentmemory] deprecated <NAME> in use; rename to <NEW>` — variables only, once per var |
