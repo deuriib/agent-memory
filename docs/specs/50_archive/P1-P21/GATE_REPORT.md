@@ -55,6 +55,13 @@ Every round-1 CONDITIONAL condition, in order. All cleared by fix + re-verificat
 | **W1** | **gitleaks local run unavailable** (2× download timeout, escalated; risk RK-009) | accepted risk, standing condition on merge | pass — local secret scan impossible this session; manual reviewer diff scans found zero secret-like material | pass — CI P0.2 sha256-pinned gitleaks `secret-scan` job (untouched by this lane: 0-line `.github/` diff across `eb279a6..83e2f3a`), owner: orchestrator (engineering) | pass — **pre-merge condition: first CI secret-scan green at/after `9210208`**; expiry: first push after this lane; re-review owner: orchestrator | PASS |
 | **W2** | **purge has no Helix request timeout** (RL-002 — SDK exposes none, proven) | accepted risk recorded in `scripts/purge.ts` header + contract §3 | pass — no SDK API exists; ops script run by a human | pass — fail-closed arg guard, `BATCH_LIMIT`/`MAX_BATCHES`/no-progress bounds, per-batch `purge-progress` output, operator Ctrl-C; owner: engineering | pass — re-review at next release (v0.5.0) or 2026-12-22, whichever first; re-review owner: engineering | PASS |
 
+> **W1 condition SATISFIED (2026-09-23):** first CI `secret-scan` green
+> at/after `9210208` = run `35830679212` at commit `69a9a8d` (job success).
+> The 2 findings it caught on the first run were reviewed fingerprint-scoped
+> false positives (dedup golden test vectors; recomputation proof in
+> `69a9a8d` commit body, suppressions in `.gitleaksignore`). The tag run
+> `35829774892` failure = the pre-review tree — tag left immutable.
+
 **Residual-risk:** application-side dedup is sound only within ONE writer process (multi-instance out of contract — ROADMAP P4.3 future), owner: engineering; Concept-node orphans on forget (DAT-001) — owner: engineering, expiry 2026-10-31/v0.5.0; NEL/ESC residual in `oneLine` (SEC-03) — owner: engineering, next security pass with the P3.1 server guard. Explicit, not silent: APPROVE+conditions without these records would be FAIL.
 
 **Substance backstop:** no box-tick is vacuous — W1/W2 name concrete evidence (`.d.ts` sweep, 0-line `.github/` diff, live guard re-runs); cleared conditions cite commit SHA + the raising reviewer's own re-verdict.

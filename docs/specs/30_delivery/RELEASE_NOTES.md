@@ -135,6 +135,10 @@ required)
   until the first CI `secret-scan` run green at/after `9210208`.
   Compensating control: the sha256-pinned gitleaks job was untouched by this
   lane (`.github/` diff `eb279a6..83e2f3a` = 0 lines).
+  **RESOLVED (2026-09-23):** first green run = `35830679212` (commit
+  `69a9a8d`, job success); the 2 first-run findings were reviewed
+  fingerprint-scoped false positives — dedup golden test vectors, recomputation
+  proof in the `69a9a8d` commit body.
 - **W2 — purge has no Helix request timeout** (accepted risk; the SDK exposes
   none): compensating controls = fail-closed arg guard, `BATCH_LIMIT` /
   `MAX_BATCHES` bounds, per-batch `purge-progress`, operator Ctrl-C;

@@ -114,7 +114,13 @@ Verbatim from `docs/specs/30_delivery/RELEASE_NOTES.md` v0.4.0:
   Creating the script = code = proposal lane; not created here.
 - **Residual risk / open conditions:** waiver **W1** pre-merge condition —
   first sha256-pinned CI `secret-scan` run green at/after `9210208` before
-  merge (owner: orchestrator; expiry: first push after this lane); waiver
+  merge (owner: orchestrator; expiry: first push after this lane) —
+  **SATISFIED 2026-09-23: run `35830679212` (main @ `69a9a8d`), job
+  `secret-scan` success — first green at/after `9210208`.** Its 2 findings
+  on the first run were reviewed fingerprint-scoped false positives (dedup
+  golden test vectors; recomputation proof in the `69a9a8d` commit body);
+  tag run `35829774892` failure = scanning the pre-review tree (tag v0.4.0
+  left immutable); waiver
   **W2** (purge has no Helix SDK timeout — accepted risk, compensating
   controls documented) until v0.5.0 / 2026-12-22 (owner: engineering);
   tracked findings table in `GATE_REPORT.md` (DAT-001 Concept orphans Med,
