@@ -6,10 +6,10 @@
   "description": "Persistent memory for AI coding agents, built on HelixDB (graph + vector + BM25 hybrid retrieval)",
   "license": "Apache-2.0",
   "exports": {
-    ".": "./.opencode/plugins/agent-memory.ts"
+    ".": "./plugins/opencode/plugins/agent-memory.ts"
   },
   "files": [
-    ".opencode/plugins/agent-memory.ts"
+    "./plugins/opencode/plugins/agent-memory.ts"
   ],
   "engines": {
     "node": ">=20.0.0"

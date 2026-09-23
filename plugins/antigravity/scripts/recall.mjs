@@ -7,7 +7,7 @@
  * runs one bounded hybrid search against the agent-memory REST service, and
  * prints injectSteps so recalled memories reach the model without the agent
  * having to ask. This is the Antigravity analogue of the OpenCode plugin's
- * `context` hook (.opencode/plugins/agent-memory.ts).
+ * `context` hook (plugins/opencode/plugins/agent-memory.ts).
  *
  * Output contract:
  *   - hit  -> {"injectSteps":[{"ephemeralMessage":"[agent-memory] ..."}]}
