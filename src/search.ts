@@ -9,14 +9,20 @@
  *       score(doc) = Σ 1 / (60 + rank_i)     over every source that returned it
  *
  *   ranks are 1-based (standard RRF, Cormack et al.). Ties break by
- *   `importance` (desc), then `createdAt` (desc — newest first), then
- *   `memoryId` (asc) so output is fully deterministic.
+ *   boosted-DECAYED `importance` (desc — decay first, then the REQ-P1-4
+ *   recall boost, see compareFusedAt), then `createdAt` (desc — newest
+ *   first), then `memoryId` (asc) so output is fully deterministic. RRF
+ *   score wins first — the boost only ever reorders exact score ties.
  *
  * Each upstream source runs independently; a source failure is caught and
  * recorded in `signals` while the remaining sources still contribute rows.
  * Even an all-sources-down search returns 200 with empty results + signals.
+ *
+ * REQ-P1-4: every row actually RETURNED (post-TTL) is noted in the in-process
+ * recall ledger (src/confidence.ts) — hidden/expired rows are never recalled.
  */
 import { embed } from "./embed.js";
+import { confidenceBoost, noteRecall, recallCount } from "./confidence.js";
 import { failureSignal } from "./errors.js";
 import { decayedImportance, filterExpired } from "./lifecycle.js";
 import type { MemoryStore, SearchHit } from "./store.js";
@@ -94,6 +100,9 @@ export async function bm25Search(
   const rows = outcome.hits.map((hit) => ({ ...hit, source: "text" as const }));
   const kept = filterExpired(rows, Date.now());
   const hidden = rows.length - kept.length;
+  // REQ-P1-4: record recalls for the rows actually RETURNED. Expired (TTL-
+  // hidden) rows were never recalled; noteRecall ignores empty memoryId.
+  for (const row of kept) noteRecall(row.memoryId);
   return {
     mode: "bm25",
     results: kept,
@@ -124,18 +133,32 @@ function compareMemoryIdAsc(a: string, b: string): number {
  * per search so every row in one result set is compared against the same
  * instant — a tie-break can never flip mid-sort.
  *
- * Importance at the tie-break is the TIME-DECAYED value
- * (decayedImportance — λ from AGENT_MEMORY_DECAY_LAMBDA, factor 1 when
- * off/invalid, so this is byte-identical to the old stored-importance
- * comparison when decay is OFF). Stored/importance shown to callers is
- * never rewritten — decay influences ORDER only.
+ * Tie order (frozen, contract §3 as amended by REQ-P1-4):
+ *   1. RRF score DESC — wins FIRST. Everything below only reorders exact
+ *      score TIES; a recall can never promote a row over a higher score.
+ *   2. confidenceBoost(decayedImportance(...), recallCount(memoryId)):
+ *      DECAY FIRST (λ from AGENT_MEMORY_DECAY_LAMBDA, factor 1 when off,
+ *      so this is byte-identical to the old stored-importance comparison
+ *      when decay is OFF and the row was never recalled), THEN the recall
+ *      boost (+0.2·n/(n+1), in-process ledger — src/confidence.ts).
+ *      Neither rewrites the row's stored `importance` — both influence
+ *      ORDER only. Counts come from PRIOR searches: noteRecall runs after
+ *      this sort, so a search never reorders itself.
+ *   3. createdAt DESC (newest first).
+ *   4. memoryId ASC — fully deterministic.
  */
 function compareFusedAt(nowMs: number): (a: FusedResultRow, b: FusedResultRow) => number {
   return (a, b) => {
-    if (b.score !== a.score) return b.score - a.score; // RRF score desc
-    const decayedB = decayedImportance(b.importance, b.createdAt, nowMs);
-    const decayedA = decayedImportance(a.importance, a.createdAt, nowMs);
-    if (decayedB !== decayedA) return decayedB - decayedA; // decayed importance desc
+    if (b.score !== a.score) return b.score - a.score; // RRF score desc (ties only below)
+    const boostedB = confidenceBoost(
+      decayedImportance(b.importance, b.createdAt, nowMs),
+      recallCount(b.memoryId),
+    );
+    const boostedA = confidenceBoost(
+      decayedImportance(a.importance, a.createdAt, nowMs),
+      recallCount(a.memoryId),
+    );
+    if (boostedB !== boostedA) return boostedB - boostedA; // boosted decayed importance desc
     const byDate = compareCreatedAtDesc(a.createdAt, b.createdAt); // newer first
     if (byDate !== 0) return byDate;
     return compareMemoryIdAsc(a.memoryId, b.memoryId); // fully deterministic
@@ -215,6 +238,10 @@ export async function hybridSearch(
   const kept = filterExpired(sliced, nowMs);
   const hidden = sliced.length - kept.length;
   if (hidden > 0) signals.push(ttlSignal(hidden));
+  // REQ-P1-4: record recalls for the rows actually RETURNED. Deliberately
+  // AFTER the sort above — this search's notes never reorder this result
+  // set (they apply to the NEXT search that returns the same rows).
+  for (const row of kept) noteRecall(row.memoryId);
 
   // Envelope signals (source failures + ttl) are attached per row AFTER the
   // filter decision, so rows and envelope always agree.

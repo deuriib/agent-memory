@@ -35,6 +35,7 @@ import {
 } from "../db/queries.js";
 import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
+import { deriveWriteImportance } from "./confidence.js";
 import { contentHash, normalizeContent } from "./lifecycle.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
@@ -102,7 +103,14 @@ export interface RememberInput {
   project: string;
   sessionId: string;
   origin: string;
-  importance: number;
+  /**
+   * REQ-P1-4: caller-supplied importance (0..1) — caller WINS when present.
+   * Absent -> the store derives it at insert time from provenance (origin)
+   * + the EFFECTIVE concept count actually stored (`deriveWriteImportance`).
+   * Dedup/consolidation first-wins paths never derive: the existing row
+   * keeps its ORIGINAL importance.
+   */
+  importance?: number;
   concepts: string[];
 }
 
@@ -493,6 +501,11 @@ export class HelixStore implements MemoryStore {
     const effectiveConcepts =
       input.concepts.length > 0 ? [...input.concepts] : extractConcepts(input.content);
     const concepts: Record<string, PropertyValueInput>[] = effectiveConcepts.map((name) => ({ name }));
+    // REQ-P1-4: caller-supplied importance wins; absent -> derive from
+    // provenance (origin) + the EFFECTIVE concept count stored above. The
+    // old flat 0.5 server default is gone (server/mcp pass the raw optional).
+    const effectiveImportance =
+      input.importance ?? deriveWriteImportance(input.origin, effectiveConcepts.length);
 
     const response = await this.send(
       saveMemoryQuery().toQueryRequest(saveMemoryParams, {
@@ -502,7 +515,7 @@ export class HelixStore implements MemoryStore {
         sessionId: input.sessionId,
         embedding,
         origin: input.origin,
-        importance: input.importance,
+        importance: effectiveImportance,
         createdAt,
         concepts,
         dedupKey,

@@ -18,8 +18,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { confidenceBoost, deriveWriteImportance, recallCount, resetRecalls } from "../src/confidence.js";
 import { embed } from "../src/embed.js";
 import { logSafeNote } from "../src/errors.js";
+import { bm25Search, hybridSearch } from "../src/search.js";
+import type { MemoryStore, SearchHit } from "../src/store.js";
 
 const BASE_RAW = process.env["AGENT_MEMORY_URL"] ?? "http://127.0.0.1:3111";
 const BASE = new URL(BASE_RAW.endsWith("/") ? BASE_RAW : `${BASE_RAW}/`);
@@ -341,7 +344,8 @@ async function main(): Promise<void> {
   check("remember C: status 201", remC.status === 201, `got ${remC.status}`);
   const rC = shape("remember C: body shape", remC.body, rememberResultSchema);
 
-  // D: no sessionId / origin / importance / concepts -> contract defaults.
+  // D: no sessionId / origin / concepts -> contract defaults; no importance
+  // -> DERIVED at write time (REQ-P1-4, no flat 0.5 anywhere).
   const remD = await call("POST", "/memory/remember", undefined, {
     content: `defaults probe memory ${nonce}`,
     project,
@@ -381,7 +385,15 @@ async function main(): Promise<void> {
     check("bm25: includes remembered A", bm.results.some((row) => row.memoryId === rA.id));
     const rowD = bm.results.find((row) => row.memoryId === rD.id);
     check("bm25: D row shows origin default 'rest'", rowD?.origin === "rest", rowD?.origin);
-    check("bm25: D row shows importance default 0.5", rowD?.importance === 0.5, String(rowD?.importance));
+    // REQ-P1-4: absent importance is DERIVED (origin base + concept bonus),
+    // not the retired flat 0.5 — expected value computed from the concepts
+    // the 201 actually echoed, so derivation drift cannot self-pass.
+    const expectedImportanceD = deriveWriteImportance("rest", rD.concepts.length);
+    check(
+      "bm25: D row shows DERIVED importance (REQ-P1-4: rest base + concept bonus)",
+      rowD?.importance === expectedImportanceD && expectedImportanceD !== 0.5,
+      `got ${rowD?.importance}, expected ${expectedImportanceD}`,
+    );
     check("bm25: D row shows auto sessionId", rowD?.sessionId === rD.sessionId, rowD?.sessionId);
   }
 
@@ -960,6 +972,200 @@ async function main(): Promise<void> {
     rcp2 !== undefined && rcp2.count === 0 && !rcp2.recap.includes(p31content),
     rcp2 === undefined ? "no envelope" : `count=${rcp2.count}`,
   );
+
+  /* O. REQ-P1-4 derived confidence E2E — write-time derivation, caller-wins,
+   * and the recall-ledger/tie-break wiring of src/search.ts.
+   *
+   * Isolated project so the §5 count math asserted in K stays untouched.
+   * The recall LEDGER lives in the SERVER process — REST only exposes the
+   * stored importance, and an exact RRF-tie over REST would need float-equal
+   * scores out of two live indexes (brittle). So: stored-importance
+   * assertions go through REST (real server), while the LEDGER WIRING and
+   * the recall-lift ORDERING run the REAL bm25Search/hybridSearch
+   * in-process against a stub store (the exact functions the server calls).
+   * Unit math goldens live in verify-lifecycle section F. The exact-RRF-tie
+   * REST construction is documented as skipped in the lane report. */
+  const confProject = `verify-conf-${randomUUID().slice(0, 8)}`;
+  const confContent = (tag: string): string => `confidence ${tag} probe ${nonce} derived importance routing`;
+
+  // O1. lesson WITHOUT importance -> derived (lesson base 0.75 + bonus).
+  const oLes = await call("POST", "/memory/lesson", undefined, {
+    content: confContent("lesson"),
+    project: confProject,
+  });
+  check("confidence: lesson without importance -> 201", oLes.status === 201, `got ${oLes.status}; body=${brief(oLes.body)}`);
+  const rOLes = shape("confidence: lesson body", oLes.body, rememberResultSchema);
+
+  // O2. remember WITHOUT importance (origin rest default) -> derived.
+  const oRest = await call("POST", "/memory/remember", undefined, {
+    content: confContent("rest"),
+    project: confProject,
+  });
+  check("confidence: rest without importance -> 201", oRest.status === 201, `got ${oRest.status}; body=${brief(oRest.body)}`);
+  const rORest = shape("confidence: rest body", oRest.body, rememberResultSchema);
+
+  // O3. remember with hook origin WITHOUT importance -> hook base 0.55 + bonus.
+  const oHook = await call("POST", "/memory/remember", undefined, {
+    content: confContent("hook"),
+    origin: "hook:Stop",
+    project: confProject,
+  });
+  check("confidence: hook:Stop without importance -> 201", oHook.status === 201, `got ${oHook.status}; body=${brief(oHook.body)}`);
+  const rOHook = shape("confidence: hook body", oHook.body, rememberResultSchema);
+
+  // O4. explicit importance -> caller WINS, stored verbatim.
+  const oExp = await call("POST", "/memory/remember", undefined, {
+    content: confContent("explicit"),
+    project: confProject,
+    importance: 0.42,
+  });
+  check("confidence: explicit importance -> 201", oExp.status === 201, `got ${oExp.status}; body=${brief(oExp.body)}`);
+  const rOExp = shape("confidence: explicit body", oExp.body, rememberResultSchema);
+
+  if (rOLes === undefined || rORest === undefined || rOHook === undefined || rOExp === undefined) {
+    throw new Error("aborting: a confidence write step failed (see FAIL lines above)");
+  }
+
+  // ONE bm25 search over the isolated project (all four rows share the nonce).
+  const oSearch = await call("POST", "/memory/search", undefined, {
+    query: nonce,
+    project: confProject,
+    limit: 10,
+  });
+  check("confidence: bm25 status 200", oSearch.status === 200, `got ${oSearch.status}; body=${brief(oSearch.body)}`);
+  const obm = shape("confidence: bm25 envelope", oSearch.body, bm25EnvelopeSchema);
+  if (obm !== undefined) {
+    const lessonRow = obm.results.find((row) => row.memoryId === rOLes.id);
+    const expectedLesson = deriveWriteImportance("lesson", rOLes.concepts.length);
+    check(
+      "confidence: lesson row stores DERIVED importance (== derive(lesson, echoed len), >= 0.75)",
+      lessonRow !== undefined && lessonRow.importance === expectedLesson && lessonRow.importance >= 0.75,
+      `row=${String(lessonRow?.importance)} expected=${expectedLesson}`,
+    );
+    const restRow = obm.results.find((row) => row.memoryId === rORest.id);
+    const expectedRest = deriveWriteImportance("rest", rORest.concepts.length);
+    check(
+      "confidence: rest row stores DERIVED importance (== derive(rest, echoed len), != 0.5)",
+      restRow !== undefined && restRow.importance === expectedRest && expectedRest !== 0.5,
+      `row=${String(restRow?.importance)} expected=${expectedRest}`,
+    );
+    const hookRow = obm.results.find((row) => row.memoryId === rOHook.id);
+    const expectedHook = deriveWriteImportance("hook:Stop", rOHook.concepts.length);
+    check(
+      "confidence: hook row stores DERIVED importance (== derive(hook:Stop, echoed len), >= 0.55)",
+      hookRow !== undefined && hookRow.importance === expectedHook && hookRow.importance >= 0.55,
+      `row=${String(hookRow?.importance)} expected=${expectedHook}`,
+    );
+    const expRow = obm.results.find((row) => row.memoryId === rOExp.id);
+    check(
+      "confidence: explicit importance WINS (caller 0.42 stored verbatim)",
+      expRow !== undefined && expRow.importance === 0.42,
+      `row=${String(expRow?.importance)}`,
+    );
+  }
+
+  /* O5. Recall-ledger WIRING — the real bm25Search against a stub store:
+   * returned (kept) rows increment the ledger, never-returned rows do not. */
+  resetRecalls();
+  const confX: SearchHit = {
+    id: "10",
+    memoryId: "conf-x",
+    content: "confidence tie row x",
+    sessionId: "conf-sid-x",
+    origin: "rest",
+    importance: 0.6,
+    createdAt: new Date(Date.now() - 7_200_000).toISOString(), // X strictly OLDER than Y
+    score: 0,
+  };
+  const confY: SearchHit = {
+    id: "11",
+    memoryId: "conf-y",
+    content: "confidence tie row y",
+    sessionId: "conf-sid-y",
+    origin: "rest",
+    importance: 0.6,
+    createdAt: new Date().toISOString(), // Y newer — baseline tie falls here
+    score: 0,
+  };
+  const stubStore = (textRows: SearchHit[], vectorRows: SearchHit[] = []): MemoryStore => ({
+    remember: () => Promise.reject(new Error("stub: remember not exercised")),
+    searchByText: () => Promise.resolve(textRows),
+    searchByVector: () => Promise.resolve(vectorRows),
+    graphSearch: () => Promise.reject(new Error("stub: graphSearch not exercised")),
+    listSessions: () => Promise.reject(new Error("stub: listSessions not exercised")),
+    sessionMemories: () => Promise.reject(new Error("stub: sessionMemories not exercised")),
+    forget: () => Promise.reject(new Error("stub: forget not exercised")),
+    healthCounts: () => Promise.reject(new Error("stub: healthCounts not exercised")),
+  });
+  const stubBm25 = (q: string): { query: string; project: string; limit: number } => ({
+    query: q,
+    project: confProject,
+    limit: 10,
+  });
+  const stubHybrid = { query: "confidence tie", concepts: [] as string[], project: confProject, limit: 10 };
+  for (let i = 0; i < 3; i++) {
+    await bm25Search(stubStore([confX]), stubBm25(`recall pass ${i}`));
+  }
+  check(
+    "recall wiring: 3 searches RETURNING x -> recallCount(x) === 3",
+    recallCount("conf-x") === 3,
+    String(recallCount("conf-x")),
+  );
+  check(
+    "recall wiring: never-returned row stays at 0",
+    recallCount("conf-y") === 0,
+    String(recallCount("conf-y")),
+  );
+  check(
+    "recall lift: confidenceBoost(stored, N) > confidenceBoost(stored, 0)",
+    confidenceBoost(0.6, recallCount("conf-x")) > confidenceBoost(0.6, 0),
+    `${confidenceBoost(0.6, recallCount("conf-x"))} vs ${confidenceBoost(0.6, 0)}`,
+  );
+
+  /* O6. Recall-lift ORDERING through the real fused tie-break: X (text
+   * source, rank 1) and Y (vector source, rank 1) score EXACTLY 1/61 each
+   * -> an exact RRF tie; equal stored importance (0.6) with decay OFF ->
+   * baseline order falls through to createdAt (newer Y first). After X is
+   * recalled more than Y, the REQ-P1-4 boost flips the tie to X — without
+   * changing either row's stored importance. */
+  resetRecalls();
+  const hyBefore = await hybridSearch(stubStore([confX], [confY]), stubHybrid);
+  check(
+    "recall tie: constructed exact RRF tie (both scores 1/61)",
+    hyBefore.results.length === 2 &&
+      hyBefore.results[0] !== undefined &&
+      hyBefore.results[1] !== undefined &&
+      hyBefore.results[0].score === hyBefore.results[1].score,
+    JSON.stringify(hyBefore.results.map((row) => ({ id: row.memoryId, score: row.score }))),
+  );
+  check(
+    "recall tie: baseline (differentially unrecalled) -> NEWER y ranks first via createdAt",
+    hyBefore.results[0]?.memoryId === "conf-y",
+    hyBefore.results.map((row) => row.memoryId).join(","),
+  );
+  await bm25Search(stubStore([confX]), stubBm25("one more recall for x"));
+  const hyAfter = await hybridSearch(stubStore([confX], [confY]), stubHybrid);
+  check(
+    "recall tie: after recalling x more than y, BOOSTED x outranks newer y",
+    hyAfter.results[0]?.memoryId === "conf-x",
+    hyAfter.results.map((row) => row.memoryId).join(","),
+  );
+  check(
+    "recall tie: ledger asymmetry observed (x > y)",
+    recallCount("conf-x") > recallCount("conf-y"),
+    JSON.stringify({ x: recallCount("conf-x"), y: recallCount("conf-y") }),
+  );
+  check(
+    "recall tie: stored importances never rewritten by recall (both still 0.6)",
+    hyAfter.results.every((row) => row.importance === 0.6),
+    JSON.stringify(hyAfter.results.map((row) => ({ id: row.memoryId, importance: row.importance }))),
+  );
+  resetRecalls();
+
+  // O7. Best-effort cleanup of this section's rows (isolated project).
+  for (const row of [rOLes, rORest, rOHook, rOExp]) {
+    await call("POST", "/memory/forget", undefined, { memoryId: row.id });
+  }
 
   /* M. Summary. */
   console.log(`\n${passed} passed, ${failures.length} failed`);

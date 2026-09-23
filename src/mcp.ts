@@ -26,7 +26,6 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_ORIGIN = "mcp";
 /** `memory_lesson` forces this origin (contract §3, P3.1). */
 const LESSON_ORIGIN = "lesson";
-const DEFAULT_IMPORTANCE = 0.5;
 
 const projectSchema = z.string().trim().min(1).max(200);
 const limitSchema = z.number().int().min(1).max(100);
@@ -160,7 +159,8 @@ function registerTools(mcp: McpServer, store: MemoryStore, secret: string | unde
           project: args.project ?? DEFAULT_PROJECT,
           sessionId: args.sessionId ?? crypto.randomUUID(),
           origin: args.origin ?? DEFAULT_ORIGIN,
-          importance: args.importance ?? DEFAULT_IMPORTANCE,
+          // REQ-P1-4: raw optional — absent importance is DERIVED in the store.
+          importance: args.importance,
         });
         return ok(result);
       }),
@@ -338,7 +338,8 @@ function registerTools(mcp: McpServer, store: MemoryStore, secret: string | unde
           project: args.project ?? DEFAULT_PROJECT,
           sessionId: args.sessionId ?? crypto.randomUUID(),
           origin: LESSON_ORIGIN,
-          importance: args.importance ?? DEFAULT_IMPORTANCE,
+          // REQ-P1-4: raw optional — the store derives lesson importance when absent.
+          importance: args.importance,
         });
         return ok(result);
       }),

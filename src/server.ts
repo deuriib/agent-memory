@@ -29,7 +29,6 @@ const DEFAULT_LIMIT = 10;
 const DEFAULT_ORIGIN = "rest";
 /** `/memory/lesson` forces this origin (contract §3, P3.1). */
 const LESSON_ORIGIN = "lesson";
-const DEFAULT_IMPORTANCE = 0.5;
 const MAX_BODY_BYTES = 1_048_576; // 1 MiB
 
 /* ------------------------------------------------------------------ */
@@ -268,7 +267,9 @@ async function routeRequest(
       project: body.project ?? DEFAULT_PROJECT,
       sessionId: body.sessionId ?? randomUUID(),
       origin: body.origin ?? DEFAULT_ORIGIN,
-      importance: body.importance ?? DEFAULT_IMPORTANCE,
+      // REQ-P1-4: pass the raw optional — absent importance is DERIVED in
+      // the store (deriveWriteImportance), never flattened to 0.5 here.
+      importance: body.importance,
     });
     sendJson(res, 201, result);
     return 201;
@@ -390,7 +391,8 @@ async function routeRequest(
       project: body.project ?? DEFAULT_PROJECT,
       sessionId: body.sessionId ?? randomUUID(),
       origin: LESSON_ORIGIN,
-      importance: body.importance ?? DEFAULT_IMPORTANCE,
+      // REQ-P1-4: raw optional — the store derives lesson importance when absent.
+      importance: body.importance,
     });
     sendJson(res, 201, result);
     return 201;
