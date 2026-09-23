@@ -59,8 +59,19 @@ export function normalizeContent(text: string): string {
  * `text` is whatever the caller wants fingerprinted (dedup passes
  * `normalizeContent(content)`). Project participates in the hash, so the
  * same sentence in two projects yields two different keys — dedup never
- * crosses project boundaries. The "\n" separator makes
- * (project="a", text="b\nc") distinct from (project="a\nb", text="c").
+ * crosses project boundaries.
+ *
+ * PRECONDITION — the "\n" separator alone does NOT make the split safe.
+ * At the function level the claim "(project="a", text="b\nc") distinct from
+ * (project="a\nb", text="c")" is FALSE: both hash to the same value
+ * (ea7fb08b… — both inputs are literally "a\nb\nc"). The PRODUCTION path is
+ * safe only because dedup always passes normalizeContent(content), which
+ * collapses every whitespace run (newlines included) to a single space:
+ * after normalization `text` contains no "\n", so an alternate colliding
+ * split would require a newline in `text` — impossible once normalized
+ * (the split at the last "\n" then uniquely recovers (project, text)).
+ * A future caller that skips normalization reopens the collision: never pass
+ * raw text with embedded newlines as `text`.
  *
  * NOTE: probe3 proved the unique index does not enforce this key — the hash
  * is only as strong as the application-side pre-check that consumes it.

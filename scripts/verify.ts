@@ -558,6 +558,139 @@ async function main(): Promise<void> {
     `got ${hRace?.counts.memories}`,
   );
 
+  /* F4. dedup × hook interaction (QA-05 / CE-001) — PINS the contract §3
+   * first-wins + session-materialization semantics. Hook-style fixed content
+   * ("agent session stopped", origin "hook:Stop", NO nonce — exactly what
+   * hooks/capture.mjs stores for Stop) on an isolated random project, so the
+   * dedup key is fresh per run even though the content is a constant:
+   *   (a) novel save in session S1        -> 201, deduped:false;
+   *   (b) SAME content in NEW session S2  -> 201, deduped:true, SAME id,
+   *       memory count unchanged, and NO Session node for S2 (sessions
+   *       materialize only on novel writes) — the response still echoes the
+   *       REQUEST's S2 per §3 while the row stays under S1 (sessionMemories
+   *       of S2 does not list it until S2 writes something novel);
+   *   (c) same content in ANOTHER project -> new row (dedup is
+   *       project-scoped FIRST-WINS). Documented in contract §3. */
+  const hookProject = `verify-hook-${randomUUID().slice(0, 8)}`;
+  const hookProjectB = `verify-hook-b-${randomUUID().slice(0, 8)}`;
+  const hookContent = "agent session stopped"; // exact Stop-hook allowlisted string
+  const hookS1 = `verify-hook-s1-${randomUUID().slice(0, 8)}`;
+  const hookS2 = `verify-hook-s2-${randomUUID().slice(0, 8)}`;
+
+  const hd1a = await call("POST", "/memory/remember", undefined, {
+    content: hookContent,
+    origin: "hook:Stop",
+    project: hookProject,
+    sessionId: hookS1,
+  });
+  check(
+    "hook-dedup: S1 novel save status 201",
+    hd1a.status === 201,
+    `got ${hd1a.status}; body=${brief(hd1a.body)}`,
+  );
+  const rhd1 = shape("hook-dedup: S1 body shape", hd1a.body, rememberResultSchema);
+  check("hook-dedup: S1 deduped=false", rhd1?.deduped === false, String(rhd1?.deduped));
+  check("hook-dedup: S1 echoes sessionId S1", rhd1?.sessionId === hookS1, rhd1?.sessionId);
+
+  const hd2 = await call("POST", "/memory/remember", undefined, {
+    content: hookContent,
+    origin: "hook:Stop",
+    project: hookProject,
+    sessionId: hookS2,
+  });
+  check("hook-dedup: S2 repeat save status 201", hd2.status === 201, `got ${hd2.status}; body=${brief(hd2.body)}`);
+  const rhd2 = shape("hook-dedup: S2 body shape", hd2.body, rememberResultSchema);
+  check(
+    "hook-dedup: S2 deduped=true + SAME id (first-wins, no new row)",
+    rhd1 !== undefined && rhd2 !== undefined && rhd2.deduped === true && rhd2.id === rhd1.id,
+    `ids ${rhd1?.id} vs ${rhd2?.id}, deduped=${String(rhd2?.deduped)}`,
+  );
+  check(
+    "hook-dedup: S2 response echoes REQUEST sessionId (§3) while row stays under S1",
+    rhd2?.sessionId === hookS2,
+    rhd2?.sessionId,
+  );
+
+  const hHook = shape(
+    "hook-dedup: project health envelope",
+    (await call("GET", "/memory/health", { project: hookProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "hook-dedup: memory count stays 1 after the S2 dedup hit (NO new memory)",
+    hHook?.counts.memories === 1,
+    `got ${hHook?.counts.memories}`,
+  );
+
+  const sesHook = shape(
+    "hook-dedup: sessions envelope",
+    (await call("GET", "/memory/sessions", { project: hookProject, limit: "50" })).body,
+    sessionsEnvelopeSchema,
+  );
+  const hookSessionIds = new Set(sesHook?.sessions.map((row) => row.sessionId) ?? []);
+  check(
+    "hook-dedup: listSessions has S1 only — S2 never materialized (dedup hit writes no Session node)",
+    hookSessionIds.size === 1 && hookSessionIds.has(hookS1) && !hookSessionIds.has(hookS2),
+    JSON.stringify([...hookSessionIds]),
+  );
+
+  const smH1 = shape(
+    "hook-dedup: S1 sessionMemories envelope",
+    (
+      await call("GET", `/memory/sessions/${encodeURIComponent(hookS1)}/memories`, {
+        project: hookProject,
+        limit: "50",
+      })
+    ).body,
+    memoriesEnvelopeSchema,
+  );
+  check(
+    "hook-dedup: sessionMemories(S1) contains the row (original session keeps it)",
+    rhd1 !== undefined && smH1 !== undefined && smH1.memories.some((row) => row.memoryId === rhd1.id),
+  );
+  const smH2 = shape(
+    "hook-dedup: S2 sessionMemories envelope",
+    (
+      await call("GET", `/memory/sessions/${encodeURIComponent(hookS2)}/memories`, {
+        project: hookProject,
+        limit: "50",
+      })
+    ).body,
+    memoriesEnvelopeSchema,
+  );
+  check(
+    "hook-dedup: sessionMemories(S2) does NOT list it (echoed session ≠ membership)",
+    rhd1 !== undefined && smH2 !== undefined && !smH2.memories.some((row) => row.memoryId === rhd1.id),
+  );
+
+  const hd3 = await call("POST", "/memory/remember", undefined, {
+    content: hookContent,
+    origin: "hook:Stop",
+    project: hookProjectB,
+    sessionId: hookS1,
+  });
+  check(
+    "hook-dedup: cross-project save status 201",
+    hd3.status === 201,
+    `got ${hd3.status}; body=${brief(hd3.body)}`,
+  );
+  const rhd3 = shape("hook-dedup: cross-project body shape", hd3.body, rememberResultSchema);
+  check(
+    "hook-dedup: same content DIFFERENT project -> NEW row (deduped=false, other id)",
+    rhd1 !== undefined && rhd3 !== undefined && rhd3.deduped === false && rhd3.id !== rhd1.id,
+    `ids ${rhd1?.id} vs ${rhd3?.id}, deduped=${String(rhd3?.deduped)}`,
+  );
+  const hHookB = shape(
+    "hook-dedup: cross-project health envelope",
+    (await call("GET", "/memory/health", { project: hookProjectB })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "hook-dedup: other project holds its own 1 memory (dedup is project-scoped)",
+    hHookB?.counts.memories === 1,
+    `got ${hHookB?.counts.memories}`,
+  );
+
   /* G. sessions list. */
   const ses = await call("GET", "/memory/sessions", { project, limit: "50" });
   check("sessions: status 200", ses.status === 200, `got ${ses.status}; body=${brief(ses.body)}`);

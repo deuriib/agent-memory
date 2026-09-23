@@ -15,13 +15,27 @@
  *                 every project that has memories)
  *   --dry-run     print would-delete count + ids only; NO deletions
  *
- * Output is allowlisted: plan line, dry-run count+ids, one governance line
+ * Output is allowlisted: plan line, dry-run count+ids, batch progress lines
+ *   purge-progress project=<P> batch=<N> deleted=<M>, one governance line
  *   purge project=<P|all> days=<N> deleted=<M> at=<ISO>
- * and healthCount before/after lines (counts only). Content is never
- * printed. Talks directly to Helix (HELIX_URL, default
+ *   (+ ` status=partial` when a failed run records deletions it completed),
+ * and healthCount before/after lines (counts only). Every value interpolated
+ * into a rendered stdout/stderr line is collapsed to a single line first
+ * (oneLine — CWE-117/SEC-P121-01, same transform as the P3.1 delete-reason
+ * guard in src/server.ts; PRINT-site only, query values stay verbatim).
+ * Content is never printed. Talks directly to Helix (HELIX_URL, default
  * http://localhost:6969) — the running instance is never restarted.
  *
  * Exit codes: 0 success · 1 operational failure · 2 usage/validation error.
+ *
+ * Accepted risk — no request timeout (RL-002/C6): the Helix SDK documents NO
+ * Client/transport timeout and NO AbortSignal option (verified against
+ * dist/index.d.ts: Client's constructor takes only a url, QueryExecution
+ * Request.send() takes no options), so a hung Helix stalls this CLI
+ * indefinitely. Compensating controls: bounded batches (MAX_BATCHES hard
+ * stop + no-progress guard), per-batch progress output (operator sees
+ * liveness), and operator Ctrl-C. Residual risk accepted — owner:
+ * engineering (contract §3). Do NOT fake a timeout via SDK internals.
  *
  * Run: npx tsx scripts/probe3.ts must be GREEN for listExpired first (it is
  * — probe3 (e): strict older-than on dateTime, project-scoped, ordered).
@@ -47,6 +61,29 @@ const MAX_BATCHES = 10_000; // hard stop even with progress (runaway guard)
 const USAGE =
   "usage: npx tsx scripts/purge.ts --days <N>=1..6 digits> (--project <name> | --all) [--dry-run]";
 
+/**
+ * Print-site single-line guard (CWE-117 / SEC-P121-01 + CE-003): EVERY value
+ * interpolated into a rendered stdout/stderr line passes through here first —
+ * collapse whitespace runs (incl. embedded `\n`/`\r`) to one space + trim,
+ * the same transform as the P3.1 delete-reason guard in src/server.ts. Only
+ * the PRINTED form is normalized; the query still receives the verbatim
+ * value, so a stored newline-bearing project name can no longer forge a
+ * second plan/health/governance line out of one purge output line.
+ */
+function oneLine(value: string | number | boolean): string {
+  return String(value).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Failure-path audit cursor (OPS-001/C2): REAL deletions confirmed so far,
+ * plus the run's allowlisted scope/days. Module-scoped so main().catch can
+ * render the partial audit line even when main() throws mid-run — completed
+ * deletions must never escape the audit trail on an exit-1 failure. Counts
+ * only confirmed forgetMemory deletions (dry-run would-delete never touches
+ * it). Fields stay on the strict allowlist: scope, days, deleted, at.
+ */
+const audit = { scope: "unknown", days: 0, deleted: 0 };
+
 interface CliArgs {
   days: number;
   project: string | undefined;
@@ -55,7 +92,7 @@ interface CliArgs {
 }
 
 function failUsage(message: string): never {
-  console.error(`purge: ${message}`);
+  console.error(`purge: ${oneLine(message)}`);
   console.error(USAGE);
   process.exit(2);
 }
@@ -248,9 +285,9 @@ async function purgeProject(
       .send();
     const ids = expiredIds(res);
     if (ids.length >= DRY_RUN_LIMIT) {
-      console.error(`purge-dry-run: page cap ${DRY_RUN_LIMIT} reached for ${project} — count may be higher`);
+      console.error(`purge-dry-run: page cap ${DRY_RUN_LIMIT} reached for ${oneLine(project)} — count may be higher`);
     }
-    for (const id of ids) console.log(id); // ids only (spec: count + ids)
+    for (const id of ids) console.log(oneLine(id)); // ids only (spec: count + ids)
     return { project, deleted: ids.length, before: { memories: 0, sessions: 0 }, after: { memories: 0, sessions: 0 } };
   }
 
@@ -279,8 +316,15 @@ async function purgeProject(
       if (indicatesPresence(fr)) {
         deleted += 1;
         batchDeleted += 1;
+        audit.deleted += 1; // failure-path audit cursor (OPS-001/C2)
       }
     }
+    // Per-batch progress (allowlisted counts only) — RL-002/C6 compensating
+    // control: the operator sees liveness even though the SDK offers no
+    // request timeout. stderr, like the plan line; single-line via oneLine.
+    console.error(
+      `purge-progress project=${oneLine(project)} batch=${oneLine(batch)} deleted=${oneLine(deleted)}`,
+    );
     if (batchDeleted === 0) {
       throw new Error(
         `batch of ${ids.length} produced 0 deletions — aborting (no-progress guard, fail closed)`,
@@ -298,9 +342,14 @@ async function main(): Promise<void> {
   const cutoff = new Date(Date.now() - args.days * MS_PER_DAY).toISOString();
   const scope = args.all ? "all" : (args.project ?? "all");
 
+  // Failure-path audit cursor (OPS-001/C2): scope + days land here BEFORE the
+  // first query, so any later failure can render a complete partial line.
+  audit.scope = scope;
+  audit.days = args.days;
+
   // Plan line before any destructive action (allowlisted fields only).
   console.error(
-    `purge-plan project=${scope} days=${args.days} cutoff=${cutoff} dry_run=${args.dryRun}`,
+    `purge-plan project=${oneLine(scope)} days=${oneLine(args.days)} cutoff=${oneLine(cutoff)} dry_run=${oneLine(args.dryRun)}`,
   );
 
   const projects = args.all ? await discoverProjects(client) : [args.project ?? ""];
@@ -312,6 +361,8 @@ async function main(): Promise<void> {
   const results: ProjectResult[] = [];
   for (const project of projects) {
     if (project === "") continue;
+    // A mid-loop throw propagates to main().catch, which renders the partial
+    // audit line from `audit.deleted` before exiting 1 (OPS-001/C2).
     const result = await purgeProject(client, project, cutoff, args.dryRun);
     results.push(result);
     totalDeleted += result.deleted;
@@ -319,7 +370,7 @@ async function main(): Promise<void> {
 
   if (args.dryRun) {
     console.log(
-      `purge-dry-run project=${scope} days=${args.days} would-delete=${totalDeleted} at=${new Date().toISOString()}`,
+      `purge-dry-run project=${oneLine(scope)} days=${oneLine(args.days)} would-delete=${oneLine(totalDeleted)} at=${oneLine(new Date().toISOString())}`,
     );
     return;
   }
@@ -327,22 +378,32 @@ async function main(): Promise<void> {
   // healthCount before/after (counts only) — one pair per purged project.
   for (const r of results) {
     console.log(
-      `purge-health project=${r.project} phase=before memories=${r.before.memories} sessions=${r.before.sessions}`,
+      `purge-health project=${oneLine(r.project)} phase=before memories=${oneLine(r.before.memories)} sessions=${oneLine(r.before.sessions)}`,
     );
   }
   for (const r of results) {
     console.log(
-      `purge-health project=${r.project} phase=after memories=${r.after.memories} sessions=${r.after.sessions}`,
+      `purge-health project=${oneLine(r.project)} phase=after memories=${oneLine(r.after.memories)} sessions=${oneLine(r.after.sessions)}`,
     );
   }
 
   // ONE governance line (allowlisted fields: project, days, deleted, at).
   console.log(
-    `purge project=${scope} days=${args.days} deleted=${totalDeleted} at=${new Date().toISOString()}`,
+    `purge project=${oneLine(scope)} days=${oneLine(args.days)} deleted=${oneLine(totalDeleted)} at=${oneLine(new Date().toISOString())}`,
   );
 }
 
 main().catch((err: unknown) => {
-  console.error(`purge failed: ${describeError(err)}`);
+  // OPS-001/C2: record deletions already performed BEFORE the failure exit.
+  // Same four allowlisted fields as the governance line plus the fixed
+  // literal `status=partial` (a discriminator, never data/content) so a
+  // failed run's `deleted=` is never mistaken for a completed run's. No
+  // deletions -> no line; usage errors exit 2 before any deletion exists.
+  if (audit.deleted > 0) {
+    console.log(
+      `purge project=${oneLine(audit.scope)} days=${oneLine(audit.days)} deleted=${oneLine(audit.deleted)} at=${oneLine(new Date().toISOString())} status=partial`,
+    );
+  }
+  console.error(`purge failed: ${oneLine(describeError(err))}`);
   process.exit(1);
 });

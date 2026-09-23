@@ -434,35 +434,51 @@ export class HelixStore implements MemoryStore {
   /** Dedup pre-check + insert. Runs while holding the dedup key's lock. */
   private async rememberLocked(input: RememberInput, dedupKey: string): Promise<RememberResult> {
     // 1. Pre-check. Errors PROPAGATE (fail closed: a broken lookup must
-    //    never let a possible duplicate through to the write).
+    //    never let a possible duplicate through to the write) — and SHAPE
+    //    drift now throws too (remediation F1): a response that lacks the
+    //    frozen `memory` return must not be read as a miss, or a duplicate
+    //    would be silently written, contradicting contract §3 and the
+    //    sibling `saveMemory` assert below. Observed live shapes:
+    //    `{"memory":[row]}` = hit, `{"memory":[]}` / `{"memory":null}` =
+    //    legitimate miss (proven against the dev instance) — those proceed.
+    //    Genuine transport errors keep propagating from send() as before.
     const existing = await this.send(
       findMemoryByDedupKeyQuery().toQueryRequest(findMemoryByDedupKeyParams, { dedupKey }),
     );
-    if (isRecord(existing)) {
-      const rows = rowsOf(existing, ["memory"]);
-      const hit = rows !== undefined ? toRecords(rows)[0] : undefined;
-      if (hit !== undefined) {
-        // contentHash folds project into the key; this row check is the
-        // fail-closed double check before handing back someone else's id.
-        const hitProject = readString(hit, ["project"], "");
-        if (hitProject !== input.project) {
-          throw new Error(
-            "dedup pre-check hit belongs to another project — contentHash(project) invariant violated" +
-              (hitProject === "" ? " (row missing project)" : ""),
-          );
-        }
-        const memoryId = readString(hit, ["memoryId"], "");
-        if (memoryId === "") {
-          throw new Error("dedup pre-check hit carried no memoryId");
-        }
-        return {
-          id: memoryId,
-          sessionId: input.sessionId, // echo the REQUEST (contract §3), not the stored row's
-          project: input.project,
-          concepts: [...input.concepts], // caller's as given — [] stays [], never re-derived
-          deduped: true,
-        };
+    if (!isRecord(existing) || !Object.hasOwn(existing, "memory")) {
+      throw new Error(
+        "findMemoryByDedupKey response lacks the 'memory' return (contract §3 fail-closed: shape drift must never be read as a dedup miss)",
+      );
+    }
+    const memoryReturn = existing["memory"];
+    if (memoryReturn !== null && !Array.isArray(memoryReturn)) {
+      throw new Error(
+        `findMemoryByDedupKey 'memory' return has unexpected type ${typeof memoryReturn} (contract §3 fail-closed: shape drift must never be read as a dedup miss)`,
+      );
+    }
+    const rows: unknown[] = memoryReturn ?? []; // null / [] = miss -> proceed
+    const hit = toRecords(rows)[0];
+    if (hit !== undefined) {
+      // contentHash folds project into the key; this row check is the
+      // fail-closed double check before handing back someone else's id.
+      const hitProject = readString(hit, ["project"], "");
+      if (hitProject !== input.project) {
+        throw new Error(
+          "dedup pre-check hit belongs to another project — contentHash(project) invariant violated" +
+            (hitProject === "" ? " (row missing project)" : ""),
+        );
       }
+      const memoryId = readString(hit, ["memoryId"], "");
+      if (memoryId === "") {
+        throw new Error("dedup pre-check hit carried no memoryId");
+      }
+      return {
+        id: memoryId,
+        sessionId: input.sessionId, // echo the REQUEST (contract §3), not the stored row's
+        project: input.project,
+        concepts: [...input.concepts], // caller's as given — [] stays [], never re-derived
+        deduped: true,
+      };
     }
 
     // 2. Miss — embed and insert.

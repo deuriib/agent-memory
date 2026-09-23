@@ -35,7 +35,8 @@ HAS_CONCEPT  Memory ──▶ Concept
 - **`Memory.content`** — BM25 full-text index, also scoped by `project`.
 - **`Memory.dedupKey`** — write-time dedup key (v1.1): saving the same fact
   twice returns the existing id (`deduped: true`) instead of a second row;
-  the hash never leaves the store as raw content.
+  the hash never leaves the store as raw content. A dedup hit creates no
+  `Session` node — sessions materialize only on novel writes (contract §3).
 - **`project`** is the tenant/scope for every vector and text index; search
   routes always pass it.
 
@@ -495,7 +496,7 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`131 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`152 passed, 0 failed` →
   `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
   → smart-search hits → sessions list → session memories → forget → gone →
   counts reflect it, plus embedder determinism, defaults, boundary validation,
@@ -504,7 +505,9 @@ All run clean:
   → gone → second delete 404 → counts, and the v1.1 lifecycle sections:
   derived default concepts ≤8 → graph-branch proof (fused score == 3/61) →
   content-hash dedup round-trip: same id + `deduped:true` + counts stable,
-  cross-project distinct, concurrent race → same id). Before the first write it probes
+  cross-project distinct, concurrent race → same id → dedup × hook first-wins:
+  same fixed hook content in a NEW session → same id, no new row, no Session
+  node for that session). Before the first write it probes
   `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then

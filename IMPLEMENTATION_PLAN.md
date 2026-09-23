@@ -43,7 +43,12 @@ a lane needing a shared file briefs the orchestrator instead).
 ## Rollback Points
 
 - After step 1: revert `src/concepts.ts` + `store.ts`/`embed.ts` hunks; verify.ts D-section restored — no schema touched.
-- After step 2: revert `db/queries.ts` + `store.ts` dedup hunks; index #8 dropped with `bootstrapIndexes` revert (existing 7 indexes unaffected); `deduped` field removal is additive-reversible.
+- After step 2: revert `db/queries.ts` + `store.ts` dedup hunks; index #8 is
+  **orphaned, not dropped** — the repo has no index-drop mechanism
+  (`bootstrapIndexes` only creates), so reverting does NOT remove it from an
+  already-bootstrapped instance; per probe3 an orphaned, now-unused unique
+  index is inert, and removal would need a future drop tool (the other 7
+  indexes are unaffected); `deduped` field removal is additive-reversible.
 - After step 3: revert `src/search.ts` + `lifecycle.ts` + `purge.ts`; env defaults are OFF so rollback never changes live behavior for configured users mid-flight.
 - After step 4: revert `capture.mjs` + plugin hook registration + `verify-capture.ts` — host pipelines keep flowing (exit-0 guarantee is per-event).
 - Assumption stated: dev-instance data is seed/verify data (probe writes use isolated `probe-p1-*` projects); no production data risk.
@@ -54,7 +59,7 @@ a lane needing a shared file briefs the orchestrator instead).
 - [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — **34 passed, 0 failed**
 - [x] Engineering: `npx tsx scripts/verify-capture.ts` green — **115 checks, 0 failed**
 - [x] Engineering: `npx tsx scripts/verify-injection.ts` green — **ALL PASS (73)**
-- [x] Engineering: `npm run verify` green against OUR server on **3151** — **131 passed, 0 failed**; §5 bar + dedup/concept/lifecycle sections; upstream iii on 3111 untouched (+ `verify-env` 21, `demo OK`, `bootstrap 8 indexes`)
+- [x] Engineering: `npm run verify` green against OUR server on **3151** — **152 passed, 0 failed**; §5 bar + dedup/concept/lifecycle + dedup×hook (F4) sections; upstream iii on 3111 untouched (+ `verify-env` 21, `demo OK`, `bootstrap 8 indexes`)
 - [x] Ops: `scripts/purge.ts --dry-run` (would-delete=1 on probe-p1-ttl) + usage guard exit 2; `listExpired` `ltParam` dateTime probe-verified → contract §0 fact
 - [x] Security: `UserPromptSubmit` stores NO prompt text (canary asserted in verify-capture); hook contents fixed-string/tool-name only; dedupKey stores no raw content; no secrets in any new log line (purge governance line allowlisted). **gitleaks: local run unavailable (2× download timeout, escalated) → CI P0.2 secret-scan job enforces on push**
 - [x] Docs: CONTRACT v1.1 amendments match shipped code; README env vars documented; CHANGELOG v0.4.0 entry; version 0.4.0 in all lockstep locations (package.json, lockfile, `src/mcp.ts`, plugin `VERSION`, README badge)

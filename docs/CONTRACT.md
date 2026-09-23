@@ -75,7 +75,7 @@ forgetMemory():    WriteBatch         // params: memoryId (string)
 healthCount():     ReadBatch          // params: project (string)  -> memory/session counts
 findMemoryByDedupKey(): ReadBatch     // v1.1, §3: params: dedupKey (string) -> memory row
 listExpired():     ReadBatch          // v1.1, §3: params: project (string), cutoff (dateTime), limit (i64)
-listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> distinct Session.project names
+listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> RAW Session rows {project} (dedup is the CALLER's job — purge.ts Set)
 ```
 
 Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
@@ -174,10 +174,27 @@ absent, `limit=10`, `importance=0.5`, `origin="rest"`.
   `deduped: true`, echoing the REQUEST's `sessionId`/`concepts` (never re-derived,
   `[]` stays `[]`) — and creates no new row. On a miss it embeds and writes with
   the `dedupKey` property. Uniqueness is application-side (§0: the server does not
-  enforce the index). Errors propagate (fail closed: a broken lookup must never let
-  a possible duplicate through). Same content in two projects = two rows (project is
+  enforce the index). Errors propagate, and a response that lacks the frozen
+  `memory` return (or types it wrongly) throws — shape drift is never read as a
+  miss (fail closed: neither a transport error nor shape drift may let a possible
+  duplicate through). Same content in two projects = two rows (project is
   inside the hash); legacy rows without `dedupKey` are not retroactively merged
   (documented backfill gap).
+- **Dedup first-wins semantics (P1.6 × P2.1 interaction, pinned by
+  `verify.ts` F4):** dedup is project-scoped **FIRST-WINS** — the stored row
+  keeps its ORIGINAL `origin`/`importance`/`sessionId`/belongs-to-session.
+  On a dedup hit NO `Session` node is created or bumped (sessions materialize
+  on novel writes), so repeat `lesson`/hook observations of identical content
+  return the first row — its stored `origin` may differ from the incoming
+  forced `origin="lesson"` (first-wins, declared). The response echoes the
+  REQUEST `sessionId` per §3 while the row stays under its first session:
+  `sessionMemories` of the echoed session will not contain it until that
+  session writes novel content.
+- **Single-writer assumption (RL-001):** Dedup is application-side and sound
+  within ONE writer process (REST or MCP in a single server instance — our
+  documented deployment, §4 non-goal = multi-instance); cross-process writers
+  to one Helix instance are out of contract (residual risk, owner:
+  engineering).
 - **`RememberResult` gains `deduped: boolean`** (additive): `{id, sessionId,
   project, concepts, deduped}`. First write → `deduped:false`; duplicate hit →
   `deduped:true` + existing id. Both REST (201) and MCP (`memory_save`) echo it.
@@ -196,9 +213,21 @@ absent, `limit=10`, `importance=0.5`, `origin="rest"`.
   It pages `listExpired` (batches of 500, `$id Asc`) and calls `forgetMemory` per id —
   never a multi-drop (unverified). `--all` discovers projects via `listProjects`
   (Session walk) and still runs the project-scoped `listExpired` per project. Output
-  is an allowlist (plan line, dry-run count+ids, one governance line
-  `purge project=<p|all> days=<n> deleted=<m> at=<iso>`, healthCount before/after) —
-  never content. Exit codes: 0 success, 1 operational failure, 2 usage error.
+  is a strict allowlist — plan line, dry-run count+ids, per-batch progress
+  (`purge-progress project=<p> batch=<n> deleted=<m>`), one governance line
+  `purge project=<p|all> days=<n> deleted=<m> at=<iso>`, healthCount before/after —
+  plus, on a FAILED run that already confirmed deletions, that same governance
+  line emitted BEFORE exit 1 with a fixed `status=partial` discriminator (project,
+  days, deleted-so-far, at; completed work never escapes the audit trail). Every
+  interpolated value is collapsed to a single line first (CWE-117 guard, same
+  transform as the `reason` collapse below — print-site only; query values stay
+  verbatim), and content is never printed. Exit codes: 0 success, 1 operational
+  failure, 2 usage error (usage errors exit before any deletion can exist).
+  Accepted risk, no timeout (RL-002): the Helix SDK documents no Client/transport
+  timeout and no AbortSignal option, so a hung Helix stalls the run —
+  compensating controls = bounded batches (MAX_BATCHES + no-progress guard) +
+  per-batch progress output + operator Ctrl-C; residual risk accepted, owner:
+  engineering.
 
 P3.1 composition rules: `recap` renders one bullet per memory
 (`- [sessionId] createdAt (origin): content`) for the given session, or for every
@@ -326,13 +355,15 @@ JSONL import, 20 agent adapters, full 54-tool MCP surface.
 decay math incl. half-life, TTL filter, concept determinism). 
 `scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helper).
-`scripts/verify.ts` end-to-end green (**131 passed**): health → remember (with
+`scripts/verify.ts` end-to-end green (**152 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
 search hits it → recap contains it → handoff contains it → governed delete (with
 reason) → gone → second delete 404 → `healthCount()` reflects it → plus v1.1:
 derived default concepts ≤8 → graph-branch proof (fused score == 3/61) → dedup
-round-trip (same id, `deduped:true`, cross-project distinct, race → same id).
+round-trip (same id, `deduped:true`, cross-project distinct, race → same id) →
+dedup × hook first-wins: same fixed hook content in a new session → same id,
+no new row, no Session node for the new session (F4).
 `scripts/verify-injection.ts` (**73**), `scripts/verify-env.ts` (**21**) green.
 `scripts/probe3.ts` GREEN. `scripts/purge.ts --dry-run` + usage guard exit 2.
 Demo green.
