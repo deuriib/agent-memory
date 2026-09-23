@@ -1,6 +1,6 @@
 # agent-memory
 
-[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.6.0-blue.svg)](CHANGELOG.md)
 
 Persistent memory for AI coding agents — a v1 replica of
 [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) rebuilt on
@@ -527,8 +527,8 @@ Stated plainly — these are real, not hypothetical:
    tier-1 near-duplicate consolidation, derived confidence and the eval
    harness shipped in v0.5.0; P2 capture breadth, script-only transcript
    import (`npm run import-transcript`) and deterministic session
-   summarization (`npm run summarize-session`) shipped post-v0.5.0
-   ([Unreleased] — the remaining tiers stay out of scope.)
+   summarization (`npm run summarize-session`) shipped in v0.6.0
+   (the remaining tiers stay out of scope.)
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
@@ -563,6 +563,14 @@ Stated plainly — these are real, not hypothetical:
    run it *before* the first write). The probe sends the full incoming
    content (≤200 kB) as the BM25 query, bounded by the 15 s per-operation
    timeout. Fail-closed is the documented posture (gate P1R-P32 / RL-003).
+
+10. **Concept nodes outlive `forget` — retention is declared, not dropped.**
+   Derived concept names are shared, globally-unique vocabulary with **no
+   TTL by design** (tokens only, no PII). Retention purpose, PII posture
+   (non-PII tokens; PII scan 0/0) and the operator-run orphan-cleanup
+   procedure (audit → zero-in-edge gate → drop → re-audit) are declared in
+   [`docs/CONTRACT.md`](docs/CONTRACT.md) v1.4 §3, verified live 2026-09-23
+   (189→188, linked 128 unchanged); gate P1R-P32 → closed at v0.6.0.
 
 ## Verification
 
@@ -606,11 +614,14 @@ All run clean:
   guard), §H hand-computed eval-metric goldens (R@5/R@10/MRR/nDCG/aggregate),
   and §I fail-closed near-dupe probe + TTL×expired-survivor guard + plugin
   no-default source checks. No Helix, no server — CI-runnable.
-- `npm run verify-capture` (`scripts/verify-capture.ts`) — **`115 checks` →
+- `npm run verify-capture` (`scripts/verify-capture.ts`) — **`137 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
   silence, prompt-text privacy canary, negatives (unsupported event, malformed
-  /empty stdin, dead server), Authorization header, and the plugin
-  `captureToolStart` helper (incl. `memory*` skip + dead-backend fail-soft).
+  /empty stdin, dead server), Authorization header, the plugin
+  `captureToolStart`/`captureToolFailure` helpers (incl. `memory*` skip +
+  dead-backend fail-soft), and §F gate regressions (file-edit marker, basename
+  opt-in OFF by default, path-bearing tool-name fail-closed, non-string tool
+  never throws).
   Spawns `capture.mjs` against a local counting server — no Helix, CI-runnable.
 - `npm run bootstrap` — `bootstrapIndexes: OK (8 indexes ensured)` then
   `READY — searchByText responding`.

@@ -1,6 +1,6 @@
 # Archive Record — P2-COMPLETE (P2.2 + P2.3 + P2.4)
 
-Date: 2026-09-23 · Gate: OPEN · Ship: P2 release notes (unreleased, no version bump).
+Date: 2026-09-23 · Gate: OPEN · Ship: v0.6.0 (P2 release notes + version lockstep + tag).
 
 ## Spec
 
@@ -17,8 +17,10 @@ remediated in-lane + re-proven. Full text: `GATE_REPORT.md` (promoted here).
 
 ## Commits
 
-Single release commit for the lane (see `git log`): implementation +
-gate remediation + contract/roadmap/readme/changelog/notes + this archive.
+Two commits (see `git log`): `2035e18` implementation + gate remediation +
+contract/roadmap/readme/changelog/notes + this archive, then the
+`chore(release-0.6.0)` commit (lockstep, CHANGELOG heading, RELEASE_NOTES,
+DAT-001 declaration, TEST_MATRIX) tagged **v0.6.0**.
 
 ## Promoted (prove the release, survive the purge)
 
@@ -33,7 +35,9 @@ gate remediation + contract/roadmap/readme/changelog/notes + this archive.
 Nothing outside the allowlist touched. No other SPEC lane active in
 `40_workspace/` at purge time (verified). No ADR (no contract/architecture
 change requiring one — v1.3 is additive, no new routes/tools/schema).
-No tag (no version bump; 0.5.0 lockstep ×5 intact).
+Tag **v0.6.0** on the release commit; version 0.5.0 → 0.6.0 across 6
+ carriers (`package.json`, `package-lock.json` root + `packages[""]`,
+ `src/mcp.ts`, plugin `VERSION`, README badge).
 
 ## Rollback
 

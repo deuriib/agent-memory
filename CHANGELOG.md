@@ -5,6 +5,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v0.6.0] — 2026-09-23
+
 ### Added
 
 - **P2 capture breadth** (P2.2–P2.4): `PostToolUse` with an edit-like tool
@@ -35,6 +37,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   throw + unguarded `execute.before`, generic origin minting `lesson`/
   `hook:*`, entry-guard side effect on import, README staleness
   (engineering, security, legal, automation)
+
+### Changed
+
+- Version 0.5.0 → 0.6.0 across 6 carriers: `package.json`,
+  `package-lock.json` root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`,
+  README badge (engineering, release)
+- **DAT-001 closed at its v0.6.0 trigger** — `docs/CONTRACT.md` v1.4 §3
+  declares Concept retention (TTL none, intentional: globally-unique shared
+  vocabulary) + a live-verified operator-run orphan-cleanup procedure
+  (audit → zero-in-edge gate → drop → re-audit; 189→188 Concepts, linked 128
+  unchanged, 2026-09-23); `ROADMAP.md` §1.3 row closed, README
+  known-limitation #10 added (data/legal, engineering)
 
 ## [v0.5.0] — 2026-09-23
 

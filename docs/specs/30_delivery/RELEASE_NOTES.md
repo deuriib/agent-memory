@@ -1,4 +1,4 @@
-# Release Notes: P2 capture breadth (unreleased, post-v0.5.0)
+# Release Notes: v0.6.0
 
 **Date:** 2026-09-23
 **Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
@@ -9,7 +9,8 @@ transcript import + P2.4 session summarization) — `ROADMAP.md` §P2
 **Domains-Touched:** engineering, security, legal, automation/ops, data lens
 (finance / marketing / people / revenue: **N/A** — code+docs lane)
 **Ship Type:** deploy (local library/server release; no external deployment
-target; no breaking changes; no version bump — 0.5.0 lockstep intact)
+target; no breaking changes; version 0.5.0 → 0.6.0 across 6 carriers +
+tag v0.6.0)
 
 ## Highlights
 
@@ -28,6 +29,10 @@ target; no breaking changes; no version bump — 0.5.0 lockstep intact)
   two privacy claims (generic-user prompt bypass, path-bearing tool name) + one
   robustness hole (plugin throw on non-string tool); all fixed + re-proven
   (137/137 capture checks); gate **OPEN** with owned residuals.
+- **DAT-001 closed at trigger** — Concept retention (TTL none, intentional)
+  + orphan-cleanup procedure declared in `docs/CONTRACT.md` v1.4 §3 and
+  **proved live** against dev (audit → zero-in-edge gate → drop → re-audit:
+  189→188 Concepts, linked 128 unchanged); docs-only, no code change.
 
 ## Changes
 
@@ -37,7 +42,8 @@ target; no breaking changes; no version bump — 0.5.0 lockstep intact)
   (P2.2, engineering/security)
 - `scripts/import-transcript.ts` + `scripts/summarize-session.ts` +
   `src/summarize.ts` (P2.3/P2.4, engineering/automation)
-- `docs/CONTRACT.md` v1.2 → v1.3 (P2 semantics, no route/tool changes)
+- `docs/CONTRACT.md` v1.2 → v1.4 (P2 semantics + DAT-001 declaration, no
+  route/tool changes)
 
 ### Fixes
 
@@ -51,26 +57,37 @@ target; no breaking changes; no version bump — 0.5.0 lockstep intact)
 - **None — additive; no behavior removed or renamed.** Behavioral notes:
   `PostToolUse` with edit-like tool names now stores `file edited via`
   instead of `tool used` (same endpoint, dedup, retention either way);
-  no version bump (0.5.0 lockstep ×5 intact). Migration: N/A.
+  version 0.5.0 → 0.6.0 (6 carriers: `package.json`, `package-lock.json`
+  root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`, README badge).
+  Migration: N/A.
 
 ## Known Issues
 
 - Residuals with owner + expiry in `GATE_REPORT.md`: G1 Antigravity coverage
   gap, G2 import/summarize live-leg automation gap, F2 summarize re-run
-  appends, F6 CI gap, R-P2-01…04, L-P2-01…03, S-03 + standing RL-001 / F-01 /
-  DAT-001 (`ROADMAP.md` §1.3).
+  appends, F6 CI gap, R-P2-01…04, L-P2-01…03, S-03 + standing RL-001 / F-01
+  (`ROADMAP.md` §1.3; DAT-001 closed at this release — CONTRACT v1.4).
 
 ## Contract
 
-`docs/CONTRACT.md` v1.2 → **v1.3**: P2.2 allowlist + plugin after-origin,
-P2.3/P2.4 script surface, §5 bar (`verify-capture` 137). Backward compatible:
-no route/tool/schema changes.
+`docs/CONTRACT.md` v1.2 → **v1.4**: v1.3 P2.2 allowlist + plugin after-origin,
+P2.3/P2.4 script surface, §5 bar (`verify-capture` 137); v1.4 DAT-001
+Concept-retention declaration + orphan-cleanup procedure (§3). Backward
+compatible: no route/tool/schema changes.
 
 ## Verification
 
-`typecheck` 0 · `verify-capture` **137/137** · `verify-lifecycle` 104/104 ·
-`verify-env` 21/21 · `verify-injection` ALL PASS · import dry-runs + live
-import→search→summarize→sessionMemories (rows cleaned).
+Full pre-ship run 2026-09-23 (consolidated log at HEAD `2035e18`): `typecheck` 0 ·
+`verify-capture` **137/137** · `verify-lifecycle` **104/104** · `verify-env`
+**21/21** · `verify-injection` ALL PASS · `verify-skills --structural` **73/73**
+· `purge` usage guard exit 2 · `verify` **214/214** on our 3151 reroute
+(upstream `iii` on 3111 untouched) · `verify-skills` live **119/119** · import
+dry-runs (4/1 default vs 5/0 `--include-prompts`) + live
+import→search→summarize→sessionMemories (rows cleaned) · server torn down
+clean (no leftover pid). DAT-001 procedure proof (same instance): audit →
+zero-in-edge gate (`in_edges:0, out_edges:0`) → drop → re-audit — 189→188
+Concepts, linked 128 pinned, orphans 61→60 (one write; no restart; port 3111
+untouched).
 
 ## Quality gate
 
@@ -80,7 +97,10 @@ holes fixed + re-proven → gate **OPEN**:
 
 ## Rollback / Undo
 
-One release commit — `git revert` restores pre-P2 behavior; no schema, index,
+Two commits: `2035e18` (feature + gate remediation) + the
+`chore(release-0.6.0)` commit (lockstep, notes, DAT-001 declaration), tagged
+**v0.6.0** — `git revert` either (or check out tag **v0.5.0** for a full undo)
+restores pre-P2 behavior; version markers return to 0.5.0; no schema, index,
 or migration change; `import:*`/`lesson` rows from the lane are inert data
 (clean via `forget`/`delete`). Test projects (`verify-p2*`) cleaned at
 verification. Owner: engineering. ETA: immediate.

@@ -1,4 +1,4 @@
-# agent-memory — v1.2 Frozen Contract
+# agent-memory — v1.4 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
@@ -33,7 +33,21 @@ transcript import through the existing remember surface, prompts skipped by
 default, `--include-prompts` opt-in); P2.4 `src/summarize.ts` (deterministic,
 no-LLM session summary + lessons) + `scripts/summarize-session.ts` (saves
 summary + lessons as `/memory/lesson` rows under the same sessionId). No
-frozen route or MCP tool changes. §5 `verify-capture` grows §F (132 checks).
+frozen route or MCP tool changes. §5 `verify-capture` grows §F (**137
+checks** after gate remediation).
+
+**v1.4 amendment (2026-09-23, v0.6.0 ship / DAT-001 closure):** §3 grows the
+Concept-retention declaration (Ley 172-13 shape: purpose + TTL + deletion
+procedure) — Concept as shared search vocabulary for the graph branch, PII posture
+(derived tokens filtered at gate P1R-P32 acceptance W-3; caller-supplied labels
+verbatim = caller's responsibility), TTL none DECLARED INTENTIONAL (global name
+uniqueness, §1 index #3; no per-memory drop because other memories/projects may
+reference the name), the two-half deletion procedure (per-memory
+`forget`/`delete`/`purge` + operator-run manual orphan cleanup — no scheduler in
+v0.6.0 — with audit / zero-edge-gate / drop queries verified live 2026-09-23), and
+the honest right-to-erasure boundary. Docs-only declaration: no route, MCP tool, or
+code change; §5 verification bar unchanged. Closes ROADMAP §1.3 DAT-001 at its
+`2026-12-31 or v0.6.0` trigger. Owner: engineering (procedure re-run on demand).
 
 ## 0. Verified facts (do not re-litigate)
 
@@ -311,6 +325,47 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   compensating controls = bounded batches (MAX_BATCHES + no-progress guard) +
   per-batch progress output + operator Ctrl-C; residual risk accepted, owner:
   engineering.
+- **Concept-retention declaration (v1.4, DAT-001 — Ley 172-13 shape: purpose + TTL +
+  deletion procedure):**
+  1. **Purpose:** `Concept {name, project}` is shared search vocabulary for the
+     graph branch of hybrid fusion — top-8 tf-ranked derived terms
+     (stopword/length-filtered, `extractConcepts`) or caller-supplied labels. The
+     node carries ONLY name+project — no content, no sessionId.
+  2. **PII posture:** derived terms are filtered tokens; PII scan 0/0 at gate
+     P1R-P32 (cited acceptance W-3). Caller-supplied concept labels are stored
+     verbatim and are the CALLER's responsibility — same rule as content.
+  3. **TTL: none — declared intentional, not an oversight.** Names are globally
+     unique shared vocabulary (§1 index #3 `nodeUniqueEquality("Concept","name")`);
+     retention is bounded by distinct-term cardinality (dedup on write), not row
+     growth. A per-memory drop is NOT implemented because the name may be
+     referenced by other memories/projects.
+  4. **Deletion procedure (the two halves):**
+     a. Per-memory: `forget`/`delete`/`purge` remove the Memory + its
+        `HAS_CONCEPT` edges + content; shared names REMAIN by design while any
+        other memory references them.
+     b. **Orphan cleanup (operator-run, manual — no scheduler in v0.6.0, declared
+        as such):** orphan = Concept with ZERO incoming `HAS_CONCEPT` edges,
+        evaluated GLOBALLY (name uniqueness is global, so any project's memory
+        keeps it live). Three steps, all VERBATIM from the verified run (Helix
+        `dev` @ http://localhost:6969, storage=disk; baseline 189/128/61 → dropped
+        EXACTLY ONE gated orphan `{"$id": 40014, "name": "2026", "project":
+        "verify-p2-live"}` → re-audit 188/128/60 — one removed, every other name
+        unchanged, linked count unmoved; 1 write of a ≤2 budget; no instance
+        lifecycle action; upstream port 3111 never touched — all verified live
+        2026-09-23):
+        - Audit (read-only): `helix query dev -e 'readBatch().varAs("all", g().nWithLabel("Concept").valueMap(["$id","name","project"])).varAs("linked", g().nWithLabel("Memory").out("HAS_CONCEPT").dedup().valueMap(["name"])).returning(["all","linked"])'` → orphans = all names minus linked names, computed CLIENT-side (varAs accepts traversals only).
+        - Per-target zero-edge gate (read-only): `helix query dev -e 'readBatch().varAs("target", g().nWithLabel("Concept").has("name", "<name>").valueMap(["$id","name","project"])).varAs("in_edges", g().nWithLabel("Concept").has("name", "<name>").inE().count()).varAs("in_edges_labeled", g().nWithLabel("Concept").has("name", "<name>").inE("HAS_CONCEPT").count()).varAs("out_edges", g().nWithLabel("Concept").has("name", "<name>").outE().count()).returning(["target","in_edges","in_edges_labeled","out_edges"])'` → proceed ONLY if exactly one node matches AND `in_edges == 0` AND `out_edges == 0` (no edge collateral).
+        - Drop (write): `helix query dev -e 'writeBatch().varAs("dropped", g().nWithLabel("Concept").has("name", "<name>").drop()).returning(["dropped"])'` → response `{"dropped": []}` is EXPECTED and non-informative; success is proven by RE-AUDIT (counts move by exactly −1, linked names unchanged) — never by the write response.
+        - Runtime gotchas discovered live: the `helix query -e` scope has NO
+          `Predicate` global (use `.has("name", ...)` for literals); `varAs`
+          accepts traversals only.
+  5. **Right-to-erasure posture (honest boundary):** an erasure request → forget
+     removes content + edges; names then at zero edges are removable via (b); a
+     name still referenced by other memories CANNOT be dropped without breaking
+     those rows — that is the declared boundary, accepted as non-PII derived
+     tokens (W-3).
+  6. Closes ROADMAP §1.3 DAT-001 at its `2026-12-31 or v0.6.0` trigger. Owner:
+     engineering (procedure re-run on demand).
 
 P3.1 composition rules: `recap` renders one bullet per memory
 (`- [sessionId] createdAt (origin): content`) for the given session, or for every
@@ -457,9 +512,10 @@ metric goldens (R@5/R@10/MRR/nDCG/aggregate — gate CE-001/COND-QA-01),
 **§I** fail-closed near-dupe probe (induced probe error → `remember` rejects,
 insert never runs) + TTL×expired-survivor guard + plugin no-default source
 checks — gate COND-QA-03 / RL-002 / COND-QA-02b).
-`scripts/verify-capture.ts` green (**132 checks** — 7 events × payload/exit-0/
-silence, privacy canary, negatives, dead server, plugin helper, **§F P2.2**
-file-edit marker + basename opt-in + plugin failure helper).
+`scripts/verify-capture.ts` green (**137 checks** — 7 events × payload/exit-0/
+silence, privacy canary, negatives, dead server, plugin helpers, **§F P2.2**
+file-edit marker + basename opt-in (default OFF) + path-bearing tool-name
+fail-closed + plugin failure/start helpers never-throw on non-string tools).
 `scripts/verify.ts` end-to-end green (**214 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
