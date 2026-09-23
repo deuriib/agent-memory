@@ -446,3 +446,70 @@ export function findMemoryByDedupKey(): ReadBatch {
     )
     .returning(["memory"]);
 }
+
+/* ------------------------------------------------------------------ *
+ * listExpired — REQ-P1-1 (ADDITIVE, contract §2 delta).
+ *
+ * Project-scoped rows older than `cutoff` (strict ltParam on createdAt —
+ * probe3 (e) verified against the live instance: strict older-than,
+ * dateTime-typed, $id Asc deterministic because the server does NOT sort
+ * DateTime keys). Consumed by scripts/purge.ts in batches of 500.
+ *
+ * Projects ONLY memoryId: the sole field purge ever acts on (dry-run ids,
+ * forget targets) — content and the rest of the row never leave the query
+ * (data minimization; a deviation from "memoryRowProjection" noted in the
+ * lane report).
+ * ------------------------------------------------------------------ */
+
+export const listExpiredParams = defineParams({
+  project: param.string(),
+  cutoff: param.dateTime(),
+  limit: param.i64(),
+});
+
+export function listExpired(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "expired",
+      g()
+        .nWithLabel(LABELS.Memory)
+        .where(
+          Predicate.and([
+            Predicate.eqParam("project", "project"),
+            Predicate.ltParam("createdAt", "cutoff"),
+          ]),
+        )
+        .orderBy("$id", Order.Asc)
+        .limit(listExpiredParams.limit)
+        .project([PropertyProjection.new("memoryId")]),
+    )
+    .returning(["expired"]);
+}
+
+/* ------------------------------------------------------------------ *
+ * listProjects — project discovery for scripts/purge.ts --all
+ * (ADDITIVE, contract §2 delta; beyond the spec's single listExpired).
+ *
+ * purge --all must still run the SIGNED listExpired (project-scoped) per
+ * project, so it needs the project names first: listSessions cannot be
+ * reused (its eqParam(project) filter is baked in — probing it with an
+ * empty project returns nothing). saveMemory upserts a Session for every
+ * project it writes, so walking Session rows enumerates every project that
+ * has memories. Rows are raw {project} records; the caller dedups.
+ * ------------------------------------------------------------------ */
+
+export const listProjectsParams = defineParams({
+  limit: param.i64(),
+});
+
+export function listProjects(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "projects",
+      g()
+        .nWithLabel(LABELS.Session)
+        .limit(listProjectsParams.limit)
+        .project([PropertyProjection.new("project")]),
+    )
+    .returning(["projects"]);
+}

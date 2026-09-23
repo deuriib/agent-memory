@@ -1,8 +1,10 @@
 /**
- * Content normalization + hashing for REQ-P1-6 (content-hash dedup).
+ * Content normalization + hashing (REQ-P1-6) and decay/TTL (REQ-P1-1).
  *
- * Pure and deterministic: no clock, no locale, no randomness — the same
- * content in the same project always yields the same dedup key, in this
+ * All helpers here are PURE with respect to their inputs except that env
+ * knobs are read fresh on every call (so a test can flip them without
+ * reloading the module): no clock of their own — the caller passes `nowMs` —
+ * no locale, no randomness. Same inputs -> byte-identical output, in this
  * process and any other process running this file.
  *
  * Probe3 finding (scripts/probe3.ts, live dev instance): Helix v0.0.6 does
@@ -12,9 +14,34 @@
  * findMemoryByDedupKey under a per-key in-process FIFO lock; index #8 exists
  * to accelerate that lookup, not to reject duplicates.
  *
- * REQ-P1-1 adds decayedImportance + filterExpired here.
+ * Probe3 (e) verified Predicate.ltParam on a dateTime property against the
+ * live instance: strict older-than semantics, project-scoped, $id-ordered —
+ * listExpired (db/queries.ts) is built on it.
  */
 import { createHash } from "node:crypto";
+
+/** Milliseconds in a day (age arithmetic for decay/TTL). */
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * Read a positive finite number from env. Returns undefined when the var is
+ * absent, unparseable, non-finite, or <= 0 — callers map that to "feature
+ * OFF / factor 1" (fail-closed: bad config never invents decay or expiry).
+ */
+function readPositiveEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return value;
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
 
 /**
  * Normalize content for hashing: lowercase, collapse every whitespace run to
@@ -40,4 +67,53 @@ export function normalizeContent(text: string): string {
  */
 export function contentHash(project: string, text: string): string {
   return createHash("sha256").update(`${project}\n${text}`).digest("hex");
+}
+
+/**
+ * Time-decayed importance for ranking (REQ-P1-1 corte A):
+ *
+ *   decayed = clamp01(importance · e^(−λ · ageDays))
+ *
+ * λ comes from AGENT_MEMORY_DECAY_LAMBDA (per time unit = day). Absent,
+ * invalid, or <= 0 -> factor 1 (decay OFF). Unparseable createdAt -> factor
+ * 1 (a bad timestamp must never inflate or zero a score). Result is always
+ * within 0..1. Wire this ONLY into compareFused's importance TIE-BREAK —
+ * stored/importance shown to users stays the stored value.
+ */
+export function decayedImportance(importance: number, createdAt: string, nowMs: number): number {
+  const lambda = readPositiveEnv("AGENT_MEMORY_DECAY_LAMBDA");
+  if (lambda === undefined) return clamp01(importance);
+  const created = Date.parse(createdAt);
+  if (!Number.isFinite(created)) return clamp01(importance);
+  const ageDays = (nowMs - created) / MS_PER_DAY;
+  return clamp01(importance * Math.exp(-lambda * ageDays));
+}
+
+/**
+ * Drop TTL-expired rows (REQ-P1-1 corte A), preserving input order.
+ *
+ * AGENT_MEMORY_TTL_DAYS: absent/invalid/<= 0 -> OFF (returns every row).
+ * A row expires only when ageDays is STRICTLY GREATER than the TTL — a row
+ * exactly at the boundary survives (never delete on the fence). Unparseable
+ * createdAt -> NOT expired (fail toward keeping data: hiding wrongly is
+ * reversible, deleting is not). Pure input->output; the env is re-read per
+ * call so tests control the knob.
+ */
+export function filterExpired<T extends { createdAt: string }>(
+  rows: readonly T[],
+  nowMs: number,
+): T[] {
+  const ttlDays = readPositiveEnv("AGENT_MEMORY_TTL_DAYS");
+  if (ttlDays === undefined) return [...rows];
+  const kept: T[] = [];
+  for (const row of rows) {
+    const created = Date.parse(row.createdAt);
+    if (!Number.isFinite(created)) {
+      kept.push(row);
+      continue;
+    }
+    const ageDays = (nowMs - created) / MS_PER_DAY;
+    if (ageDays <= ttlDays) kept.push(row);
+  }
+  return kept;
 }

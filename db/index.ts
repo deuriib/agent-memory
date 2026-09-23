@@ -17,6 +17,8 @@ export {
   forgetMemory,
   healthCount,
   findMemoryByDedupKey,
+  listExpired,
+  listProjects,
   saveMemoryParams,
   listSessionsParams,
   sessionMemoriesParams,
@@ -26,4 +28,6 @@ export {
   forgetMemoryParams,
   healthCountParams,
   findMemoryByDedupKeyParams,
+  listExpiredParams,
+  listProjectsParams,
 } from "./queries";

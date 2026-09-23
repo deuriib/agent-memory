@@ -18,10 +18,16 @@
  */
 import { embed } from "./embed.js";
 import { failureSignal } from "./errors.js";
+import { decayedImportance, filterExpired } from "./lifecycle.js";
 import type { MemoryStore, SearchHit } from "./store.js";
 
 /** RRF constant (frozen by contract §3). */
 export const RRF_K = 60;
+
+/** Signal appended when TTL filtering hid rows (REQ-P1-1). */
+function ttlSignal(hidden: number): string {
+  return `ttl: hidden ${hidden} expired rows`;
+}
 
 export type SearchSource = "vector" | "text" | "graph";
 
@@ -83,10 +89,15 @@ export async function bm25Search(
   if (outcome.failure !== undefined) {
     return { mode: "bm25", results: [], signals: [`text: ${outcome.failure}`] };
   }
+  // REQ-P1-1: TTL filter right before return (no over-fetch — the store
+  // already returned at most `limit` rows; filtering may yield fewer).
+  const rows = outcome.hits.map((hit) => ({ ...hit, source: "text" as const }));
+  const kept = filterExpired(rows, Date.now());
+  const hidden = rows.length - kept.length;
   return {
     mode: "bm25",
-    results: outcome.hits.map((hit) => ({ ...hit, source: "text" })),
-    signals: [],
+    results: kept,
+    signals: hidden > 0 ? [ttlSignal(hidden)] : [],
   };
 }
 
@@ -108,12 +119,27 @@ function compareMemoryIdAsc(a: string, b: string): number {
   return a < b ? -1 : 1;
 }
 
-function compareFused(a: FusedResultRow, b: FusedResultRow): number {
-  if (b.score !== a.score) return b.score - a.score; // RRF score desc
-  if (b.importance !== a.importance) return b.importance - a.importance; // importance desc
-  const byDate = compareCreatedAtDesc(a.createdAt, b.createdAt); // newer first
-  if (byDate !== 0) return byDate;
-  return compareMemoryIdAsc(a.memoryId, b.memoryId); // fully deterministic
+/**
+ * Fused comparator with a FIXED clock (REQ-P1-1): `nowMs` is captured once
+ * per search so every row in one result set is compared against the same
+ * instant — a tie-break can never flip mid-sort.
+ *
+ * Importance at the tie-break is the TIME-DECAYED value
+ * (decayedImportance — λ from AGENT_MEMORY_DECAY_LAMBDA, factor 1 when
+ * off/invalid, so this is byte-identical to the old stored-importance
+ * comparison when decay is OFF). Stored/importance shown to callers is
+ * never rewritten — decay influences ORDER only.
+ */
+function compareFusedAt(nowMs: number): (a: FusedResultRow, b: FusedResultRow) => number {
+  return (a, b) => {
+    if (b.score !== a.score) return b.score - a.score; // RRF score desc
+    const decayedB = decayedImportance(b.importance, b.createdAt, nowMs);
+    const decayedA = decayedImportance(a.importance, a.createdAt, nowMs);
+    if (decayedB !== decayedA) return decayedB - decayedA; // decayed importance desc
+    const byDate = compareCreatedAtDesc(a.createdAt, b.createdAt); // newer first
+    if (byDate !== 0) return byDate;
+    return compareMemoryIdAsc(a.memoryId, b.memoryId); // fully deterministic
+  };
 }
 
 /**
@@ -149,6 +175,7 @@ export async function hybridSearch(
 
   const signals: string[] = [];
   const fused = new Map<string, FusedEntry>();
+  const nowMs = Date.now(); // one clock per search (REQ-P1-1 decay tie-break)
 
   for (const outcome of outcomes) {
     if (outcome.failure !== undefined) {
@@ -176,16 +203,22 @@ export async function hybridSearch(
     });
   }
 
-  const results: FusedResultRow[] = [];
+  const fusedRows: FusedResultRow[] = [];
   for (const entry of fused.values()) {
-    results.push({
-      ...entry.hit,
-      score: entry.score,
-      source: entry.source,
-      signals: [...signals],
-    });
+    fusedRows.push({ ...entry.hit, score: entry.score, source: entry.source, signals: [] });
   }
-  results.sort(compareFused);
+  fusedRows.sort(compareFusedAt(nowMs));
 
-  return { mode: "hybrid", results: results.slice(0, input.limit), signals };
+  // REQ-P1-1: TTL filter right before return (no over-fetch — upstream rows
+  // were already capped at `limit`; filtering may yield fewer than limit).
+  const sliced = fusedRows.slice(0, input.limit);
+  const kept = filterExpired(sliced, nowMs);
+  const hidden = sliced.length - kept.length;
+  if (hidden > 0) signals.push(ttlSignal(hidden));
+
+  // Envelope signals (source failures + ttl) are attached per row AFTER the
+  // filter decision, so rows and envelope always agree.
+  const results = kept.map((row) => ({ ...row, signals: [...signals] }));
+
+  return { mode: "hybrid", results, signals };
 }

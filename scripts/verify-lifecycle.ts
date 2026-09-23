@@ -10,7 +10,7 @@
  * count, VERIFY PASS / VERIFY FAIL, exit 1 on any failure.
  */
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
-import { contentHash, normalizeContent } from "../src/lifecycle.js";
+import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
 
 /* ------------------------------------------------------------------ */
 /* Assertion plumbing (same shape as scripts/verify.ts)                */
@@ -169,6 +169,129 @@ function main(): void {
     contentHash("proj-a", normalizeContent("different content entirely")) === GOLDEN_KEY_DIFF,
     contentHash("proj-a", normalizeContent("different content entirely")),
   );
+
+  /* C. decayedImportance (REQ-P1-1 / T-103) — env knobs saved/restored. */
+  const savedLambda = process.env["AGENT_MEMORY_DECAY_LAMBDA"];
+  const savedTtl = process.env["AGENT_MEMORY_TTL_DAYS"];
+  const restoreEnv = (): void => {
+    if (savedLambda === undefined) delete process.env["AGENT_MEMORY_DECAY_LAMBDA"];
+    else process.env["AGENT_MEMORY_DECAY_LAMBDA"] = savedLambda;
+    if (savedTtl === undefined) delete process.env["AGENT_MEMORY_TTL_DAYS"];
+    else process.env["AGENT_MEMORY_TTL_DAYS"] = savedTtl;
+  };
+  try {
+    const NOW = Date.parse("2026-06-15T00:00:00.000Z"); // fixed clock — pure, no wall time
+    const at = (ageDays: number): string => new Date(NOW - ageDays * 86_400_000).toISOString();
+
+    // λ absent / invalid / <= 0 -> factor 1 (decay OFF, fail-closed config).
+    delete process.env["AGENT_MEMORY_DECAY_LAMBDA"];
+    check(
+      "decay: λ absent -> factor 1",
+      decayedImportance(0.8, at(7), NOW) === 0.8,
+      String(decayedImportance(0.8, at(7), NOW)),
+    );
+    process.env["AGENT_MEMORY_DECAY_LAMBDA"] = "not-a-number";
+    check(
+      "decay: λ invalid -> factor 1",
+      decayedImportance(0.8, at(7), NOW) === 0.8,
+      String(decayedImportance(0.8, at(7), NOW)),
+    );
+    process.env["AGENT_MEMORY_DECAY_LAMBDA"] = "0";
+    check(
+      "decay: λ=0 -> factor 1",
+      decayedImportance(0.8, at(7), NOW) === 0.8,
+      String(decayedImportance(0.8, at(7), NOW)),
+    );
+    process.env["AGENT_MEMORY_DECAY_LAMBDA"] = "-3";
+    check(
+      "decay: λ<0 -> factor 1",
+      decayedImportance(0.8, at(7), NOW) === 0.8,
+      String(decayedImportance(0.8, at(7), NOW)),
+    );
+
+    // Golden: half-life 7 days -> after 7 days, exactly 0.5 (±1e-12).
+    process.env["AGENT_MEMORY_DECAY_LAMBDA"] = String(Math.LN2 / 7);
+    const half = decayedImportance(1, at(7), NOW);
+    check("decay: λ=ln2/7 at 7d -> exactly 0.5 ±1e-12", Math.abs(half - 0.5) <= 1e-12, String(half));
+
+    // Monotonic: older age -> strictly smaller decayed importance.
+    const d0 = decayedImportance(0.9, at(0), NOW);
+    const d3 = decayedImportance(0.9, at(3), NOW);
+    const d30 = decayedImportance(0.9, at(30), NOW);
+    check(
+      "decay: monotonic (age 0 > 3 > 30)",
+      d0 > d3 && d3 > d30,
+      JSON.stringify([d0, d3, d30]),
+    );
+
+    // Clamp to 0..1: future createdAt grows the factor above 1 -> clamp 1;
+    // negative importance -> clamp 0.
+    check(
+      "decay: clamp high (future createdAt) -> 1",
+      decayedImportance(1, at(-7), NOW) === 1,
+      String(decayedImportance(1, at(-7), NOW)),
+    );
+    check(
+      "decay: clamp low (negative importance) -> 0",
+      decayedImportance(-0.5, at(0), NOW) === 0,
+      String(decayedImportance(-0.5, at(0), NOW)),
+    );
+
+    // Unparseable createdAt -> factor 1 (bad timestamp never rescales).
+    check(
+      "decay: unparseable createdAt -> factor 1",
+      decayedImportance(0.7, "not-a-date", NOW) === 0.7,
+      String(decayedImportance(0.7, "not-a-date", NOW)),
+    );
+
+    /* D. filterExpired (REQ-P1-1 / T-103). */
+    const rows = [
+      { id: "fresh", createdAt: at(10) },
+      { id: "boundary", createdAt: at(30) }, // age == ttl exactly -> survives
+      { id: "old", createdAt: at(31) }, // age > ttl -> expired
+      { id: "ancient", createdAt: at(400) },
+      { id: "bad", createdAt: "not-a-date" }, // unparseable -> NOT expired
+    ];
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "30";
+    const kept = filterExpired(rows, NOW);
+    check(
+      "ttl: age>30 dropped, age==30 + unparseable kept",
+      JSON.stringify(kept.map((r) => r.id)) === JSON.stringify(["fresh", "boundary", "bad"]),
+      JSON.stringify(kept.map((r) => r.id)),
+    );
+    delete process.env["AGENT_MEMORY_TTL_DAYS"];
+    check(
+      "ttl: OFF (absent) keeps all",
+      filterExpired(rows, NOW).length === rows.length,
+      String(filterExpired(rows, NOW).length),
+    );
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "0";
+    check(
+      "ttl: OFF (0) keeps all",
+      filterExpired(rows, NOW).length === rows.length,
+      String(filterExpired(rows, NOW).length),
+    );
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "-5";
+    check(
+      "ttl: OFF (negative) keeps all",
+      filterExpired(rows, NOW).length === rows.length,
+      String(filterExpired(rows, NOW).length),
+    );
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "abc";
+    check(
+      "ttl: OFF (invalid) keeps all",
+      filterExpired(rows, NOW).length === rows.length,
+      String(filterExpired(rows, NOW).length),
+    );
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "30";
+    check(
+      "ttl: input array untouched (pure)",
+      rows.length === 5,
+      String(rows.length),
+    );
+  } finally {
+    restoreEnv();
+  }
 
   /* Summary (verify.ts format). */
   console.log(`\n${passed} passed, ${failures.length} failed`);

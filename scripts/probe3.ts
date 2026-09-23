@@ -25,7 +25,7 @@
  * Decision: all three green -> ship index #8 + findMemoryByDedupKey, NO
  * backfill script. (a) blocked -> contingency setDedupKey + backfill.
  */
-import { Client, g, readBatch, writeBatch, IndexSpec, Predicate, PropertyInput, PropertyProjection, defineParams, param, type QueryRequest } from "@helix-db/helix-db";
+import { Client, g, readBatch, writeBatch, IndexSpec, Order, Predicate, PropertyInput, PropertyProjection, defineParams, param, type QueryRequest } from "@helix-db/helix-db";
 import type { HelixError } from "@helix-db/helix-db";
 import { embed } from "../src/embed.js";
 
@@ -283,7 +283,125 @@ async function main(): Promise<void> {
     record("  => unique index REJECTS ambiguous reads: enforcement lives at read time");
   }
 
-  printSummary(findings, "GREEN");
+  /* ---- (e) REQ-P1-1 gate: ltParam on a dateTime property ----------- */
+  // Production-faithful: createdAt goes in through param.dateTime(), the
+  // EXACT storage type saveMemory uses (a string-value write would probe
+  // the wrong type). Isolated project: one node from 2020, one from now.
+  const ttlParams = defineParams({
+    memoryId: param.string(),
+    project: param.string(),
+    sessionId: param.string(),
+    createdAt: param.dateTime(),
+  });
+  const writeTtlMemory = (values: {
+    memoryId: string;
+    project: string;
+    sessionId: string;
+    createdAt: string;
+  }): QueryRequest =>
+    writeBatch()
+      .varAs(
+        "memory",
+        g().addN("Memory", {
+          memoryId: PropertyInput.param("memoryId"),
+          content: PropertyInput.value("probe p1 ttl content"),
+          project: PropertyInput.param("project"),
+          sessionId: PropertyInput.param("sessionId"),
+          origin: PropertyInput.value("probe"),
+          importance: PropertyInput.value(0.5),
+          createdAt: PropertyInput.param("createdAt"),
+          embedding: PropertyInput.value(embed("probe p1 ttl content")),
+        }),
+      )
+      .returning(["memory"])
+      .toQueryRequest(ttlParams, values);
+
+  const PROJECT_E = "probe-p1-ttl";
+  const ttlOldId = `probe-ttl-old-${Date.now()}`;
+  const ttlNewId = `probe-ttl-new-${Date.now()}`;
+  try {
+    await client
+      .query<unknown>(
+        writeTtlMemory({
+          memoryId: ttlOldId,
+          project: PROJECT_E,
+          sessionId: PROJECT_E,
+          createdAt: "2020-01-01T00:00:00.000Z",
+        }),
+      )
+      .send();
+    await client
+      .query<unknown>(
+        writeTtlMemory({
+          memoryId: ttlNewId,
+          project: PROJECT_E,
+          sessionId: PROJECT_E,
+          createdAt: new Date().toISOString(),
+        }),
+      )
+      .send();
+    record(`(e1) wrote TTL probe pair (old=${ttlOldId}, new=${ttlNewId}) in ${PROJECT_E}`);
+  } catch (err) {
+    record(`(e1) TTL probe writes: ERROR — ${describeError(err)}`);
+    return printSummary(findings, "BLOCKED");
+  }
+
+  const listParams = defineParams({
+    project: param.string(),
+    cutoff: param.dateTime(),
+    limit: param.i64(),
+  });
+
+  const runListExpired = async (cutoff: string): Promise<string> => {
+    try {
+      const res = await client
+        .query<unknown>(
+          readBatch()
+            .varAs(
+              "expired",
+              g()
+                .nWithLabel("Memory")
+                .where(
+                  Predicate.and([
+                    Predicate.eqParam("project", "project"),
+                    Predicate.ltParam("createdAt", "cutoff"),
+                  ]),
+                )
+                .orderBy("$id", Order.Asc)
+                .limit(listParams.limit)
+                .project([
+                  PropertyProjection.renamed("$id", "id"),
+                  PropertyProjection.new("memoryId"),
+                  PropertyProjection.new("createdAt"),
+                ]),
+            )
+            .returning(["expired"])
+            .toQueryRequest(listParams, { project: PROJECT_E, cutoff, limit: 500n }),
+        )
+        .send();
+      return JSON.stringify(res);
+    } catch (err) {
+      return `ERROR — ${describeError(err)}`;
+    }
+  };
+
+  const e2 = await runListExpired("2021-01-01T00:00:00.000Z");
+  record(`(e2) cutoff 2021 (expect ONLY old node): ${e2}`);
+  const e3 = await runListExpired("2100-01-01T00:00:00.000Z");
+  record(`(e3) cutoff 2100 (expect BOTH nodes): ${e3}`);
+  const e4 = await runListExpired("1999-01-01T00:00:00.000Z");
+  record(`(e4) cutoff 1999 (expect NONE): ${e4}`);
+
+  const e2ok = e2.includes(ttlOldId) && !e2.includes(ttlNewId) && !e2.startsWith("ERROR");
+  const e3ok = e3.includes(ttlOldId) && e3.includes(ttlNewId) && !e3.startsWith("ERROR");
+  const e4ok = !e4.includes(ttlOldId) && !e4.includes(ttlNewId) && !e4.startsWith("ERROR");
+  record(
+    e2ok && e3ok && e4ok
+      ? "VERDICT: (e) GREEN — ltParam on dateTime works: strict older-than semantics, project-scoped, ordered"
+      : `VERDICT: (e) MISMATCH — e2ok=${e2ok} e3ok=${e3ok} e4ok=${e4ok} (see rows above)`,
+  );
+
+  printSummary(findings, e2ok && e3ok && e4ok ? "GREEN" : "BLOCKED");
 }
 
 function printSummary(findings: string[], verdict: string): void {
