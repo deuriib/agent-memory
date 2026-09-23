@@ -25,15 +25,15 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Capability | Upstream | This repo | Status |
 |---|---|---|---|
 | Storage engine | iii engine + SQLite, 0 external DBs | HelixDB v3 (graph + vector + BM25) in Docker | Divergent by design |
-| REST routes | `/agentmemory/*` | 8 routes: `livez`, `health`, `remember`, `search`, `smart-search`, `sessions`, `sessions/:id/memories`, `forget` | Verified |
-| MCP tools | 54 | 7: `memory_save`, `memory_search`, `memory_smart_search`, `memory_forget`, `memory_health`, `memory_sessions`, `memory_session_memories` | Verified — 47 short |
+| REST routes | `/agentmemory/*` | 12 routes under `/memory/*`: `livez`, `health`, `remember`, `search`, `smart-search`, `sessions`, `sessions/:id/memories`, `forget`, `recap`, `handoff`, `lesson`, `delete` | Verified |
+| MCP tools | 54 | 11: `memory_save`, `memory_search`, `memory_smart_search`, `memory_forget`, `memory_health`, `memory_sessions`, `memory_session_memories`, `memory_recap`, `memory_handoff`, `memory_lesson`, `memory_delete` | Verified — 43 short |
 | Bearer auth | `AGENTMEMORY_SECRET` | `AGENT_MEMORY_SECRET`, `livez` exempt, empty = open localhost | Verified |
 | Hybrid retrieval | BM25 + vector + graph, RRF | Same fusion in `src/search.ts`, with explicit degradation `signals` | Verified |
-| Auto-capture hooks | 12 (Claude Code), 22 (OpenCode), 6 (Codex), 7 (Cursor) | 4 plugin hooks (`prompt`, `context`, `compaction`, `tool.execute.after`) + `hooks/capture.mjs` for `SessionStart`/`PostToolUse`/`Stop` | Verified — far short |
+| Auto-capture hooks | 12 (Claude Code), 22 (OpenCode), 6 (Codex), 7 (Cursor) | 5 plugin hooks (`prompt`, `context`, `compaction`, `tool.execute.after`, `tool.execute.before`) + `hooks/capture.mjs` for 7 events (`SessionStart`/`PostToolUse`/`Stop`/`PostToolUseFailure`/`PreCompact`/`SessionEnd`/`UserPromptSubmit`) | Partial — breadth improved, still short of upstream |
 | Context injection | Hook-driven | Marker-idempotent `[agent-memory v…]`, compaction-safe, TTL+LRU cache, write invalidation | Verified — our strongest area |
 | Skills | 17 `SKILL.md` (9 invocable + 8 reference) | 0 | Missing |
 | Real-time viewer | Yes, port 3113, incl. Replay timeline | None | Missing |
-| Memory lifecycle | 4-tier consolidation + decay + auto-forget | `remember` / `forget` only; static `importance` | Missing |
+| Memory lifecycle | 4-tier consolidation + decay + auto-forget | Read-time decay + TTL + `purge.ts` (corte A, opt-in envs); consolidation tiers still missing | Partial |
 | Confidence scoring | Yes | `importance` 0..1 supplied by caller, defaults `0.5` | Partial |
 | Transcript import | `import-jsonl` (Claude Code JSONL) | None | Missing |
 | Multi-agent coordination | MCP + REST + leases + signals | None (single-tenant `project` scope) | Missing |
@@ -41,7 +41,7 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | None | Missing |
-| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (102) + `verify-injection` (73) + `verify-env` (21), plus GitHub Actions CI (typecheck, injection, gitleaks) | Verified — CI present; no unit suite |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (131) + `verify-lifecycle` (34) + `verify-capture` (115) + `verify-injection` (73) + `verify-env` (21), plus GitHub Actions CI (typecheck, injection, capture, lifecycle, gitleaks) | Verified — CI present; no unit suite |
 | Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | LICENSE, SECURITY, CONTRIBUTING, CHANGELOG (plus README, AGENTS, CONTRACT); no CODE_OF_CONDUCT / GOVERNANCE / MAINTAINERS / DESIGN | Verified — incomplete (P4.7) |
 | Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
@@ -81,18 +81,18 @@ passes, not when its tickets are "mostly" closed.
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P1.1 | Memory lifecycle: importance decay, TTL, auto-forget | A memory not recalled in N days loses weight and is eventually removable; nothing grows unbounded |
+| P1.1 | Memory lifecycle: importance decay, TTL, auto-forget ✅ done (corte A) (2026-09-23) | A memory not recalled in N days loses weight and is eventually removable; nothing grows unbounded — decay `importance·e^(−λ·ageDays)` on the fused tie-break (`AGENT_MEMORY_DECAY_LAMBDA`, default OFF) + TTL hide with `ttl:` signal (`AGENT_MEMORY_TTL_DAYS`) + fail-closed `scripts/purge.ts` (`--days/--project\|--all/--dry-run`); probe3 (e) + verify-lifecycle 34 + verify 131 + purge dry-run/usage-guard green |
 | P1.2 | Consolidation tiers | Near-duplicate memories merge instead of accumulating; merged set still recalls the originals |
-| P1.3 | Auto concept extraction | `remember` derives concepts without an explicit `concepts[]`, so the graph branch fires on plain saves |
+| P1.3 | Auto concept extraction ✅ done (2026-09-23) | `remember` derives concepts without an explicit `concepts[]`, so the graph branch fires on plain saves — `extractConcepts` (top-8, deterministic), explicit concepts win verbatim, verify graph-branch fused score == 3/61 |
 | P1.4 | Derived confidence | `importance` is computed from provenance + recall history, not just caller-supplied `0.5` |
 | P1.5 | Eval harness | An adapter-pluggable harness scores retrieval on a public corpus; a scorecard lands in `docs/benchmarks/` with *our* numbers |
-| P1.6 | Dedup on write | Saving the same fact twice does not create two retrievable rows |
+| P1.6 | Dedup on write ✅ done (2026-09-23) | Saving the same fact twice does not create two retrievable rows — `dedupKey` pre-check + per-key lock returns the existing id with `deduped:true`; probe3 proved uniqueness is application-side (the server does not enforce the index) |
 
 ### P2 — Capture breadth
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P2.1 | Expand hook coverage | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` |
+| P2.1 | Expand hook coverage ✅ done (2026-09-23) | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` — all 7 `capture.mjs` events + plugin `execute.before` land an observation; `scripts/verify-capture.ts` 115 checks green (payload/origin/exit-0/silence/privacy canary) |
 | P2.2 | Capture file edits and failures | A failed tool call and an edited file both produce an observation |
 | P2.3 | Transcript import | Import a persisted session transcript and have it searchable afterwards |
 | P2.4 | Session summarization / lessons | A closed session yields a compact summary + mined lessons, retrievable by `session` |
@@ -131,7 +131,7 @@ These are decisions, not gaps. Do not "fix" them by copying upstream.
 2. **Env prefix.** `AGENT_MEMORY_*` here, `AGENTMEMORY_*` upstream. Ours follows
    a consistent `WORD_WORD_*` convention; it means our env vars are **not**
    drop-in compatible with upstream's, by choice.
-3. **Focused surface.** 7 tools, not 54. We add surface only when a concrete
+3. **Focused surface.** 11 tools, not 54. We add surface only when a concrete
    retrieval or capture gap is proven, not for parity's own sake.
 4. **Explicit degradation over silent thinning.** `signals[]` stays.
 5. **Never displace upstream.** Coexistence rule from `README.md` is permanent.

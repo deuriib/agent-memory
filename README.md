@@ -1,6 +1,6 @@
 # agent-memory
 
-[![Version](https://img.shields.io/badge/version-v0.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.4.0-blue.svg)](CHANGELOG.md)
 
 Persistent memory for AI coding agents — a v1 replica of
 [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) rebuilt on
@@ -22,7 +22,8 @@ Three node labels, two edge types (CONTRACT §1):
 ```
 Session  sessionId (unique), project, startedAt, updatedAt
 Memory   memoryId (unique), content, project, sessionId, origin,
-         importance (0..1), createdAt, embedding (f32[384])
+         importance (0..1), createdAt, embedding (f32[384]),
+         dedupKey (unique, sha256 of project + normalized content)
 Concept  name (unique), project
 
 BELONGS_TO   Memory ──▶ Session
@@ -32,13 +33,16 @@ HAS_CONCEPT  Memory ──▶ Concept
 - **`Memory.embedding`** — 384-dim vector, cosine distance, indexed with
   `project` as the tenant key.
 - **`Memory.content`** — BM25 full-text index, also scoped by `project`.
+- **`Memory.dedupKey`** — write-time dedup key (v1.1): saving the same fact
+  twice returns the existing id (`deduped: true`) instead of a second row;
+  the hash never leaves the store as raw content.
 - **`project`** is the tenant/scope for every vector and text index; search
   routes always pass it.
 
-`bootstrapIndexes()` ensures all 7 indexes: 3 unique (`Memory.memoryId`,
-`Session.sessionId`, `Concept.name`), 2 equality (`Memory.sessionId`,
-`Memory.project`), 1 vector (`Memory.embedding`, 384-dim cosine, tenant
-`project`), 1 text (`Memory.content`, tenant `project`).
+`bootstrapIndexes()` ensures all 8 indexes: 4 unique (`Memory.memoryId`,
+`Session.sessionId`, `Concept.name`, `Memory.dedupKey`), 2 equality
+(`Memory.sessionId`, `Memory.project`), 1 vector (`Memory.embedding`, 384-dim
+cosine, tenant `project`), 1 text (`Memory.content`, tenant `project`).
 
 Writes anchor narrow: `saveMemory()` is a single `writeBatch` that upserts the
 Session (create or bump `updatedAt`), creates the Memory, links `BELONGS_TO`,
@@ -62,8 +66,16 @@ Fusion**:
 score(doc) = Σ 1 / (60 + rank_i)      over every source that returned it
 ```
 
-Ranks are 1-based. Ties break by `importance` (desc), then `createdAt` (desc,
-newest first), then `memoryId` (asc) so output is fully deterministic.
+Ranks are 1-based. Ties break by **decayed** `importance` (desc) — with
+`AGENT_MEMORY_DECAY_LAMBDA` set, a row's weight is `importance · e^(−λ·ageDays)`,
+so older, never-recalled rows sink (λ unset/invalid/≤0 → plain importance, the
+default) — then `createdAt` (desc, newest first), then `memoryId` (asc) so output
+is fully deterministic. The returned `importance` field is always the stored value;
+decay is ranking-only.
+
+Both search paths also honor `AGENT_MEMORY_TTL_DAYS` (v1.1): rows older than the
+TTL are hidden and reported as `signals: ["ttl: hidden N expired rows"]` — explicit
+degradation, never silent thinning. Both knobs are **off by default**.
 
 Failures degrade instead of exploding: each source runs independently, a source
 error is caught and recorded in a `signals` list, and the remaining sources
@@ -79,10 +91,12 @@ Requires **Node 20+** and a running Helix dev instance (Docker/Podman):
 helix start dev --disk --persist   # durable default: persists storage mode into helix.toml
 
 npm install
-npm run bootstrap               # create the 7 indexes, poll until ready
+npm run bootstrap               # create the 8 indexes, poll until ready
 npm run demo                    # seed 3 sessions, run keyword/semantic/hybrid searches
 npm run dev                     # REST server on http://127.0.0.1:3111
 npm run verify                  # end-to-end verification against the running server
+npm run verify-lifecycle        # pure dedupKey/decay/TTL/concepts checks (no server)
+npm run verify-capture          # 7-event hook E2E vs a local counting server (no Helix)
 ```
 
 `--disk --persist` writes `storage = "disk"` into `helix.toml`, and that key —
@@ -92,11 +106,11 @@ whose `helix.toml` has no `storage = "disk"` key runs memory storage, and
 every restart wipes it.
 
 Scripts (from `package.json`): `bootstrap`, `dev`, `demo`, `verify`,
-`typecheck`.
+`verify-env`, `verify-lifecycle`, `verify-capture`, `purge`, `typecheck`.
 
 ## REST API
 
-All routes live under `/agentmemory`, JSON in/out. If `AGENT_MEMORY_SECRET` is
+All routes live under `/memory`, JSON in/out. If `AGENT_MEMORY_SECRET` is
 set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 `livez` (see [Authentication](#authentication)).
 
@@ -104,7 +118,7 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 |---|---|---|---|
 | GET | `/memory/livez` | — | 200 `{"status":"ok"}` |
 | GET | `/memory/health` | `?project=` | 200 `{"status":"ok","counts":{…}}` |
-| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts, deduped}` |
 | POST | `/memory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…], signals:[…]}` |
 | POST | `/memory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…], signals:[…]}` |
 | GET | `/memory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
@@ -112,7 +126,7 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 | POST | `/memory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
 | POST | `/memory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
 | POST | `/memory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts, deduped}` |
 | POST | `/memory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `limit=10`, `importance=0.5`, `origin="rest"`,
@@ -148,8 +162,13 @@ curl -s -X POST http://127.0.0.1:3111/memory/remember \
     "sessionId": "readme-example"
   }'
 # 201
-# {"id":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","sessionId":"readme-example","project":"readme","concepts":["auth","jwt"]}
+# {"id":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","sessionId":"readme-example","project":"readme","concepts":["auth","jwt"],"deduped":false}
 ```
+
+Send the same `content` again (same project, any casing/whitespace) and the
+server returns the SAME `id` with `"deduped":true` — no second row. Omit
+`concepts` entirely and they're derived for you (top-8 terms of the content),
+so plain saves still feed the concept-graph branch of hybrid search.
 
 **search** (BM25 only):
 
@@ -229,7 +248,7 @@ backed by the same `MemoryStore` as the REST server. Handshake exposes exactly
 
 | Tool | Purpose |
 |---|---|
-| `memory_save` | Persist one memory (content + optional concepts) |
+| `memory_save` | Persist one memory (content + optional concepts — derived when omitted; duplicate content returns the existing id with `deduped:true`) |
 | `memory_search` | Keyword (BM25) search within a project |
 | `memory_smart_search` | Hybrid search: vector + BM25 + optional concept graph, RRF-fused |
 | `memory_sessions` | List sessions of a project |
@@ -285,7 +304,8 @@ error. Never commit a real secret — set it in the server's environment.
 
 `hooks/capture.mjs` is plain Node ESM with **zero dependencies**. It reads the
 host's hook JSON on stdin, takes the event name from `argv[2]` (supported:
-`SessionStart`, `PostToolUse`, `Stop`), and POSTs one small observation to
+`SessionStart`, `PostToolUse`, `Stop`, `PostToolUseFailure`, `PreCompact`,
+`SessionEnd`, `UserPromptSubmit` — 7 events), and POSTs one small observation to
 `/memory/remember` with `origin="hook:<event>"`.
 
 Wiring example (Claude Code `settings.json` hooks shape):
@@ -298,6 +318,18 @@ Wiring example (Claude Code `settings.json` hooks shape):
     ],
     "PostToolUse": [
       { "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs PostToolUse" }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs PostToolUseFailure" }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs PreCompact" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs SessionEnd" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs UserPromptSubmit" }] }
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "node /path/to/agent-memory/hooks/capture.mjs Stop" }] }
@@ -314,17 +346,25 @@ Guarantees (verified):
 - **Always exits 0 with zero output** — even when the memory server is down,
   with malformed stdin, or with an unsupported event. A dead memory server must
   never block the coding agent.
-- Stores a valid observation when the server is up; all 3 events
-  (`SessionStart` / `PostToolUse` / `Stop`) work.
-- **Only a tiny, host-agnostic summary is stored**: `agent session started`,
-  `tool used: <tool-name>`, or `agent session stopped`. Hook payloads, file
-  paths, and command output are deliberately NOT captured — a planted file path
-  (`/tmp/secret-should-not-be-captured.txt`) was confirmed **not** stored.
+- Stores a valid observation when the server is up; all 7 events work
+  (`SessionStart` / `PostToolUse` / `Stop` / `PostToolUseFailure` /
+  `PreCompact` / `SessionEnd` / `UserPromptSubmit`).
+- **Only an allowlisted, host-agnostic summary is stored**: `agent session
+  started`, `tool used: <tool-name>`, `tool failed: <tool-name>`, `agent
+  session stopped`, `context compaction requested`, `agent session ended`, or
+  `user prompt submitted`. Hook payloads, file paths, command output, and the
+  user's prompt text are deliberately NOT captured — a planted file path
+  (`/tmp/secret-should-not-be-captured.txt`) and a prompt canary were both
+  confirmed **not** stored (privacy, Ley 172-13).
 - Never prints memory content, the hook payload, or the secret.
 - `AGENT_MEMORY_URL` defaults to `http://127.0.0.1:3111` (the REST service, not
   the raw Helix port); `project` derives from the workspace directory name,
   overridable via `AGENT_MEMORY_PROJECT`.
 - A 2s fetch timeout keeps a hung server from hanging the agent.
+
+The OpenCode plugin mirrors this with a 5th hook, `tool.execute.before` — a
+fire-and-forget `tool started: <tool-name>` observation (own `memory*` tools
+skipped; never awaited, so the tool hot path pays nothing).
 
 ## Authentication
 
@@ -361,12 +401,14 @@ when `AGENT_MEMORY_SECRET` is unset.
 | `AGENT_MEMORY_PORT` | `3111` | REST server | Listen port |
 | `AGENT_MEMORY_URL` | `http://127.0.0.1:3111` | hooks, `verify`, plugin | Base URL of the REST service |
 | `AGENT_MEMORY_SECRET` | *(unset = open)* | REST + MCP + hooks + plugin | Bearer secret; non-empty arms the guard |
-| `HELIX_URL` | `http://localhost:6969` | store, bootstrap | HelixDB instance endpoint |
+| `HELIX_URL` | `http://localhost:6969` | store, bootstrap, purge | HelixDB instance endpoint |
 | `AGENT_MEMORY_PROJECT` | *(workspace dir name)* | hooks, plugin | Tenant/scope value for captured observations |
 | `AGENT_MEMORY_HOST` | `127.0.0.1` | REST server | Bind address |
 | `AGENT_MEMORY_INJECT` | `true` | OpenCode plugin | Auto-inject recalled memories into the system prompt; `false` skips the search and the context block (the static compaction reminder still lands) |
 | `AGENT_MEMORY_INJECT_LIMIT` | `8` | OpenCode plugin | Max rows injected per block and per auto-recall query (`1`–`20`) |
 | `AGENT_MEMORY_INJECT_TTL_MS` | `45000` | OpenCode plugin | Auto-recall cache TTL in ms, bounding network cost inside the request hot path (`1000`–`600000`) |
+| `AGENT_MEMORY_TTL_DAYS` | *(unset = off)* | REST + MCP searches, store | Hide memories older than N days from search results (reported as a `ttl:` signal); must parse to a finite number > 0, else OFF |
+| `AGENT_MEMORY_DECAY_LAMBDA` | *(unset = off)* | REST + MCP searches, store | Per-day decay rate λ for the fused-row tie-break: weight = `importance · e^(−λ·ageDays)`; invalid/≤ 0 → decay OFF; stored `importance` is never modified |
 
 The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
@@ -427,9 +469,11 @@ Stated plainly — these are real, not hypothetical:
    with the upstream, but it does **not** understand true semantic synonyms.
    Swap `src/embed.ts` for a real embedding model when semantics matter.
 
-5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): decay, 4-tier
+5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): 4-tier
    consolidation, LLM auto-compress, viewer UI, session replay, JSONL import,
    multi-agent adapters (20 upstream), and the full 54-tool MCP surface.
+   (Read-time decay + TTL + `purge.ts` shipped in v0.4.0 — "corte A"; recall-based
+   decay and consolidation tiers are still out of scope.)
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
@@ -451,20 +495,42 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`102 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`131 passed, 0 failed` →
   `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
   → smart-search hits → sessions list → session memories → forget → gone →
   counts reflect it, plus embedder determinism, defaults, boundary validation,
-  and the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
+  the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
   recap (every bullet session-scoped) → handoff → governed delete with receipt
-  → gone → second delete 404 → counts). Before the first write it probes
+  → gone → second delete 404 → counts, and the v1.1 lifecycle sections:
+  derived default concepts ≤8 → graph-branch proof (fused score == 3/61) →
+  content-hash dedup round-trip: same id + `deduped:true` + counts stable,
+  cross-project distinct, concurrent race → same id). Before the first write it probes
   `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run bootstrap` — `bootstrapIndexes: OK (7 indexes ensured)` then
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`34 passed` →
+  `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
+  half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
+  concept extraction determinism + bounds. No Helix, no server — CI-runnable.
+- `npm run verify-capture` (`scripts/verify-capture.ts`) — **`115 checks` →
+  `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
+  silence, prompt-text privacy canary, negatives (unsupported event, malformed
+  /empty stdin, dead server), Authorization header, and the plugin
+  `captureToolStart` helper (incl. `memory*` skip + dead-backend fail-soft).
+  Spawns `capture.mjs` against a local counting server — no Helix, CI-runnable.
+- `npm run bootstrap` — `bootstrapIndexes: OK (8 indexes ensured)` then
   `READY — searchByText responding`.
+- `npm run verify-env` (`scripts/verify-env.ts`) — **`21 passed`**: legacy
+  `AGENTMEMORY_*` migration guards + hook silence.
+- `npx tsx scripts/verify-injection.ts` — **`ALL PASS` (73)**: marker
+  idempotency, block size budget, cache TTL/LRU, fail-soft recall.
+- `npx tsx scripts/probe3.ts` — **`OVERALL: GREEN`**: live-instance proof for
+  dedup lookup round-trip, application-side (non-)uniqueness, and `ltParam`
+  strict older-than on `dateTime` (feeds `purge.ts`).
+- `npx tsx scripts/purge.ts --dry-run` — prints would-delete count + ids and
+  deletes nothing; missing `--days` → usage + exit 2 (fail closed).
 - `npm run demo` — `demo OK`: BM25 hits at scores 2.54 / 1.59 / 0.88, vector
   hits ranked by cosine distance (e.g. `d=0.2972 < 0.3251 < 0.4151` — verified
   discriminating, not tied), and hybrid RRF hits mixing `source: vector` and
@@ -476,8 +542,9 @@ All run clean:
   round-trips confirmed.
 - Hook guarantees: exit code 0 and zero output with the server DOWN, with
   malformed stdin, and with an unsupported event; valid observation stored when
-  up; all 3 events work; only the tool NAME is stored (planted path
-  `/tmp/secret-should-not-be-captured.txt` confirmed NOT stored).
+  up; all 7 events work; only the allowlisted summary is stored (planted path
+  `/tmp/secret-should-not-be-captured.txt` and a prompt canary both confirmed
+  NOT stored).
 
 ## Contributing & security
 

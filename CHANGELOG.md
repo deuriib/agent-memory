@@ -5,6 +5,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v0.4.0] — 2026-09-23
+
+### Added
+
+- **Auto concept extraction** (P1.3 / REQ-P1-3): `remember` without an
+  explicit `concepts[]` derives up to 8 deterministic concepts (shared
+  tokenizer → stopwords → tf DESC → lex ASC); caller-supplied concepts win
+  verbatim, so the §3 echo contract is preserved; derived concepts power the
+  graph branch on plain saves (fused score == 3/61 proof) —
+  `src/concepts.ts` (engineering, P1)
+- **Dedup on write** (P1.6 / REQ-P1-6): `dedupKey =
+  sha256(project + "\n" + normalize(content))` property + index #8 +
+  `findMemoryByDedupKey` pre-check under a per-key FIFO lock; duplicate saves
+  return the existing id with additive `deduped: true` and create no second
+  row; uniqueness is application-side (probe3: the server does not enforce
+  the unique index) (engineering, P1)
+- **Memory lifecycle — corte A** (P1.1 / REQ-P1-1): read-time decay
+  `importance · e^(−λ·ageDays)` on the fused tie-break
+  (`AGENT_MEMORY_DECAY_LAMBDA`, default OFF) + TTL hiding of expired rows with
+  an explicit `ttl: hidden N expired rows` signal
+  (`AGENT_MEMORY_TTL_DAYS`, default OFF) + fail-closed `scripts/purge.ts`
+  (`--days N --project P|all [--dry-run]`, project-scoped `listExpired` +
+  per-id `forgetMemory`, allowlisted governance line) (engineering/ops, P1)
+- **Hook coverage** (P2.1 / REQ-P2-1): `capture.mjs` 3 → 7 events
+  (`PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`) with
+  a per-event content allowlist — `UserPromptSubmit` never reads prompt text
+  (Ley 172-13) — plus the OpenCode plugin's 5th hook
+  `tool.execute.before` (fire-and-forget `tool started: <name>`, own
+  `memory*` skipped) (engineering/security, P2)
+- Local suites `scripts/verify-lifecycle.ts` (34 passed) and
+  `scripts/verify-capture.ts` (115 checks), both Helix-free and wired into CI
+  (engineering, P0/P1/P2 gate)
+
+### Changed
+
+- `docs/CONTRACT.md` **v1 → v1.1**: §0 probe3 facts (unique index not
+  enforced, `ltParam` on `dateTime`, missing-property writes), §1
+  `dedupKey` property, §2 +3 exports + index #8 + `saveMemory` param, §3
+  remember/dedup/decay/TTL/purge/7-event hooks/plugin `execute.before`
+  semantics, §4 drops "Decay" from do-not-build, §5 verification bar
+  (engineering, P1+P2.1)
+- `scripts/verify.ts` bar grows 102 → **131 passed** (derived-concepts,
+  graph-branch, dedup/race sections); README route prefix corrected to
+  `/memory`, hooks/config/verification docs refreshed (engineering, P1+P2.1)
+- Version 0.3.0 → 0.4.0 across `package.json`, lockfile, plugin `VERSION`,
+  MCP server identifier, and README badge (engineering, this release)
+
 ## [v0.3.0] — 2026-09-22
 
 ### Added

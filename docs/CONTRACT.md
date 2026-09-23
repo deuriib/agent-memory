@@ -1,10 +1,19 @@
-# agent-memory — v1 Frozen Contract
+# agent-memory — v1.1 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
 
 Status: every construct in §1 and §3 was empirically verified against the running
-instance at `http://localhost:6969` (see `scripts/probe.ts`, `scripts/probe2.ts`).
+instance at `http://localhost:6969` (see `scripts/probe.ts`, `scripts/probe2.ts`,
+`scripts/probe3.ts`).
+
+**v1.1 amendment (2026-09-23, P1+P2.1 lane):** `Memory.dedupKey` + index #8,
+`findMemoryByDedupKey`/`listExpired`/`listProjects` queries, `remember` auto
+concept derivation + `deduped` response field, decayed-importance tie-break +
+TTL filter + `purge.ts`, 7 supported hook events with per-event content
+allowlist, plugin `tool.execute.before`. §4 drops "Decay" from the
+out-of-scope list; §5 grows two local suites. Everything below reflects the
+shipped code.
 
 ## 0. Verified facts (do not re-litigate)
 
@@ -20,8 +29,13 @@ instance at `http://localhost:6969` (see `scripts/probe.ts`, `scripts/probe2.ts`
 | `toQueryJson()` returns a **string**; use `toQueryRequest(params, values, options)` → `client.query(req).send()` | SDK `dsl.d.ts:694-699` |
 | `PropertyInput.value(x)` — there is **no** `PropertyInput.val` | SDK `dsl.d.ts:96` |
 | `IndexSpec.nodeVector(label, prop, dim, metric, tenant?)`, `nodeText(label, prop, tenant?)` | SDK `dsl.d.ts:325-326` |
+| A unique-equality index does **not** reject duplicate writes in Helix v0.0.6 — `dedupKey` uniqueness is enforced **application-side** by `remember()`'s pre-check under a per-key FIFO lock; index #8 only accelerates that lookup | probe3 b2/d1/d2/d3 |
+| A node **missing** the indexed property is accepted (legacy `dedupKey`-less rows are harmless; no backfill blocker) | probe3 a3-2 |
+| `Predicate.ltParam` on a `dateTime` property: strict older-than, project-scoped, `$id Asc` deterministic (server does not sort DateTime keys) | probe3 (e) |
+| `Predicate.ltParam`/range filters do **not** require a range index — they run as residual predicates after the equality anchor on `project` | probe3 (e) |
 
-Never restart or stop the dev instance. It runs with `storage: memory`.
+Never restart or stop the dev instance. It runs with `storage = "disk"` (key in
+`helix.toml`, set by P0.4).
 
 ## 1. Labels, edges, dimensions
 
@@ -36,7 +50,10 @@ Node properties (top-level — indexed/searchable fields must not be nested):
 
 - `Session`: `sessionId` (string, unique), `project` (string), `startedAt` (dateTime), `updatedAt` (dateTime)
 - `Memory`: `memoryId` (string, unique), `content` (string), `project` (string), `sessionId` (string),
-  `origin` (string), `importance` (f64, 0..1), `createdAt` (dateTime), `embedding` (f32[384])
+  `origin` (string), `importance` (f64, 0..1), `createdAt` (dateTime), `embedding` (f32[384]),
+  `dedupKey` (string, unique index #8; `sha256(project + "\n" + normalize(content))`
+  where normalize = lowercase + collapse whitespace runs + trim — added in v1.1,
+  legacy rows may lack it)
 - `Concept`: `name` (string, unique), `project` (string)
 
 `project` is the tenant/scope value for every vector and text index. Search routes
@@ -47,8 +64,8 @@ always pass it.
 ```ts
 export const LABELS, EDGES, EMBED_DIM
 
-bootstrapIndexes(): WriteBatch        // no params, all 7 indexes below
-saveMemory():      WriteBatch         // §3
+bootstrapIndexes(): WriteBatch        // no params, all 8 indexes below
+saveMemory():      WriteBatch         // §3 (incl. dedupKey param)
 listSessions():    ReadBatch          // params: project (string), limit (i64)
 sessionMemories(): ReadBatch          // params: sessionId (string), project (string), limit (i64)
 searchByVector():  ReadBatch          // params: queryVector (array f32), project (string), k (i64)
@@ -56,6 +73,9 @@ searchByText():    ReadBatch          // params: q (string), project (string), k
 graphSearch():     ReadBatch          // params: concepts (array string), project (string), k (i64)
 forgetMemory():    WriteBatch         // params: memoryId (string)
 healthCount():     ReadBatch          // params: project (string)  -> memory/session counts
+findMemoryByDedupKey(): ReadBatch     // v1.1, §3: params: dedupKey (string) -> memory row
+listExpired():     ReadBatch          // v1.1, §3: params: project (string), cutoff (dateTime), limit (i64)
+listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> distinct Session.project names
 ```
 
 Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
@@ -67,6 +87,8 @@ Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
 5. `nodeEquality("Memory", "project")`
 6. `nodeVector("Memory", "embedding", 384, VectorDistanceMetric.Cosine, "project")`
 7. `nodeText("Memory", "content", "project")`
+8. `nodeUniqueEquality("Memory", "dedupKey")` — v1.1; see §0: the server does not
+   enforce it, it is a lookup accelerator for the application-side pre-check
 
 `saveMemory()` param schema:
 
@@ -81,6 +103,7 @@ Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
   importance: param.f64(),
   createdAt:  param.dateTime(),
   concepts:   param.array(param.object()), // [{ name: "..." }, ...] — may be EMPTY
+  dedupKey:   param.string(),             // v1.1: sha256 hex, see §1
 }
 ```
 
@@ -136,6 +159,47 @@ REST (`src/server.ts`), all under `/memory`, JSON in/out:
 Defaults: `project="default"`, `sessionId` auto-generated (`crypto.randomUUID()`) when
 absent, `limit=10`, `importance=0.5`, `origin="rest"`.
 
+**v1.1 remember semantics** (`src/store.ts` + `src/concepts.ts` + `src/lifecycle.ts`):
+
+- **Auto concept derivation (P1.3):** when `concepts` is absent/empty, the store
+  derives them: shared tokenizer → built-in English stopword list → drop tokens
+  <3 chars or >200 chars → rank by term frequency DESC, then lexicographic ASC →
+  top **8** (`extractConcepts`, pure/deterministic). Caller-supplied concepts
+  always win **verbatim** — no union, no re-derivation — so the §3 echo contract
+  holds. The 201 echoes what was actually stored (derived or caller's).
+- **Dedup on write (P1.6):** `remember` computes
+  `dedupKey = sha256(project + "\n" + normalize(content))` (normalize = lowercase,
+  collapse whitespace runs, trim), then `findMemoryByDedupKey` **pre-checks under a
+  per-key in-process FIFO lock**. On a hit it returns the EXISTING id with
+  `deduped: true`, echoing the REQUEST's `sessionId`/`concepts` (never re-derived,
+  `[]` stays `[]`) — and creates no new row. On a miss it embeds and writes with
+  the `dedupKey` property. Uniqueness is application-side (§0: the server does not
+  enforce the index). Errors propagate (fail closed: a broken lookup must never let
+  a possible duplicate through). Same content in two projects = two rows (project is
+  inside the hash); legacy rows without `dedupKey` are not retroactively merged
+  (documented backfill gap).
+- **`RememberResult` gains `deduped: boolean`** (additive): `{id, sessionId,
+  project, concepts, deduped}`. First write → `deduped:false`; duplicate hit →
+  `deduped:true` + existing id. Both REST (201) and MCP (`memory_save`) echo it.
+- **Decay (P1.1 corte A):** the fused-row tie-break uses the DECAYED importance
+  `importance · e^(−λ · ageDays)` (`decayedImportance`, λ from
+  `AGENT_MEMORY_DECAY_LAMBDA`, per-day rate; absent/invalid/≤0 → factor 1 = OFF).
+  The row's `importance` field stays the STORED value — decay is ranking-only.
+  The stored `createdAt` drives `ageDays`; unparseable → factor 1.
+- **TTL filter (P1.1 corte A):** both searches drop rows older than
+  `AGENT_MEMORY_TTL_DAYS` (absent/invalid/≤0 → OFF; expire strictly when
+  `ageDays > ttlDays`; unparseable `createdAt` → kept) and append
+  `signals: ["ttl: hidden N expired rows"]` when N>0 — explicit degradation, not
+  silent thinning. No over-fetch buffer (opt-in feature; results may thin below limit).
+- **Purge (P1.1 corte A):** `scripts/purge.ts`, Helix-direct (`HELIX_URL`), fail-closed:
+  requires `--days N` (integer ≥1) AND (`--project P` OR `--all`), optional `--dry-run`.
+  It pages `listExpired` (batches of 500, `$id Asc`) and calls `forgetMemory` per id —
+  never a multi-drop (unverified). `--all` discovers projects via `listProjects`
+  (Session walk) and still runs the project-scoped `listExpired` per project. Output
+  is an allowlist (plan line, dry-run count+ids, one governance line
+  `purge project=<p|all> days=<n> deleted=<m> at=<iso>`, healthCount before/after) —
+  never content. Exit codes: 0 success, 1 operational failure, 2 usage error.
+
 P3.1 composition rules: `recap` renders one bullet per memory
 (`- [sessionId] createdAt (origin): content`) for the given session, or for every
 session of the project when `sessionId` is absent; `handoff` prefixes those bullets
@@ -173,8 +237,10 @@ raw vector hit's `score` is `0` until RRF assigns one. `source` is
 
 **Hybrid fusion = Reciprocal Rank Fusion in the app layer** (`src/search.ts`):
 run `searchByVector`, `searchByText`, `graphSearch` (when `concepts` present),
-then `score = Σ 1/(60 + rank_i)` per document, sort desc, tie-break by `importance`
-then `createdAt`. Each upstream failure is caught and recorded in `signals` — a
+then `score = Σ 1/(60 + rank_i)` per document, sort desc, tie-break by DECAYED
+importance (v1.1: `importance · e^(−λ·ageDays)`, see above — λ=0/off means plain
+`importance`), then `createdAt`. TTL filtering runs on both search paths before
+return. Each upstream failure is caught and recorded in `signals` — a
 degraded search returns results with whatever sources succeeded, never a 500.
 
 **Auth:** when `AGENT_MEMORY_SECRET` is set, every `/memory/*` route except
@@ -193,11 +259,30 @@ instance as REST. Same bearer auth when `AGENT_MEMORY_SECRET` is set. The four
 P3.1 tools mirror the REST bodies/response shapes above.
 
 Hooks (`hooks/capture.mjs`) — plain Node ESM, no deps. Reads hook JSON on stdin,
-event name from `argv[2]`. Supported: `SessionStart`, `PostToolUse`, `Stop`.
+event name from `argv[2]`. Supported (**7**, v1.1): `SessionStart`, `PostToolUse`,
+`Stop`, `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`.
 POSTs one observation to `/memory/remember` with `origin="hook:<event>"`.
 Never prints memory content or the secret. Exit 0 always (a dead memory server must
 never block the coding agent). `AGENT_MEMORY_URL` defaults to `http://127.0.0.1:3111`
 (the REST service, matching `src/server.ts`).
+
+**Per-event content allowlist (v1.1, P2.1):** fixed strings only, except the two
+tool events which carry the tool NAME (≤80 chars) and nothing else —
+
+| Event | `content` stored |
+|---|---|
+| `SessionStart` | `agent session started` |
+| `PostToolUse` | `tool used: <tool>` |
+| `Stop` | `agent session stopped` |
+| `PostToolUseFailure` | `tool failed: <tool>` |
+| `PreCompact` | `context compaction requested` |
+| `SessionEnd` | `agent session ended` |
+| `UserPromptSubmit` | `user prompt submitted` |
+
+`UserPromptSubmit` **never reads the prompt text** (user PII, Ley 172-13);
+`PreCompact` never reads trigger/payload; an unlisted event or a missing
+`tool_name` stores NOTHING (fail closed). Project/sessionId still derive from the
+host payload as for every event.
 
 > **Correction (Lane A found this):** an earlier draft of this contract said the
 > hook should default to `:6969`. That is wrong — `6969` is the raw Helix
@@ -210,24 +295,44 @@ repo keeps `3111` as its default for drop-in parity, but when upstream is runnin
 start ours elsewhere (`AGENT_MEMORY_PORT=3151`) and point clients at it
 (`AGENT_MEMORY_URL=http://127.0.0.1:3151`). Never kill the user's upstream instance.
 
-Hook privacy + project rules (verified): content is only ever `tool used: <tool>`,
-`agent session started`, or `agent session stopped` — hook payloads, file paths and
-command output are never captured. `project` derives from the workspace directory
-name, overridable via `AGENT_MEMORY_PROJECT`.
+Hook privacy + project rules (verified): content is only ever one of the 7
+allowlisted strings above (`agent session started`, `tool used: <tool>`, …) — hook
+payloads, file paths, command output, and the user's prompt text are never captured.
+`project` derives from the workspace directory name, overridable via
+`AGENT_MEMORY_PROJECT`.
+
+**OpenCode plugin hooks (v1.1, P2.1):** 5 registrations — `prompt`, `context`,
+`compaction`, `tool.execute.after` (cache invalidation, pre-existing), plus NEW
+`tool.execute.before`: fire-and-forget observation `tool started: <tool>`
+(`origin="hook:tool.execute.before"`, `AUTO_TIMEOUT_MS` 1.5s detached, every
+rejection swallowed, sync throw caught so the hook can never abort the turn; own
+`memory*` tools skipped — no self-observation loop; `event.input` never read —
+tool NAME only). Exported as `captureToolStart(cfg, toolName, sessionID)` for
+`scripts/verify-capture.ts`.
 
 `src/demo.ts` — seeds 3 realistic sessions (JWT auth in `src/middleware/auth.ts`,
 N+1 query fix, rate limiting) then runs keyword + semantic searches and prints hits.
 
 ## 4. Out of scope for v1 (do not build)
 
-Decay, 4-tier consolidation, LLM auto-compress, viewer UI, Replay, JSONL import,
-20 agent adapters, full 54-tool MCP surface.
+~~Decay~~ (added v1.1 corte A: read-time decay + TTL + `purge.ts` — consolidation
+tiers remain out), 4-tier consolidation, LLM auto-compress, viewer UI, Replay,
+JSONL import, 20 agent adapters, full 54-tool MCP surface.
 
 ## 5. Verification bar
 
-`npm run typecheck` clean. `scripts/bootstrap.ts` green. `scripts/verify.ts`
-end-to-end green: health → remember (with concepts) → bm25 search hits →
-smart-search hits → sessions list → session memories → forget → gone →
-`healthCount()` reflects it → lesson (201) → bm25 search hits it → recap
-contains it → handoff contains it → governed delete (with reason) → gone →
-second delete 404 → `healthCount()` reflects it. Demo green.
+`npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
+`scripts/verify-lifecycle.ts` green (**34 passed** — pure: dedupKey/hash golden,
+decay math incl. half-life, TTL filter, concept determinism). 
+`scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
+silence, privacy canary, negatives, dead server, plugin helper).
+`scripts/verify.ts` end-to-end green (**131 passed**): health → remember (with
+concepts) → bm25 search hits → smart-search hits → sessions list → session
+memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
+search hits it → recap contains it → handoff contains it → governed delete (with
+reason) → gone → second delete 404 → `healthCount()` reflects it → plus v1.1:
+derived default concepts ≤8 → graph-branch proof (fused score == 3/61) → dedup
+round-trip (same id, `deduped:true`, cross-project distinct, race → same id).
+`scripts/verify-injection.ts` (**73**), `scripts/verify-env.ts` (**21**) green.
+`scripts/probe3.ts` GREEN. `scripts/purge.ts --dry-run` + usage guard exit 2.
+Demo green.
