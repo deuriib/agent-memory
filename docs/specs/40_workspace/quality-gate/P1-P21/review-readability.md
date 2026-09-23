@@ -1,0 +1,37 @@
+# Readability Review: P1-P21
+
+**Reviewer:** review-readability (engineering domain, 1 of 9)
+**Date:** 2026-09-23
+**Verdict:** PASS
+**Scope:** diff range `1c410ee..HEAD` (6 commits: b27364b, 101e063, 45380b5, 8fbd795, 6f7f708, eb279a6) — new `src/concepts.ts`, `src/lifecycle.ts`, `scripts/purge.ts`, `scripts/verify-lifecycle.ts`, `scripts/verify-capture.ts`, `scripts/probe3.ts`; edited `src/store.ts`, `src/search.ts`, `src/embed.ts`, `db/queries.ts`, `db/index.ts`, `scripts/bootstrap.ts`, `scripts/verify.ts`, `hooks/capture.mjs`, `plugins/opencode/plugins/agent-memory.ts`, `docs/CONTRACT.md`.
+
+## Checklist
+
+- [x] Naming is intention-revealing (no `data`, `tmp`, `x`) — vocabulary matches repo (`remember`/`forget`/`search`, `findMemoryByDedupKey` mirrors `forgetMemory` style, `AGENT_MEMORY_DECAY_LAMBDA` / `AGENT_MEMORY_TTL_DAYS` respect the `AGENT_MEMORY_*` prefix; new env knobs are read via `readPositiveEnv`, named for intent). One collision noted (RD-007).
+- [x] Functions have single responsibility — `extractConcepts`, `normalizeContent`, `contentHash`, `decayedImportance`, `filterExpired`, `withDedupLock` + `rememberLocked` (lock split out of `remember`), verify scripts split into `sectionA..E`. `rememberLocked` exceeds the soft 40-line guardrail but is one cohesive write path with nesting ≤3; no split warranted.
+- [~] Nesting depth <= 3 — met everywhere except `parseArgs` (RD-004, depth 4, isolated to one arg-parser loop).
+- [x] Comments explain WHY, not WHAT — comment discipline is a strength of this range: probe3 findings explain *why* dedup is application-side (`src/lifecycle.ts:10-19`, `db/queries.ts:115-121`), `compareFusedAt` explains the fixed clock and ranking-only decay (`src/search.ts:122-137`), `captureToolStart` explains detached POST + self-observation loop (`plugins/opencode/plugins/agent-memory.ts:584-594`). Step markers (`// 1. Pre-check`) are navigational, acceptable. One stale future-tense header (RD-002).
+- [x] Public APIs documented — every new export carries a doc block (`MAX_CONCEPTS`, `MAX_CONCEPT_CHARS`, `extractConcepts`, `normalizeContent`, `contentHash`, `decayedImportance`, `filterExpired`, `tokenize` rationale for the additive export, all three new `db/queries.ts` queries, `captureToolStart`).
+- [x] No dead code or commented-out blocks — grep for commented-out statements (`// const|let|function|import|return|await|export`) across `src/ scripts/ db/ hooks/ plugins/` returned zero. Only unreachable *defensive* fallbacks remain (RD-003).
+- [x] Consistent style with surrounding code — verify scripts mirror `verify.ts` plumbing (documented in headers), `describeError` follows the acknowledged bootstrap pattern, `db/index.ts` re-exports extend the existing block, hook/plugin comment banners keep the pre-existing ASCII style. Naming drift for one identical helper (RD-005).
+- Strict TS gate (HARD): `grep -E '@ts-ignore|@ts-expect-error|TODO|FIXME|HACK'` over `src/ scripts/ db/ hooks/ plugins/` → **zero hits**; `: any` / `as any` in the six new files → **zero**; typecheck exit 0 (trusted from gate evidence).
+- Contract consistency (HARD): CONTRACT v1.1 amendment maps 1:1 to code — 8 indexes (bootstrap log updated `7`→`8`), `saveMemoryParams` + `dedupKey`, hook allowlist table matches `capture.mjs` strings byte-for-byte, `origin="hook:tool.execute.before"` matches `TOOL_START_ORIGIN`, governance line format matches `purge.ts:341`, exit codes 0/1/2 match, `deduped` flows through MCP via `ok(result)` (`src/mcp.ts:165`). One wording drift found (RD-006).
+
+## Findings
+
+| ID | Severity | Location | Finding |
+|----|----------|----------|---------|
+| RD-001 | Low | `docs/CONTRACT.md:78` vs `db/queries.ts` (`listProjects`), `scripts/purge.ts:214` | Contract §2 says `listProjects() -> distinct Session.project names`, but the query projects raw Session rows with a `limit` and no dedup (`db/queries.ts` header itself says "Rows are raw {project} records; the caller dedups" — `purge.ts` dedups via `Set`). Frozen-contract wording reads as if dedup happens in the query. Evidence: `git diff 1c410ee..HEAD -- docs/CONTRACT.md` line 78; `db/queries.ts:497-515`. |
+| RD-002 | Low | `src/concepts.ts:44` | Duplicate stopword `"their"` appears twice in the `STOPWORDS` literal (124 entries, 1 dup: `their:2` — node one-liner count). Harmless (`Set` dedups) but a copy artifact the next maintainer will wonder about. |
+| RD-003 | Low | `scripts/verify-lifecycle.ts:4-7` | Stale future-tense header: "sections … are appended by the REQ-P1-6 and REQ-P1-1 commits, once `src/lifecycle.ts` exports those helpers" — both commits landed in this same range and sections B/C/D already exist (lines 114-294). The header now misdescribes the file. |
+| RD-004 | Low | `scripts/purge.ts:299, 306, 314` | Unreachable defensive fallbacks after `parseArgs` guarantees exactly one scope (line 98-99 exits otherwise): `args.project ?? "all"` can never yield `"all"`, `[args.project ?? ""]` can never be `""`, and `if (project === "") continue` is dead. Dead paths obscure the invariant instead of stating it. |
+| RD-005 | Low | `scripts/purge.ts:69-93` | `parseArgs` reaches nesting depth 4 (`for` → flag-`if` → `--all`-`if` → mutual-exclusion-`if` at line 78), exceeding the ≤3 checklist bound; flattening the `--all`/value branch into an early-continue helper would fix it. Rest of the range is ≤3. |
+| RD-006 | Low | `src/store.ts:198`, `scripts/purge.ts:112`, `scripts/verify-capture.ts:240` | The identical type guard is named `isRecord` in store and purge but `isBag` in verify-capture — same predicate, two names, hurts grep-ability. (`describeError` triplication across bootstrap/probe3/purge is an *acknowledged* pattern — comment at `purge.ts:103` — so not counted separately.) |
+| RD-007 | Low | `src/concepts.ts:25` vs `plugins/opencode/plugins/agent-memory.ts:96` | Name collision: `MAX_CONCEPTS` = 8 (derived cap) in `src/concepts.ts`, but the pre-existing `MAX_CONCEPTS` = 64 (request-schema cap) in the plugin. Both doc-comment their meaning, but the shared identifier with two values invites misreading across modules. |
+| RD-008 | Low | `scripts/verify.ts:454, 462` | Magic expected score `3 / 61` instead of deriving from the exported `RRF_K` (`src/search.ts:23`); the inline comment explains the math (`1/(60+1) × 3`), so impact is hygiene only — if `RRF_K` ever moved, the test and comment would drift silently. |
+
+**Counts:** 8 findings — 0 Critical, 0 High, 0 Medium, 8 Low.
+
+## Verdict Rationale
+
+PASS. No finding blocks the next maintainer: naming follows the repo's `remember`/`forget`/`search` vocabulary and `AGENT_MEMORY_*` env prefix, comments overwhelmingly explain WHY (probe3-derived rationale is threaded through `lifecycle.ts`, `queries.ts`, and `search.ts` instead of being restated as narration), functions are small and single-purpose, the strict-TS HARD gate is verifiably clean (zero `any`/`@ts-ignore`/`TODO` in code; the only diff hits were prose and the English stopword `"any"`), no dead or commented-out code exists, and CONTRACT v1.1 reads consistently with the shipped code across routes, exports, index count, hook allowlist strings, and governance-line format — with `listProjects`' "distinct" wording (RD-001, Low) the single drift. All 8 findings are Low hygiene; they go to the lane backlog, not the gate. Assumption stated: gate evidence (typecheck 0, 131/34/115/73/21 suites green, probe3 GREEN) is trusted per packet; gitleaks absence is a security-domain concern (CI P0.2), not readability.

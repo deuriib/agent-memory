@@ -502,7 +502,7 @@ All run clean:
   counts reflect it, plus embedder determinism, defaults, boundary validation,
   the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
   recap (every bullet session-scoped) → handoff → governed delete with receipt
-  → gone → second delete 404 → counts, and the v1.1 lifecycle sections:
+  → gone → second delete 404 → counts, and the v1.1 P1.3/P1.6 sections:
   derived default concepts ≤8 → graph-branch proof (fused score == 3/61) →
   content-hash dedup round-trip: same id + `deduped:true` + counts stable,
   cross-project distinct, concurrent race → same id → dedup × hook first-wins:
