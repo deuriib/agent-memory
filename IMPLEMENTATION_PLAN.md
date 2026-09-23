@@ -1,82 +1,87 @@
-# Implementation Plan: P1 remainder (P1.4 + P1.2 + P1.5) + P3.2 skills
+# Implementation Plan: REQ-RL-001 (per-survivor FIFO lock) + REQ-F-01 (post-write verify + heal)
 
-**Agent:** orchestrator (execute-spec lane)
+**Agent:** vasquez (Engineering Owner R1, execute-spec lane)
 **Date:** 2026-09-23
-**Approved By:** user ("completa p1 + p3.2" → plan presentado → "DAle"):
-P1.4 → P1.2 → P1.5 → P3.2. Defaults adoptados y declarados:
-(1) P1.4 write-time: `importance` ausente → derivada de provenance (origin) +
-nº de conceptos (`deriveWriteImportance`), ya no default 0.5 — cambio de
-contrato documentado en CONTRACT v1.2 (§3 `importance=0.5` → derived);
-(2) P1.4 ranking-time: recall boost `importance + 0.2·n/(n+1)` sobre un
-ledger in-process (cap 10k, best-effort), aplicado DESPUÉS del decay en el
-fused tie-break — stored `importance` sigue nunca reescrito (mismo patrón que
-decay); (3) P1.2 near-dupe = Jaccard(tokens) ≥ umbral, default
-`AGENT_MEMORY_MERGE_JACCARD=0.9` (≤0/inválido/≥1 → OFF) — **ON por defecto**
-porque el acceptance del roadmap lo da por hecho y el merge concatena
-(NUNCA descarta) contenido: pérdida de texto = 0 en el caso secuencial —
-excepción declarada en gate P1R-P32/RL-001 (variantes CONCURRENTES bajo
-dedupKeys distintas pueden perder un append; residual aceptado con dueño +
-expiry, ver CONTRACT §3 tier-1); umbral alto declarado; (4) P1.2 survivor in-place (`setProperty` content/embedding/
-dedupKey) preservando `memoryId`, con probe previo en el dev instance y
-fallback declarado strategy-B (insert fila merged + forget variantes) si el
-servidor no refresca índices tras `setProperty`; (5) P1.5 corpus propio
-in-repo (`eval/corpus.ts`, determinista, sin red) — "public" = publicado con
-el repo, cero dependencia de fetch externo; (6) sin worktrees: 2 lanes
-paralelos con archivos disjuntos, orchestrator dueño exclusivo de la
-superficie compartida (mismo desvío declarado que el lane P1+P2.1, aquí
-reproducido — aislamiento por propiedad de archivos).
-**Domains-Touched:** engineering (store/search/queries/confidence/consolidate),
-ops (eval harness), docs (CONTRACT v1.2, README, CHANGELOG, skills), CI
-(`verify-skills --structural` added server-free; eval/verify remain local-only)
-**Prior lanes:** P0 closed, P1.1/P1.3/P1.6 + P2.1 closed at v0.4.0, P3.1 at
-v0.2.0. This plan replaces the previous content in-place (lane singleton).
+**Approved By:** orchestrator reference-only packet
+(`SPEC:ROADMAP.md#1.3-rows-RL-001,F-01 + docs/CONTRACT.md#3-tier-1-(a),(b)` /
+`HARD:subagents+no-route-or-MCP-tool-changes+no-helix-restart+single-writer-in-process-scope-only` /
+`GATE:open-residuals-RL-001,F-01-accepted-2026-09-23-expiry-2026-12-31` / `DOMAINS:R1`):
+close the two accepted residuals RL-001 (lost append on concurrent distinct
+near-dup variants) and F-01 (mid-batch atomicity assumption on
+`updateMemoryContent`). Scope is EXACTLY the approved proposal — no expansion.
+**Domains-Touched:** engineering only (R1: `db/queries.ts`, `src/store.ts`,
+`src/consolidate.ts`, `scripts/verify.ts`, `scripts/verify-lifecycle.ts`).
+Docs (ROADMAP/CONTRACT/README) belong to the second lane — this lane reports
+contract deltas verbatim instead of editing them.
+**Prior lanes:** P0 closed, P1.1/P1.3/P1.6 + P2.1 closed at v0.4.0, P1-remainder
++ P3.2 at v0.5.0, P2-completion at v0.6.0. This plan replaces the previous
+content in-place (lane singleton); prior content preserved in git history.
 
 ## Steps
 
 | Step | Description | Target / Files | Evidence Location | Est. Effort |
 |------|-------------|----------------|-------------------|-------------|
-| 1 | REQ-P1-4 derived confidence: `src/confidence.ts` (NEW, pure): `deriveWriteImportance(origin, conceptCount)` (lesson 0.75 / hook:* 0.55 / else 0.5, +0.025·min(concepts,8), clamp01), `confidenceBoost(importance, recallCount) = clamp01(i + 0.2·n/(n+1))`, recall ledger (`noteRecall`/`recallCount`/`resetRecalls`, Map cap 10k, clear-on-overflow documented); store `RememberInput.importance?: number` → derived when absent; `search.ts` fused tie-break = `confidenceBoost(decayedImportance(…), recallCount(id))` (decay THEN boost), both search paths call `noteRecall`; `server.ts`/`mcp.ts` drop `?? DEFAULT_IMPORTANCE` | `src/confidence.ts` (new), `src/store.ts`, `src/search.ts`, `src/server.ts`, `src/mcp.ts` | `verify-lifecycle` section F (pure math goldens) + `verify.ts` section (derived ≠ 0.5, boost monotonic, recall-lift E2E) | M |
-| 2 | REQ-P1-2 consolidation tier-1 (near-dup merge): `src/consolidate.ts` (NEW, pure: `jaccard`, `mergeThreshold` from `AGENT_MEMORY_MERGE_JACCARD` default 0.9 fail-closed OFF, `isNearDuplicate`, `mergedContent` with substring guard — incoming already contained → unchanged, closes the re-merge loop); `db/queries.ts` += `updateMemoryContent()` WriteBatch (anchor by memoryId → setProperty content+embedding+dedupKey, reuse `conceptBody()` via `forEachParam` for the incoming's derived/explicit concepts from the SURVIVOR node); `remember` under the existing dedup FIFO lock: exact-dedup → return; near-dupe probe `searchByText(content, k=20)` → best candidate by (jaccard desc, importance desc, memoryId asc) → merge → return survivor id `consolidated:true` (FAIL-CLOSED on probe error, same fail-closed posture as the dedup pre-check); `RememberResult` += `consolidated: boolean`; dedup first-wins semantics preserved (no Session node on merge/dupe) | `src/consolidate.ts` (new), `db/queries.ts`, `src/store.ts` | probe4 (NEW `scripts/probe4.ts`, live dev instance: setProperty refreshes text/vector indexes? → A/B decision recorded) + `verify-lifecycle` (jaccard/threshold/substring goldens) + `verify.ts` consolidation section (3 variants → 1 row, 3 queries recall it, healthCount +1) | L |
-| 3 | REQ-P1-5 eval harness (**parallel lane B, disjoint files**): `eval/corpus.ts` (NEW: ~40 deterministic dev/ops docs + ~15 queries with qrels, no network), `scripts/eval.ts` (NEW: pluggable `EvalClient` interface, `RestClient` via `AGENT_MEMORY_URL`; seeds project `agent-memory-eval` idempotently through dedup; scores R@5/R@10/MRR@10/nDCG@10 for BOTH `bm25` and `hybrid` modes; writes `docs/benchmarks/SCORECARD.md` with date, corpus size, reproduce steps; exit 1 if health fails) | `eval/corpus.ts` (new), `scripts/eval.ts` (new), `docs/benchmarks/SCORECARD.md` (new) | scorecard numbers + eval run log | M |
-| 4 | REQ-P3-2 skill set (**lane C, after a slot frees**): 8 skills `skills/{recall,remember,recap,handoff,forget,lesson,commit-context,session-history}/SKILL.md` (frontmatter `name`+`description`, name == dirname; body: when-to-invoke, REST route + MCP tool table, request example, rules/failure behavior, contract-accurate); `skills/memory/SKILL.md` becomes the index linking all 8; `scripts/verify-skills.ts` (NEW: structural validation of all 8 + LIVE round-trip — each skill's route exercised against the REST server, 2xx assertions, aborts like `verify.ts` when no server) | `skills/**`, `scripts/verify-skills.ts` (new) | `verify-skills` ALL PASS (8 structural + round-trips) | M |
-| 5 | Orchestrator: CONTRACT → v1.2 (derived importance replaces default 0.5 in §3, `consolidated` field, merge env + tier-1 semantics, eval harness in §5), README (config rows += merge env + eval + skills, verification counts), CHANGELOG, version 0.5.0 (`package.json` + `src/mcp.ts` + plugin `VERSION` + badge — AFTER lanes finish), ROADMAP ticks (P1.2, P1.4, P1.5, P3.2), package.json scripts (`eval`, `verify-skills`) | `docs/CONTRACT.md`, `README.md`, `CHANGELOG.md`, `ROADMAP.md`, `package.json`, `src/mcp.ts`, plugin | diff review | S |
-| 6 | Quality checks: `typecheck`, `verify-lifecycle`, `verify-capture`, `verify-injection`, `verify` + `verify-skills` vs OUR server on 3151 (3111 = upstream, never kill; Helix dev never restarted, contract §0), `eval` run producing the scorecard, gitleaks | repo root | local runs + TEST_MATRIX | S |
-| 7 | ROADMAP rows ticked with evidence, TEST_MATRIX filled, report → quality-gate | `ROADMAP.md`, `TEST_MATRIX.md` | diff | S |
+| 1 | REQ-RL-001 per-survivor FIFO lock: `db/queries.ts` += ADDITIVE `getMemoryById()` ReadBatch + `getMemoryByIdParams` (memoryId string, project string; unique-equality anchor on `memoryId` AND `project` filter as the fail-closed double check; projects `memoryRowProjection` + `dedupKey`; existing index #1 only → bootstrap stays 8); `src/store.ts` += `survivorTails` Map + `withSurvivorLock` (same FIFO pattern as `dedupTails`; LOCK ORDERING documented: incoming dedupKey lock OUTER → survivor lock INNER, one survivor per merge so no lock cycle); `consolidateInto` acquires the survivor lock, RE-READS the survivor fresh via `getMemoryById`, and does everything downstream against the FRESH snapshot: `filterExpired` re-run (survivor expired while waiting → plain insert, never absorbs), `mergedContent(fresh.content, input)`, fresh embed + fresh dedupKey, existing response asserts kept; fresh-read MISS (survivor deleted mid-merge) → throw fail-closed (same posture as the vanished-survivor assert) | `db/queries.ts`, `src/store.ts` | `verify.ts` §P NEW concurrent distinct-variants test (N=3 `Promise.all`, same survivor id, all three wordings in survivor content) + `verify-lifecycle` §I seam harness updated for the fresh-read call (no assertion weakened) | M |
+| 2 | REQ-F-01 post-write verify + heal: `db/queries.ts` += ADDITIVE `memoryConcepts()` ReadBatch + `memoryConceptsParams` (memoryId string, project string; anchor Memory by memoryId+project → `.out("HAS_CONCEPT")` → `.dedup()` → project concept `name`, returns `["names"]`) and ADDITIVE `linkMemoryConcepts()` WriteBatch + `linkMemoryConceptsParams` (memoryId string, concepts array object, project string; anchor by memoryId+project, `conceptBody()` per missing name, returns `["memory"]`; content/embedding/dedupKey NEVER rewritten); `src/consolidate.ts` += pure `missingConcepts(linked, incoming)` set-difference (dedup, exact-name, code-unit sorted → order-independent); `src/store.ts` `consolidateInto` after a successful `updateMemoryContent`: re-read `getMemoryById` + `memoryConcepts`, assert (a) content === nextContent, (b) dedupKey === `contentHash(project, normalize(nextContent))`, (c) every incoming EFFECTIVE concept linked — mismatch → ONE heal (content-state wrong → full `updateMemoryContent` retry; content-state right but links missing → `linkMemoryConcepts` link-only), re-verify, still wrong → throw fail-closed NAMING the failed invariant; substring-guard path now ALSO runs the concept-link verify+heal (may no-op content, must link missing incoming effective concepts) instead of returning without a read; `RememberResult` echo semantics (`consolidated:true`, survivor id, REQUEST echo) unchanged; ALL existing fail-closed asserts kept | `db/queries.ts`, `src/consolidate.ts`, `src/store.ts` | `verify.ts` §P NEW heal test (guard-path save with new explicit concept C → graph-branch recall via `smart-search concepts=[C]`, content byte-length unchanged) + `verify-lifecycle` §G NEW `missingConcepts` goldens (order-independence, dedup, exact-name) + §I seam updated for the guard-path concepts read | M |
+| 3 | Quality bar (run yourself, paste counts): `npm run typecheck` clean → `npx tsx scripts/bootstrap.ts` green (8 indexes, no index added) → `npm run verify-lifecycle` green (§G goldens no regression) → `npm run verify` green against OUR server on 3151 (§P no regression; upstream 3111 untouched; Helix dev never restarted) | repo root + local server :3151 | run outputs summarized in TEST_MATRIX.md | S |
+| 4 | Two Conventional Commits, one per REQ, each body linking REQ-ID → test → artifact; plan/matrix rows updated with evidence (RL row in commit 1, F row + backfill in commit 2); NO ROADMAP/CONTRACT/README commits (docs lane owns them) — report exact §2 export + §3 tier-1 behavior deltas for the docs lane | `src/`, `db/`, `scripts/`, this plan, `TEST_MATRIX.md` | git log | S |
 
 ## Order of Operations
 
-Step 1→2 sequential inside Lane A (both touch `src/store.ts`). Step 3 runs in
-parallel with 1–2 (zero file overlap). Step 4 starts when Lane A or B frees
-the 2-lane cap. Step 5→6→7 last (orchestrator owns every shared file — lanes
-MUST NOT touch docs/CONTRACT, README, CHANGELOG, ROADMAP, package.json, CI,
-plugin, plan/matrix; a lane needing a shared file briefs the orchestrator).
+Step 1 → 2 sequential inside the lane (both touch `src/store.ts` +
+`db/queries.ts`; each commit must leave the full bar green — the §I seam
+harness adapts once per step because the fresh read (step 1) and the guard-path
+concepts read (step 2) each add one `send()` to the TTL×merge control flow).
+Step 3 runs before each commit; step 4 lands the two commits. Singleton files
+(this plan + TEST_MATRIX) are written up front with planned rows and updated
+in place with evidence before each commit.
 
 ## Rollback Points
 
-- After step 1: revert `confidence.ts` + hunks; default importance returns to
-  0.5 — additive env-free rollback, no schema touched.
-- After step 2: revert `consolidate.ts` + `updateMemoryContent` + remember
-  hunks; MERGE env has no index artifacts; rows already merged in the dev
-  instance are seed/verify data (probe projects `probe-p1-*`), no prod risk.
-  Assumption stated: merge ON by default mutates survivor content in place —
-  concatenation never loses text SEQUENTIALLY (the concurrent-distinct-variant
-  append-loss exception of RL-001 is declared in CONTRACT §3 tier-1);
-  rollback of merged rows is not promised (dev-instance data only).
-- After step 3: delete `eval/` + `scripts/eval.ts` + `docs/benchmarks/` — no
-  runtime path imports them.
-- After step 4: delete the 8 skill dirs + `verify-skills.ts` — no runtime
-  path imports them.
+- After step 1 (commit 1): revert the `getMemoryById` hunks + survivor-lock
+  hunks + the §P concurrent block + §I harness — behavior returns to the
+  per-dedupKey-only lock (RL-001 residual reopens); no schema, no index, no
+  route touched; rows written by the concurrent test are seed data on random
+  `verify-*` projects (forgotten at test end), no prod risk.
+- After step 2 (commit 2): revert the `memoryConcepts`/`linkMemoryConcepts`
+  hunks + verify/heal hunks + `missingConcepts` + §P heal block + §G goldens —
+  merge behavior returns to commit-1 state (F-01 residual reopens); additive
+  queries are never referenced after revert.
+- Assumption stated (irreversible-adjacent): merges still rewrite survivor
+  content in place (unchanged from P1.2 — concatenation never discards);
+  the heal path may re-run `updateMemoryContent` ONCE with byte-identical
+  content when only `dedupKey` is stale (idempotent setProperty, dev-instance
+  data only; rollback of merged rows is not promised — same declaration as
+  the P1.2 lane).
+
+## Evidence Log (updated in place before each commit)
+
+### Commit 1 — REQ-RL-001 (2026-09-23)
+
+- Step 1 done exactly as planned: `getMemoryById` ADDITIVE query,
+  `survivorTails`/`withSurvivorLock`/`withFifoLock` in `src/store.ts`,
+  `consolidateInto` → lock wrapper + `mergeUnderSurvivorLock` (fresh read →
+  TTL re-check → guard/write over `fresh.content`) + `getFreshSurvivor`
+  fail-closed parser. No renames, no param-schema changes, no route/MCP
+  changes, `RememberResult` untouched, barrel `db/index.ts` not yet touched
+  (gets all three new exports with commit 2, additive).
+- NEW evidence landed: `verify.ts` §P `rl-001:` block = 13 checks (base
+  insert, N=3 `Promise.all` variants → all `consolidated=true` + same
+  survivor id + `deduped=false`, health 1 memory / 1 session, all three
+  variant wordings verbatim in survivor content, cleanup forget);
+  `verify-lifecycle.ts` §I harness extended with per-call canned `replies`
+  (i5 control serves the fresh read; assertion re-based: pre-check + fresh
+  re-read = 2 sends, insert would be 3 — no assertion weakened).
+- Bar (commit-1 tree, server :3151): typecheck exit 0 · bootstrap
+  `OK (8 indexes ensured)` · verify-lifecycle **104 passed, 0 failed** ·
+  verify **227 passed, 0 failed**. Details pasted in TEST_MATRIX.md.
 
 ## Quality Gates
 
-- [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0
-- [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — **104 passed, 0 failed** (39 → +§F 23 confidence +§G 24 consolidation + §F-bis/§H/§I gate-remediation 18)
-- [x] Engineering: `npx tsx scripts/verify-capture.ts` green — **115 checks, 0 failed** (no regression)
-- [x] Engineering: `npx tsx scripts/verify-injection.ts` green — **ALL PASS (73)**, 0 failed (no regression)
-- [x] Engineering: `npm run verify` green against OUR server on **3151** — **214 passed, 0 failed**; §O confidence + §P consolidation + MCP adapter pass-through green; upstream on 3111 untouched; (+ `verify-env` 21)
-- [x] Engineering: `probe4` **12 passed → VERDICT A** (in-place `updateMemoryContent`, strategy-B fallback NOT needed); `verify-skills` **119 checks → VERIFY SKILLS PASS** (73 of them server-free via `--structural`, CI-wired); `eval` **EVAL PASS** (bm25 & hybrid R@5/R@10/MRR@10/nDCG@10 = 1.0000 on our 40-doc/15-query corpus — corpus-specific, disclaimed on the scorecard; metric math regression-tested by §H goldens) writes `docs/benchmarks/SCORECARD.md` with our own numbers; `purge.ts` usage guard exit 2
-- [x] Security: no secrets in eval corpus/scorecard/logs; skills carry the no-secrets/PII rule; plugin saves no pinned default importance; no new env vars besides `AGENT_MEMORY_MERGE_JACCARD` (documented, fail-closed OFF on bad config) + harness-only `EVAL_MODE` (eval.ts only, never read by the server, unknown mode → exit 1); **gitleaks: local binary unavailable (declared) → CI P0.2 secret-scan job enforces on push**
-- [x] Docs: CONTRACT v1.2 amendments match shipped code; README (config row, skills section, verification counts, quick start); CHANGELOG v0.5.0; version 0.5.0 lockstep ×5 (package.json, lockfile, mcp.ts, plugin, badge)
-- [x] Automation/ops: CI change = +1 step `npx tsx scripts/verify-skills.ts --structural` (server-free PART1 — gate remediation AUT-Low-B); `verify`/`eval` remain local-only (need a live server); no new REQUIRED env var (merge defaults ON with fail-closed OFF path; `EVAL_MODE` harness-only, never read by the server, unknown → exit 1)
-- [x] Gate P1R-P32: 9 independent reviewers (3 pass / 6 conditional / 0 closed) → every condition FIXED (tests/docs/CI) or WAIVED with owner + expiry under C3 → gate **OPEN** — `docs/specs/40_workspace/quality-gate/P1R-P32/GATE_REPORT.md`
-- N/A: finance / legal / marketing / people / revenue (engineering + docs change)
+- [ ] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0
+- [ ] Engineering: `npx tsx scripts/bootstrap.ts` green — **8 indexes ensured + READY** (no index added)
+- [ ] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — counts pasted in TEST_MATRIX (§G goldens no regression)
+- [ ] Engineering: `npm run verify` green against OUR server on **3151** — counts pasted in TEST_MATRIX (§P no regression; upstream 3111 untouched)
+- [ ] Engineering: NEW evidence — §P concurrent distinct-variants test (RL-001 acceptance: no lost append) + §P heal test (F-01 acceptance: guard path links C, content unchanged) + §G `missingConcepts` goldens
+- N/A: security (no auth/data-surface change — internal reads only, no new env, no secret handling change) / finance / legal / marketing / people / revenue
+- [ ] Docs (second lane): CONTRACT §2 gains `getMemoryById`/`memoryConcepts`/`linkMemoryConcepts` + §3 tier-1 (a)/(b) re-baselined — deltas reported verbatim by this lane, files untouched here

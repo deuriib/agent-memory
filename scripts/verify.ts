@@ -1450,6 +1450,124 @@ async function main(): Promise<void> {
   const pfg = await call("POST", "/memory/forget", undefined, { memoryId: rp1.id });
   check("consolidation: cleanup forget survivor -> 200", pfg.status === 200, `got ${pfg.status}`);
 
+  /* P9. REQ-RL-001 CONCURRENT DISTINCT-VARIANTS — three near-dup variants
+   * with DISTINCT dedup keys race via Promise.all against ONE survivor.
+   * Before RL-001 the FIFO lock was keyed by incoming content hash, so it
+   * serialized identical content only: two distinct variants could merge
+   * concurrently over the same stale probe snapshot and lose an append
+   * (both callers still got consolidated:true — the accepted residual in
+   * contract §3 tier-1 (a)). The per-survivor lock + fresh getMemoryById
+   * re-read must make ALL THREE appends land.
+   *
+   * Construction (jaccard geometry, default threshold 0.9):
+   *   base  = 31 distinct tokens;
+   *   each variant = base + ONE new token (alpha/beta/gamma) →
+   *   j(variant, base) = 31/32 ≈ 0.969 at probe time, and the WORST late
+   *   probe (base already grown by the two other variants → token set 33)
+   *   still scores 31/34 ≈ 0.912 — every interleaving qualifies the same
+   *   survivor. Each variant is neither an exact dedup hit (distinct
+   *   token → distinct dedupKey) nor a substring of any concatenation of
+   *   the others (the extra tokens differ), so all three take the
+   *   CONCATENATION write path under the survivor's FIFO lock.
+   *
+   * Asserts: all 201; all consolidated=true, deduped=false, SAME survivor
+   * id; health = 1 memory / 1 session; the survivor's stored content
+   * contains all three variant wordings VERBATIM (byte-for-byte — the
+   * append that a lost race would have dropped); cleanup forget. */
+  const rlProject = `verify-rl001-${randomUUID().slice(0, 8)}`;
+  const rlBase =
+    "deploy staging checklist runs database migration then restarts api workers caches queues logs metrics dashboards alerts clusters nodes pods volumes secrets configmaps services ingress routes certificates firewalls policies backups restores snapshots";
+  const rlVariants = [`${rlBase} alpha`, `${rlBase} beta`, `${rlBase} gamma`];
+  const rlSid0 = `verify-rl001-s0-${randomUUID().slice(0, 8)}`;
+  const rlSids = rlVariants.map(
+    (_, index) => `verify-rl001-s${index + 1}-${randomUUID().slice(0, 8)}`,
+  );
+
+  const rl0 = await call("POST", "/memory/remember", undefined, {
+    content: rlBase,
+    project: rlProject,
+    sessionId: rlSid0,
+  });
+  check("rl-001: base status 201", rl0.status === 201, `got ${rl0.status}`);
+  const rlBaseResult = shape("rl-001: base body", rl0.body, rememberResultSchema);
+  check(
+    "rl-001: base is a plain insert (deduped=false, consolidated=false)",
+    rlBaseResult !== undefined && rlBaseResult.deduped === false && rlBaseResult.consolidated === false,
+    `deduped=${String(rlBaseResult?.deduped)} consolidated=${String(rlBaseResult?.consolidated)}`,
+  );
+
+  const rlResponses = await Promise.all(
+    rlVariants.map((content, index) =>
+      call("POST", "/memory/remember", undefined, {
+        content,
+        project: rlProject,
+        sessionId: rlSids[index],
+      }),
+    ),
+  );
+  const rlResults = rlResponses.map((res, index) =>
+    shape(`rl-001: variant ${index} body`, res.body, rememberResultSchema),
+  );
+  check(
+    "rl-001: all 3 concurrent variants -> status 201",
+    rlResponses.every((res) => res.status === 201),
+    JSON.stringify(rlResponses.map((res) => res.status)),
+  );
+  check(
+    "rl-001: all 3 consolidated=true, deduped=false, SAME survivor id (serialized per survivor)",
+    rlBaseResult !== undefined &&
+      rlResults.every(
+        (res) =>
+          res !== undefined &&
+          res.consolidated === true &&
+          res.deduped === false &&
+          res.id === rlBaseResult.id,
+      ),
+    JSON.stringify(
+      rlResults.map((res) => ({ id: res?.id, consolidated: res?.consolidated, deduped: res?.deduped })),
+    ),
+  );
+
+  const rlHealth = shape(
+    "rl-001: health envelope after 3 concurrent merges",
+    (await call("GET", "/memory/health", { project: rlProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "rl-001: 1 base + 3 concurrent merges -> memories = 1, sessions = 1",
+    rlHealth?.counts.memories === 1 && rlHealth?.counts.sessions === 1,
+    JSON.stringify(rlHealth?.counts),
+  );
+
+  const rlMems = shape(
+    "rl-001: sessionMemories(rlSid0) envelope",
+    (
+      await call("GET", `/memory/sessions/${encodeURIComponent(rlSid0)}/memories`, {
+        project: rlProject,
+        limit: "50",
+      })
+    ).body,
+    memoriesEnvelopeSchema,
+  );
+  const rlSurvivorRow = rlBaseResult === undefined
+    ? undefined
+    : rlMems?.memories.find((row) => row.memoryId === rlBaseResult.id);
+  check(
+    "rl-001: survivor content contains ALL THREE variant wordings verbatim (no lost append)",
+    rlSurvivorRow !== undefined &&
+      rlVariants.every((variant) => rlSurvivorRow.content.includes(variant)),
+    `contentLen=${rlSurvivorRow?.content.length} variantsPresent=${
+      rlSurvivorRow === undefined
+        ? "none"
+        : `${rlVariants.filter((variant) => rlSurvivorRow.content.includes(variant)).length}/3`
+    }`,
+  );
+
+  if (rlBaseResult !== undefined) {
+    const rlfg = await call("POST", "/memory/forget", undefined, { memoryId: rlBaseResult.id });
+    check("rl-001: cleanup forget survivor -> 200", rlfg.status === 200, `got ${rlfg.status}`);
+  }
+
   /* M. Summary. */
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {

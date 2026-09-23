@@ -789,13 +789,24 @@ async function main(): Promise<void> {
    * server, CI-safe (construction does no I/O — see the offline check). */
 
   // Offline factory: record every transport call, answer by call order.
-  // call 0 = dedup pre-check (legitimate MISS); call >= 1 = the insert.
+  // Default sequence: call 1 = dedup pre-check (legitimate MISS); call >= 2
+  // = the fabricated insert success. `replies` overrides calls 1..n for
+  // tests whose flow needs a REAL canned answer for a specific call —
+  // REQ-RL-001: reaching the merge now also issues a fresh getMemoryById
+  // re-read under the survivor lock (call 2), which must be served an
+  // actual row (shape drift / miss / wrong row throw fail-closed).
   // searchByText is the near-dup probe seam (public method, overrideable).
-  const makeSeamStore = (sends: unknown[], probe: () => Promise<SearchHit[]>): HelixStore => {
+  const makeSeamStore = (
+    sends: unknown[],
+    probe: () => Promise<SearchHit[]>,
+    replies: readonly unknown[] = [],
+  ): HelixStore => {
     const store = new HelixStore("http://127.0.0.1:9"); // unreachable port — proves no connection is made
     Object.assign(store, {
       send: async (request: unknown): Promise<unknown> => {
         sends.push(request);
+        const index = sends.length - 1;
+        if (index < replies.length) return replies[index];
         if (sends.length === 1) return { memory: null }; // dedup pre-check: MISS
         return { memory: [{ memoryId: "insert-ok" }] }; // fabricated insert success
       },
@@ -899,10 +910,30 @@ async function main(): Promise<void> {
 
     // Control: TTL OFF -> the same candidate survives, consolidates via the
     // substring guard (consolidated=true, NO insert send) — proves the TTL
-    // filter is the only thing that changed between the two runs.
+    // filter is the only thing that changed between the two runs. REQ-RL-001:
+    // reaching the merge now re-reads the survivor FRESH under the survivor
+    // lock first, so the canned sequence is [dedup miss, fresh row]. sends=2
+    // therefore means pre-check + fresh re-read and NO insert (an insert
+    // would be call 3 → sends=3; a missing fresh read would leave sends=1).
     delete process.env["AGENT_MEMORY_TTL_DAYS"];
     const i5Sends: unknown[] = [];
-    const i5 = makeSeamStore(i5Sends, () => Promise.resolve([expiredHit]));
+    const i5 = makeSeamStore(
+      i5Sends,
+      () => Promise.resolve([expiredHit]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        {
+          // call 2: fresh getMemoryById re-read under the survivor lock
+          memory: [
+            {
+              memoryId: "expired-hit",
+              content: expiredContent,
+              createdAt: expiredHit.createdAt,
+            },
+          ],
+        },
+      ],
+    );
     const i5Result = await i5.remember({
       content: expiredContent,
       project: "verify-lifecycle",
@@ -911,8 +942,8 @@ async function main(): Promise<void> {
       concepts: [],
     });
     check(
-      "TTL×merge: TTL OFF control -> same candidate consolidates (consolidated=true, 1 send)",
-      i5Result.consolidated === true && i5Sends.length === 1,
+      "TTL×merge: TTL OFF control -> same candidate consolidates (consolidated=true, pre-check + fresh re-read, no insert)",
+      i5Result.consolidated === true && i5Sends.length === 2,
       JSON.stringify({ consolidated: i5Result.consolidated, sends: i5Sends.length }),
     );
   } finally {

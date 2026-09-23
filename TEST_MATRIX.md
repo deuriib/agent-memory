@@ -1,42 +1,48 @@
-# Test / Evidence Matrix: P2 completion (P2.2 + P2.3 + P2.4) + v0.6.0 release
+# Test / Evidence Matrix: REQ-RL-001 + REQ-F-01 (residual closure lane)
 
-**Agent:** orchestrator (execute-spec + ship-release lane)
+**Agent:** vasquez (Engineering Owner R1, execute-spec lane)
 **Date:** 2026-09-23
-**Domains-Touched:** engineering, security, legal, automation/ops, data
+**Domains-Touched:** engineering (R1)
 
-Prior lane (P1 remainder + P3.2) matrix evidence preserved in git history
-(this file is the lane singleton, updated in place per execute-spec).
+Prior lane evidence preserved in git history (this file is the lane singleton,
+updated in place per execute-spec).
 
 | REQ-ID | Evidence ID | Description | Type | Status | Commit |
 |--------|-------------|-------------|------|--------|--------|
-| REQ-P2-2 | T-207 | File-edit + failure capture: `PostToolUse` with an edit-like tool name stores `file edited via <tool>` (name only; `AGENT_MEMORY_CAPTURE_PATHS=basename` opt-in appends the sanitized basename, default OFF; tool names carrying `/` or `\` fail closed → store nothing) + `PostToolUseFailure` and the plugin `tool.execute.after` store `tool failed: <tool>` (`hook:tool.execute.after`, own `memory*` skipped, non-string tool never throws); Antigravity `capture.mjs` mirrors the marker | Unit (`verify-capture` §A/§F — 137 checks: edit marker both hooks, basename opt-in OFF/ON, path-bearing `tool_name` → 0 requests, prompt/path canaries, plugin `captureToolFailure` origin + `memory*` skip, non-string helpers never throw) + adapter source review | **DONE** — verify-capture **137/137**; typecheck 0 | `2035e18` |
-| REQ-P2-3 | T-208 | Script-only transcript import (`scripts/import-transcript.ts`: `--file/--project/--session-id/--dry-run/--include-prompts`) through the existing `POST /memory/remember` surface; Claude Code JSONL + generic `{content}` fallback; user text skipped by default (`skipped_prompts` counted, never printed); typed lines dispatch BEFORE the generic fallback (gate C1: `{type:"user"}` cannot bypass); caller `origin` coerced into `import:*` (gate C4) | Unit (`rowsForLine`: prompt-gate canary absent by default / present with opt-in; origin coercion `lesson`→`import:lesson`) + CLI dry-runs (default **4 rows / 1 skipped** vs `--include-prompts` **5 / 0**; unknown arg → exit 2) + E2E live import → `memory/search` hits on 3151 (rows `forget`-cleaned) | **DONE** — dry-runs + unit + live search reproducible; entry guard import-without-side-effects (gate C3) | `2035e18` |
-| REQ-P2-4 | T-209 | Deterministic no-LLM session summarization (`src/summarize.ts` `buildSessionSummary`: top concepts, origin counts, time range, top-5 picks, top-3 lessons) + `scripts/summarize-session.ts` saving summary + ≤3 lessons as `/memory/lesson` rows under the SAME sessionId → closed session retrievable by `session` | Unit (`buildSessionSummary` byte-identical on repeat; empty-session shape `count:0`) + E2E live summarize → `GET /memory/sessions/:id/memories` contains summary + lessons (3 rows, cleaned via `forget`); CLI usage guard exit 2 | **DONE** — determinism proven + live sessionMemories proof | `2035e18` |
-| ALL | T-210 | No-regression full bar pre-ship (consolidated run vs HEAD `2035e18`) | E2E | **DONE** — typecheck 0 · verify-capture **137/137** · verify-lifecycle **104/104** · verify-env **21/21** · verify-injection **ALL PASS** · verify-skills `--structural` **73/73** · purge usage guard exit 2 · `verify` **214/214** on OUR 3151 reroute (upstream `iii` on 3111 untouched) · verify-skills live **119/119** · server torn down (no leftover pid) | this release commit |
-| ALL | T-211 | Release/contract docs: CHANGELOG **[v0.6.0]** heading above `### Added`, version 0.5.0 → **0.6.0** lockstep ×6 (`package.json`, `package-lock.json` root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`, README badge), RELEASE_NOTES v0.6.0, CONTRACT v1.3 §5 count 132 → **137** + **v1.4 DAT-001 declaration**, README counts (115 → 137) + out-of-scope version, ROADMAP P2.2–P2.4 ticks + DAT-001 closure, TEST_MATRIX (this file), tag `v0.6.0` | Review | **DONE** — grep-verified zero stale `0.5.0` version pins and zero stale 115/132 counts outside historical release sections | release commit |
+| REQ-RL-001 | T-RL-001 | Per-survivor FIFO lock closes the lost-append on CONCURRENT distinct near-dup variants: `survivorTails` + `withSurvivorLock` (lock ordering dedupKey OUTER → survivor INNER, one survivor per merge, no cycle) + ADDITIVE `getMemoryById()` fresh re-read under the lock (filterExpired re-run → expired-while-waiting falls to plain insert; fresh-read miss → fail-closed throw) + §P concurrent test: base variant saved, then N=3 DISTINCT near-dup variants fired CONCURRENTLY via `Promise.all` on one fresh project → all three `consolidated:true` with the SAME survivor id, healthCount memories = 1, sessions = 1, and the session read shows ALL THREE variant wordings in the survivor content (no lost append) | E2E live (`verify.ts` §P `RL-001 concurrent` block, server :3151) + pure seam (`verify-lifecycle` §I TTL×merge control now serves the fresh read — `consolidated=true`, no insert write, canned-reply queue traps any unexpected send) | **DONE** — counts pasted below | commit 1 (see git log) |
+| REQ-F-01 | T-F-01 | Post-write verify + heal for `updateMemoryContent`: ADDITIVE `memoryConcepts()` (memoryId+project → HAS_CONCEPT → `["names"]`) + ADDITIVE `linkMemoryConcepts()` (link-only WriteBatch, content/embedding/dedupKey untouched) + pure `missingConcepts(linked, incoming)`; `consolidateInto` verifies content / dedupKey / linked-concept invariants after every merge write, heals ONCE (content-state wrong → full `updateMemoryContent` retry; links-only missing → `linkMemoryConcepts`), re-verifies, still wrong → fail-closed throw naming the invariant; substring-guard path now runs the concept-link verify+heal instead of returning without a read. §P heal test: A → survivor, B → merged (content `A\nB`), re-save B + NEW explicit concept C → guard path links C; `smart-search concepts=[C]` recalls the survivor with fused-score Δ == 1/61 vs the no-concepts control (graph-branch causality) while content byte-length stays exactly `A\nB` (no duplicate append); response keeps `consolidated:true` + survivor id + REQUEST concept echo | E2E live (`verify.ts` §P `F-01 heal` block) + pure goldens (`verify-lifecycle` §G `missingConcepts`: order-independence over shuffled input, dedup, exact-name/case match, no substring match, empty-set cases) + seam (§I guard path serves the concepts read) | **DONE** — counts pasted below | commit 2 (this release lane) |
 
 ## Coverage Summary
 
-- Unit coverage: `verify-capture` §A–§F (hook payloads/origins/exit-0/silence,
-  privacy canaries, dead server, edit marker, basename opt-in, path
-  fail-closed, plugin failure/start helpers, non-string never-throw) +
-  `rowsForLine` prompt-gate/origin-coercion units + `buildSessionSummary`
-  determinism/empty-shape units — **137 capture checks**, CI-runnable, no
-  Helix
-- Integration coverage: import/summarize CLI dry-runs (server-free) + usage
-  guards (exit 2); `verify-skills --structural` 73 server-free
-- E2E coverage: `verify` **214** + `verify-skills` live **119** on the 3151
-  reroute; live import→search and summarize→sessionMemories legs (rows
-  cleaned via `forget`); DAT-001 orphan-cleanup procedure proved live against
-  the dev instance (see CONTRACT §3 v1.4 for the verified expressions)
-- Evidence coverage: 3/3 P2 REQ-IDs + 2 release rows, each with a linked
-  artifact
-- Acceptance criteria covered: P2.2 → T-207; P2.3 → T-208; P2.4 → T-209;
-  no-regression → T-210; contract/docs/version → T-211
-- Gate P2-COMPLETE remediation: C1–C6 (prompt-gate bypass, path-bearing
-  tool-name, plugin non-string throw + unguarded before-hook, origin-namespace
-  coercion, entry-guard side effect, README staleness) → **fixed + re-proven**
-  (`50_archive/P2-COMPLETE/GATE_REPORT.md`); residuals G1/G2/F2/F6 +
-  R-P2-01…04 / L-P2-01…03 / S-03 accepted with owner + expiry there;
-  standing RL-001 / F-01 → `ROADMAP.md` §1.3; **DAT-001 → closed this
-  release** (CONTRACT v1.4 declaration with live-verified procedure)
+- Evidence coverage: 2/2 REQ-IDs, each → test → artifact row.
+- RL-001 acceptance covered by T-RL-001 E2E (the exact failure mode: 3
+  concurrent distinct variants, post-state content includes all three).
+- F-01 acceptance covered by T-F-01 E2E (heal observable via the graph branch
+  while content provably untouched) + §G pure goldens for the set-difference
+  helper.
+- No-regression: §G consolidation goldens, §I fail-closed probe + TTL×merge,
+  §P original 3-variant sequence (P1–P8) all green in the final bar below.
+- Docs: ROADMAP / CONTRACT / README untouched by this lane (second lane owns
+  them); contract deltas reported in the lane report for verbatim pickup.
+
+## Commit-1 bar (REQ-RL-001 tree, run 2026-09-23, server :3151, Helix dev untouched)
+
+- `npm run typecheck` — exit 0 (no errors).
+- `npx tsx scripts/bootstrap.ts` — `bootstrapIndexes: OK (8 indexes ensured)` + `READY` (no index added).
+- `npm run verify-lifecycle` — **104 passed, 0 failed** / `VERIFY PASS` (§I TTL×merge control re-based to the fresh read: `TTL OFF control -> same candidate consolidates (consolidated=true, pre-check + fresh re-read, no insert)` PASS).
+- `npm run verify` — **227 passed, 0 failed** / `VERIFY PASS`; T-RL-001 block verbatim:
+  - `PASS rl-001: base status 201`
+  - `PASS rl-001: base body`
+  - `PASS rl-001: base is a plain insert (deduped=false, consolidated=false)`
+  - `PASS rl-001: variant 0 body` / `variant 1 body` / `variant 2 body`
+  - `PASS rl-001: all 3 concurrent variants -> status 201`
+  - `PASS rl-001: all 3 consolidated=true, deduped=false, SAME survivor id (serialized per survivor)`
+  - `PASS rl-001: health envelope after 3 concurrent merges`
+  - `PASS rl-001: 1 base + 3 concurrent merges -> memories = 1, sessions = 1`
+  - `PASS rl-001: sessionMemories(rlSid0) envelope`
+  - `PASS rl-001: survivor content contains ALL THREE variant wordings verbatim (no lost append)`
+  - `PASS rl-001: cleanup forget survivor -> 200`
+
+## Final verification bar (run on the commit-2 tree, server :3151, Helix dev untouched)
+
+- (pasted after the runs)

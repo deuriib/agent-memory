@@ -515,6 +515,47 @@ export function listProjects(): ReadBatch {
 }
 
 /* ------------------------------------------------------------------ *
+ * getMemoryById — REQ-RL-001 (ADDITIVE, contract §2 delta).
+ *
+ * Fresh survivor re-read for tier-1 consolidation: the probe snapshot can
+ * go stale while a caller waits on the per-survivor FIFO lock, so the merge
+ * re-reads the row HERE, under the lock, and works against that snapshot.
+ * Anchors Memory by its unique-equality memoryId (index #1) and ALSO
+ * filters `project` in the same where-clause — the fail-closed double
+ * check (same posture as findMemoryByDedupKey, which instead carries
+ * `project` in the row for a caller-side assert: here the query itself
+ * refuses to return a row outside the caller's project).
+ *
+ * Projects memoryRowProjection + `dedupKey` (never `embedding`): content +
+ * dedupKey are exactly what the post-write verify (REQ-F-01) checks, and
+ * createdAt feeds the lock-wait TTL re-check. No new index (existing #1).
+ * Probe4/post-write reads verified the shape live before ship.
+ * ------------------------------------------------------------------ */
+
+export const getMemoryByIdParams = defineParams({
+  memoryId: param.string(),
+  project: param.string(),
+});
+
+export function getMemoryById(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "memory",
+      g()
+        .nWithLabel(LABELS.Memory)
+        .where(
+          Predicate.and([
+            Predicate.eqParam("memoryId", "memoryId"),
+            Predicate.eqParam("project", "project"),
+          ]),
+        )
+        .limit(1)
+        .project([...memoryRowProjection, PropertyProjection.new("dedupKey")]),
+    )
+    .returning(["memory"]);
+}
+
+/* ------------------------------------------------------------------ *
  * updateMemoryContent — REQ-P1-2 (ADDITIVE, contract §2 delta).
  *
  * Tier-1 consolidation's in-place survivor update: anchor the Memory by its

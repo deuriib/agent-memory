@@ -25,6 +25,8 @@ import {
   findMemoryByDedupKey as findMemoryByDedupKeyQuery,
   findMemoryByDedupKeyParams,
   forgetMemory as forgetMemoryQuery,
+  getMemoryById as getMemoryByIdQuery,
+  getMemoryByIdParams,
   graphSearch as graphSearchQuery,
   healthCount as healthCountQuery,
   listSessions as listSessionsQuery,
@@ -144,6 +146,20 @@ export interface MemoryRow {
   sessionId: string;
   origin: string;
   importance: number;
+  createdAt: string;
+}
+
+/**
+ * REQ-RL-001: the subset of a Memory row the consolidation path needs from a
+ * FRESH `getMemoryById` re-read taken under the per-survivor lock — content
+ * (merge base) and createdAt (TTL re-check). `project` is
+ * enforced in the query's where-clause rather than projected, so it needs no
+ * field here; a missing createdAt reads as "" and filterExpired keeps the row
+ * (the same documented fail-toward-keeping rule any unparseable timestamp has).
+ */
+interface FreshSurvivorRow {
+  memoryId: string;
+  content: string;
   createdAt: string;
 }
 
@@ -468,22 +484,55 @@ export class HelixStore implements MemoryStore {
    * each other; a failed predecessor does not poison the queue (every tail
    * settles resolved). Known limit: SEPARATE processes are not serialized —
    * there is no server-side constraint (documented residual risk).
+   *
+   * REQ-RL-001: this lock alone serializes IDENTICAL incoming content only —
+   * two DISTINCT variants carry two keys and would both merge against the
+   * same survivor concurrently, so consolidation additionally serializes
+   * per SURVIVOR via `survivorTails`/`withSurvivorLock` below. LOCK ORDER is
+   * always dedupKey (OUTER, acquired in `remember`) → survivor (INNER,
+   * acquired only inside `consolidateInto`, while the outer lock is held):
+   * one survivor per merge (a call never holds two survivor locks) and no
+   * path ever acquires a dedupKey lock while holding a survivor lock, so the
+   * order is a fixed acyclic chain — no multi-lock deadlock is possible.
    */
   private readonly dedupTails = new Map<string, Promise<void>>();
 
-  private async withDedupLock<T>(key: string, run: () => Promise<T>): Promise<T> {
-    const previous = this.dedupTails.get(key) ?? Promise.resolve();
+  /** REQ-RL-001: per-SURVIVOR FIFO tails — one merge at a time per survivor. */
+  private readonly survivorTails = new Map<string, Promise<void>>();
+
+  /**
+   * Shared FIFO queue over `tails` (one entry per key, FIFO by arrival; a
+   * failed predecessor does not poison the queue — every tail settles
+   * resolved; the entry is deleted once its own tail is still the head).
+   * `withDedupLock` and `withSurvivorLock` are the two typed fronts; see the
+   * lock-ordering contract on `dedupTails` above.
+   */
+  private async withFifoLock<T>(
+    tails: Map<string, Promise<void>>,
+    key: string,
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const previous = tails.get(key) ?? Promise.resolve();
     const result = previous.then(run);
     const tail = result.then(
       () => undefined,
       () => undefined,
     );
-    this.dedupTails.set(key, tail);
+    tails.set(key, tail);
     try {
       return await result;
     } finally {
-      if (this.dedupTails.get(key) === tail) this.dedupTails.delete(key);
+      if (tails.get(key) === tail) tails.delete(key);
     }
+  }
+
+  private async withDedupLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    return this.withFifoLock(this.dedupTails, key, run);
+  }
+
+  /** REQ-RL-001 inner lock — see the lock-ordering contract on `dedupTails`. */
+  private async withSurvivorLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    return this.withFifoLock(this.survivorTails, key, run);
   }
 
   async remember(input: RememberInput): Promise<RememberResult> {
@@ -569,7 +618,12 @@ export class HelixStore implements MemoryStore {
       const liveCandidates = filterExpired(candidates, Date.now());
       const survivor = pickSurvivor(input.content, liveCandidates, threshold);
       if (survivor !== undefined) {
-        return this.consolidateInto(input, survivor);
+        // REQ-RL-001: the merge runs under the SURVIVOR's FIFO lock (inner)
+        // with a FRESH re-read inside it. undefined = the survivor expired
+        // while waiting for that lock (never absorbs a fresh write) -> fall
+        // through to the plain insert below.
+        const merged = await this.consolidateInto(input, survivor);
+        if (merged !== undefined) return merged;
       }
     }
 
@@ -623,19 +677,28 @@ export class HelixStore implements MemoryStore {
   }
 
   /**
-   * REQ-P1-2 tier-1 merge: rewrite the SURVIVOR in place via
-   * updateMemoryContent (probe4 verdict A: setProperty refreshes text +
-   * vector indexes live on this instance). Runs under the incoming dedup
-   * key's FIFO lock; NO Session node and NO BELONGS_TO link is written
+   * REQ-P1-2 tier-1 merge, now under REQ-RL-001's per-SURVIVOR FIFO lock:
+   * rewrite the SURVIVOR in place via updateMemoryContent (probe4 verdict A:
+   * setProperty refreshes text + vector indexes live on this instance).
+   * Lock order: rememberLocked already holds the incoming dedupKey's FIFO
+   * lock; this adds the SURVIVOR's lock inside it (ordering contract on
+   * `dedupTails`), so concurrent saves of DISTINCT variants that pick the
+   * same survivor serialize here instead of losing one append (the old
+   * defect — see ROADMAP RL-001). Under that lock the row is RE-READ fresh
+   * (a waiter's probe snapshot may be stale; merging over stale content
+   * would silently drop the predecessor's append), TTL is re-checked
+   * against the fresh row (an expired-while-queued survivor falls through
+   * to a plain insert — never absorbs a fresh write), and only then does
+   * the merge below run. NO Session node and NO BELONGS_TO link is written
    * (sessions materialize on novel writes only, contract §3), and the
    * survivor's id / origin / importance / createdAt are untouched
    * (dedup-first-wins semantics carry over to consolidation).
    *
    * Substring guard first (mergedContent): when the incoming's normalized
-   * text is already contained in the survivor's, nothing can grow — return
-   * the survivor WITHOUT a write (closes the re-merge loop). Otherwise the
-   * survivor's content only ever GROWS (survivor + "\n" + incoming, no text
-   * dropped), re-embedded and re-keyed:
+   * text is already contained in the FRESH survivor's, nothing can grow —
+   * return the survivor WITHOUT a write (closes the re-merge loop).
+   * Otherwise the survivor's content only ever GROWS (survivor + "\n" +
+   * incoming, no text dropped), re-embedded and re-keyed:
    *   - embedding: fresh embed(nextContent) so the vector index serves the
    *     merged text (EMBED_DIM asserted, mirroring the insert path);
    *   - dedupKey: contentHash(project, normalize(nextContent)) so a LATER
@@ -648,17 +711,40 @@ export class HelixStore implements MemoryStore {
    * family). Fail-closed asserts mirror saveMemory/forget: missing returns,
    * an empty anchor (survivor vanished mid-merge — probe3 proved the server
    * enforces nothing app-side), or an empty 'updated' branch THROW rather
-   * than letting a silent no-op masquerade as a merge.
+   * than letting a silent no-op masquerade as a merge; the fresh read
+   * itself throws on shape drift / miss / wrong row / bad content
+   * (getFreshSurvivor).
    *
-   * Known limits (documented): the lock serializes only writes of the SAME
-   * incoming content — two CONCURRENT saves of different variants that pick
-   * the same survivor can lose one append (no cross-key lock exists; the
-   * plan scopes serialization to the existing per-key FIFO).
+   * Known limits (documented): the survivor lock serializes SAME-PROCESS
+   * writers only — contract §3's single-writer assumption still holds;
+   * cross-process writers to one Helix instance remain out of contract
+   * (residual risk, owner engineering, ROADMAP P4.3).
    */
-  private async consolidateInto(input: RememberInput, survivor: SearchHit): Promise<RememberResult> {
-    const nextContent = mergedContent(survivor.content, input.content);
-    if (nextContent === survivor.content) {
-      // Substring guard hit: the survivor already holds BOTH texts.
+  private async consolidateInto(
+    input: RememberInput,
+    survivor: SearchHit,
+  ): Promise<RememberResult | undefined> {
+    return this.withSurvivorLock(survivor.memoryId, () =>
+      this.mergeUnderSurvivorLock(input, survivor),
+    );
+  }
+
+  /** Merge body under the survivor's FIFO lock — see consolidateInto. */
+  private async mergeUnderSurvivorLock(
+    input: RememberInput,
+    survivor: SearchHit,
+  ): Promise<RememberResult | undefined> {
+    const fresh = await this.getFreshSurvivor(survivor.memoryId, input.project);
+    const [kept] = filterExpired([fresh], Date.now());
+    if (kept === undefined) {
+      // Expired while queued behind the survivor lock (REQ-RL-002): return
+      // undefined so rememberLocked falls through to the plain insert —
+      // a fresh write must never be absorbed by an expired row.
+      return undefined;
+    }
+    const nextContent = mergedContent(fresh.content, input.content);
+    if (nextContent === fresh.content) {
+      // Substring guard hit: the fresh survivor already holds BOTH texts.
       return {
         id: survivor.memoryId,
         sessionId: input.sessionId, // echo the REQUEST (contract §3)
@@ -719,6 +805,61 @@ export class HelixStore implements MemoryStore {
       concepts: [...input.concepts], // request as given — first-wins family
       deduped: false,
       consolidated: true,
+    };
+  }
+
+  /**
+   * REQ-RL-001 fail-closed fresh survivor re-read (getMemoryById): taken
+   * UNDER the per-survivor lock so the merge always works against the row
+   * as it is NOW, not as the probe snapshot saw it. Shape drift (missing
+   * 'memory' return — same posture as the dedup pre-check), a miss (the
+   * survivor vanished between probe and lock: probe3 proved the server
+   * enforces nothing app-side, so an absent row must never be merged
+   * onto), a row whose memoryId is not the one asked for, or non-string
+   * content all THROW — fail-closed, never a silent skip or a merge over
+   * untrusted data. `project` is enforced in the query's where-clause
+   * (the query refuses rows outside the caller's project), so no
+   * caller-side project assert is needed here.
+   */
+  private async getFreshSurvivor(memoryId: string, project: string): Promise<FreshSurvivorRow> {
+    const response = await this.send(
+      getMemoryByIdQuery().toQueryRequest(getMemoryByIdParams, { memoryId, project }),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "memory")) {
+      throw new Error(
+        "getMemoryById response did not include the 'memory' return (contract §2 fail-closed: shape drift must never be read as a survivor re-read)",
+      );
+    }
+    const memoryReturn = response["memory"];
+    if (memoryReturn !== null && !Array.isArray(memoryReturn)) {
+      throw new Error(
+        `getMemoryById 'memory' return has unexpected type ${typeof memoryReturn} (contract §2 fail-closed: shape drift must never be read as a survivor re-read)`,
+      );
+    }
+    const row = toRecords(memoryReturn ?? [])[0];
+    if (row === undefined) {
+      throw new Error(
+        `REQ-RL-001: survivor ${memoryId} vanished between probe and merge lock (fail-closed — an absent row must never be merged onto)`,
+      );
+    }
+    const freshMemoryId = readString(row, ["memoryId", "memory_id"], "");
+    if (freshMemoryId !== memoryId) {
+      throw new Error(
+        `REQ-RL-001: fresh re-read returned ${
+          freshMemoryId === "" ? "a row with no memoryId" : `row ${freshMemoryId}`
+        } when asked for survivor ${memoryId} (fail-closed)`,
+      );
+    }
+    const content = row["content"];
+    if (typeof content !== "string") {
+      throw new Error(
+        `REQ-RL-001: fresh re-read row ${memoryId} has ${typeof content} content (fail-closed)`,
+      );
+    }
+    return {
+      memoryId: freshMemoryId,
+      content,
+      createdAt: readString(row, ["createdAt", "created_at"], ""),
     };
   }
 
