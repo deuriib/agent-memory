@@ -22,6 +22,8 @@ import {
 } from "@helix-db/helix-db";
 import {
   EMBED_DIM,
+  findMemoryByDedupKey as findMemoryByDedupKeyQuery,
+  findMemoryByDedupKeyParams,
   forgetMemory as forgetMemoryQuery,
   graphSearch as graphSearchQuery,
   healthCount as healthCountQuery,
@@ -33,6 +35,7 @@ import {
 } from "../db/queries.js";
 import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
+import { contentHash, normalizeContent } from "./lifecycle.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
@@ -50,6 +53,7 @@ const saveMemoryParams = defineParams({
   importance: param.f64(),
   createdAt: param.dateTime(),
   concepts: param.array(param.object()),
+  dedupKey: param.string(), // REQ-P1-6
 });
 
 const listSessionsParams = defineParams({
@@ -107,6 +111,8 @@ export interface RememberResult {
   sessionId: string;
   project: string;
   concepts: string[];
+  /** REQ-P1-6: true when an identical (normalized) memory already existed. */
+  deduped: boolean;
 }
 
 /** Base memory row (session listings share it, without `score`). */
@@ -389,7 +395,77 @@ export class HelixStore implements MemoryStore {
     return withTimeout(this.client.query<unknown>(request).send(), QUERY_TIMEOUT_MS);
   }
 
+  /**
+   * Per-dedupKey FIFO lock (REQ-P1-6).
+   *
+   * Probe3 proved Helix v0.0.6 does NOT enforce unique-equality constraints
+   * (duplicate writes accepted — scripts/probe3.ts b2/d1): two truly
+   * concurrent remember() calls with the same normalized content would both
+   * pass a bare pre-check and write twice. Same-process writers are
+   * therefore serialized per dedup key, in arrival order; the waiter re-runs
+   * the pre-check after its predecessor settles and returns the existing id.
+   * Ordering: one queue per key, FIFO by arrival; distinct keys never block
+   * each other; a failed predecessor does not poison the queue (every tail
+   * settles resolved). Known limit: SEPARATE processes are not serialized —
+   * there is no server-side constraint (documented residual risk).
+   */
+  private readonly dedupTails = new Map<string, Promise<void>>();
+
+  private async withDedupLock<T>(key: string, run: () => Promise<T>): Promise<T> {
+    const previous = this.dedupTails.get(key) ?? Promise.resolve();
+    const result = previous.then(run);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.dedupTails.set(key, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.dedupTails.get(key) === tail) this.dedupTails.delete(key);
+    }
+  }
+
   async remember(input: RememberInput): Promise<RememberResult> {
+    const dedupKey = contentHash(input.project, normalizeContent(input.content));
+    return this.withDedupLock(dedupKey, () => this.rememberLocked(input, dedupKey));
+  }
+
+  /** Dedup pre-check + insert. Runs while holding the dedup key's lock. */
+  private async rememberLocked(input: RememberInput, dedupKey: string): Promise<RememberResult> {
+    // 1. Pre-check. Errors PROPAGATE (fail closed: a broken lookup must
+    //    never let a possible duplicate through to the write).
+    const existing = await this.send(
+      findMemoryByDedupKeyQuery().toQueryRequest(findMemoryByDedupKeyParams, { dedupKey }),
+    );
+    if (isRecord(existing)) {
+      const rows = rowsOf(existing, ["memory"]);
+      const hit = rows !== undefined ? toRecords(rows)[0] : undefined;
+      if (hit !== undefined) {
+        // contentHash folds project into the key; this row check is the
+        // fail-closed double check before handing back someone else's id.
+        const hitProject = readString(hit, ["project"], "");
+        if (hitProject !== input.project) {
+          throw new Error(
+            "dedup pre-check hit belongs to another project — contentHash(project) invariant violated" +
+              (hitProject === "" ? " (row missing project)" : ""),
+          );
+        }
+        const memoryId = readString(hit, ["memoryId"], "");
+        if (memoryId === "") {
+          throw new Error("dedup pre-check hit carried no memoryId");
+        }
+        return {
+          id: memoryId,
+          sessionId: input.sessionId, // echo the REQUEST (contract §3), not the stored row's
+          project: input.project,
+          concepts: [...input.concepts], // caller's as given — [] stays [], never re-derived
+          deduped: true,
+        };
+      }
+    }
+
+    // 2. Miss — embed and insert.
     const embedding = embed(input.content);
     if (embedding.length !== EMBED_DIM) {
       throw new RangeError(`embed() produced ${embedding.length} dims, db/queries.ts declares ${EMBED_DIM}`);
@@ -413,6 +489,7 @@ export class HelixStore implements MemoryStore {
         importance: input.importance,
         createdAt,
         concepts,
+        dedupKey,
       }),
     );
 
@@ -427,6 +504,7 @@ export class HelixStore implements MemoryStore {
       sessionId: input.sessionId,
       project: input.project,
       concepts: effectiveConcepts, // echo what was actually stored (derived or caller's)
+      deduped: false,
     };
   }
 

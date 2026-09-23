@@ -10,6 +10,7 @@
  * count, VERIFY PASS / VERIFY FAIL, exit 1 on any failure.
  */
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
+import { contentHash, normalizeContent } from "../src/lifecycle.js";
 
 /* ------------------------------------------------------------------ */
 /* Assertion plumbing (same shape as scripts/verify.ts)                */
@@ -108,6 +109,65 @@ function main(): void {
     "extractConcepts: tie-break lex ASC (alpha < mike < zeta)",
     JSON.stringify(tied) === JSON.stringify(["alpha", "mike", "zeta"]),
     JSON.stringify(tied),
+  );
+
+  /* B. normalizeContent + contentHash (REQ-P1-6 / T-102). */
+
+  // Golden: whitespace runs collapse, ends trim, case folds; punctuation and
+  // token order stay (dedup must never merge different sentences).
+  check(
+    "normalizeContent: golden '  Hello   World \\n\\t Today  ' -> 'hello world today'",
+    normalizeContent("  Hello   World \n\t Today  ") === "hello world today",
+    JSON.stringify(normalizeContent("  Hello   World \n\t Today  ")),
+  );
+  check(
+    "normalizeContent: punctuation preserved (only case/whitespace change)",
+    normalizeContent("Hello, World Today!") === "hello, world today!",
+    JSON.stringify(normalizeContent("Hello, World Today!")),
+  );
+
+  // Golden hash vector (computed once against node:crypto sha256, hardcoded).
+  const GOLDEN_KEY_A = "b3ce2e0503b6d5e36653f56765756cece1ae615f2d33e5b326b0df2cb55bd55a";
+  const GOLDEN_KEY_B = "4644cf715771a26d72dbfe634ac7733f5e2068ea0919e11cc971a4438487f1aa";
+  const GOLDEN_KEY_DIFF = "7189e50a05216fbc16f984709da63f3ba79cc036d3ec5b1bdac71cff9d62210e";
+  check(
+    "contentHash: golden vector (proj-a, 'hello world today')",
+    contentHash("proj-a", normalizeContent("  Hello   World \n\t Today  ")) === GOLDEN_KEY_A,
+    contentHash("proj-a", normalizeContent("  Hello   World \n\t Today  ")),
+  );
+
+  // Dedup determinism: the exact properties remember() relies on.
+  const base = normalizeContent("Ship the release checklist by Friday");
+  check(
+    "dedup: same project + same content -> SAME key",
+    contentHash("p1", base) === contentHash("p1", base),
+    "keys differ",
+  );
+  check(
+    "dedup: same content, DIFFERENT project -> DIFFERENT key",
+    contentHash("p1", base) !== contentHash("p2", base),
+    `${contentHash("p1", base)} vs ${contentHash("p2", base)}`,
+  );
+  check(
+    "dedup: case/whitespace variant -> SAME key (normalization upstream)",
+    contentHash("p1", normalizeContent("  SHIP the   release checklist BY friday ")) ===
+      contentHash("p1", base),
+    `${contentHash("p1", normalizeContent("  SHIP the   release checklist BY friday "))} vs ${contentHash("p1", base)}`,
+  );
+  check(
+    "dedup: different content -> DIFFERENT key",
+    contentHash("p1", base) !== contentHash("p1", normalizeContent("Rewrite the checklist draft")),
+    "keys collided",
+  );
+  check(
+    "dedup: golden key for proj-b differs from proj-a (project in hash)",
+    contentHash("proj-b", normalizeContent("  Hello   World \n\t Today  ")) === GOLDEN_KEY_B,
+    contentHash("proj-b", normalizeContent("  Hello   World \n\t Today  ")),
+  );
+  check(
+    "dedup: golden key for different content matches vector",
+    contentHash("proj-a", normalizeContent("different content entirely")) === GOLDEN_KEY_DIFF,
+    contentHash("proj-a", normalizeContent("different content entirely")),
   );
 
   /* Summary (verify.ts format). */

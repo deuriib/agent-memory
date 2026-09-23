@@ -16,6 +16,7 @@ export {
   graphSearch,
   forgetMemory,
   healthCount,
+  findMemoryByDedupKey,
   saveMemoryParams,
   listSessionsParams,
   sessionMemoriesParams,
@@ -24,4 +25,5 @@ export {
   graphSearchParams,
   forgetMemoryParams,
   healthCountParams,
+  findMemoryByDedupKeyParams,
 } from "./queries";

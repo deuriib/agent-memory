@@ -56,6 +56,7 @@ export const saveMemoryParams = defineParams({
   importance: param.f64(),
   createdAt: param.dateTime(),
   concepts: param.array(param.object()), // [{ name: "..." }, ...] — may be EMPTY
+  dedupKey: param.string(), // REQ-P1-6: sha256(project + "\n" + normalize(content))
 });
 
 export const listSessionsParams = defineParams({
@@ -111,7 +112,12 @@ const memoryRowProjection: PropertyProjection[] = [
 ];
 
 /* ------------------------------------------------------------------ *
- * bootstrapIndexes — CONTRACT §2 (all 7 indexes, createIndexIfNotExists).
+ * bootstrapIndexes — CONTRACT §2 (all 8 indexes, createIndexIfNotExists).
+ *
+ * #8 (memory_dedup) is a unique-equality LOOKUP index for
+ * findMemoryByDedupKey. Probe3 proved the server does NOT enforce its
+ * uniqueness (duplicate writes accepted) — it accelerates reads only;
+ * dedup is enforced application-side in HelixStore.remember.
  * ------------------------------------------------------------------ */
 
 export function bootstrapIndexes(): WriteBatch {
@@ -146,6 +152,10 @@ export function bootstrapIndexes(): WriteBatch {
       "memory_content",
       g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Memory, "content", "project")),
     )
+    .varAs(
+      "memory_dedup",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Memory, "dedupKey")),
+    )
     .returning([
       "memory_id",
       "session_id",
@@ -154,6 +164,7 @@ export function bootstrapIndexes(): WriteBatch {
       "memory_project",
       "memory_embedding",
       "memory_content",
+      "memory_dedup",
     ]);
 }
 
@@ -241,6 +252,7 @@ export function saveMemory(): WriteBatch {
         importance: PropertyInput.param("importance"),
         createdAt: PropertyInput.param("createdAt"),
         embedding: PropertyInput.param("embedding"),
+        dedupKey: PropertyInput.param("dedupKey"), // REQ-P1-6
       }),
     )
     // Entry 3 — BELONGS_TO, updated-session path.
@@ -400,4 +412,37 @@ export function healthCount(): ReadBatch {
       g().nWithLabel(LABELS.Session).where(Predicate.eqParam("project", "project")).count(),
     )
     .returning(["memories", "sessions"]);
+}
+
+/* ------------------------------------------------------------------ *
+ * findMemoryByDedupKey — REQ-P1-6 (ADDITIVE, contract §2 delta).
+ *
+ * Exact equality on the dedup hash (index #8), project carried in the row
+ * so remember() can assert the hit belongs to the caller's project before
+ * returning someone else's id (hash includes project, this is the
+ * fail-closed double check). Probe3 (c2) verified this exact shape against
+ * the live instance: match -> array of {id, memoryId, sessionId, project};
+ * miss -> null.
+ * ------------------------------------------------------------------ */
+
+export const findMemoryByDedupKeyParams = defineParams({
+  dedupKey: param.string(),
+});
+
+export function findMemoryByDedupKey(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "memory",
+      g()
+        .nWithLabel(LABELS.Memory)
+        .where(Predicate.eqParam("dedupKey", "dedupKey"))
+        .limit(1)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("memoryId"),
+          PropertyProjection.new("sessionId"),
+          PropertyProjection.new("project"),
+        ]),
+    )
+    .returning(["memory"]);
 }

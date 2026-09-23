@@ -160,6 +160,8 @@ const rememberResultSchema = z.object({
   sessionId: z.string().min(1),
   project: z.string(),
   concepts: z.array(z.string()),
+  // REQ-P1-6: additive; optional so pre-dedup lanes still shape-parse.
+  deduped: z.boolean().optional(),
 });
 
 const healthEnvelopeSchema = z.object({
@@ -318,6 +320,7 @@ async function main(): Promise<void> {
       JSON.stringify(rA.concepts),
     );
     check("remember A: id is a uuid", UUID_RE.test(rA.id), rA.id);
+    check("remember A: deduped false on first insert", rA.deduped === false, String(rA.deduped));
   }
 
   const remB = await call("POST", "/memory/remember", undefined, {
@@ -460,6 +463,100 @@ async function main(): Promise<void> {
       record,
     );
   }
+
+  /* F3. content-hash dedup (REQ-P1-6 / T-102) — isolated projects so the
+   * §5 counts in the main project stay untouched. */
+  const dProject = `verify-dedup-${randomUUID().slice(0, 8)}`;
+  const dProjectB = `verify-dedup-b-${randomUUID().slice(0, 8)}`;
+  const dContent = `dedup e2e content ${nonce}`;
+
+  const d1 = await call("POST", "/memory/remember", undefined, { content: dContent, project: dProject });
+  check("dedup: first insert status 201", d1.status === 201, `got ${d1.status}; body=${brief(d1.body)}`);
+  const rd1 = shape("dedup: first insert body", d1.body, rememberResultSchema);
+  check("dedup: first insert deduped=false", rd1?.deduped === false, String(rd1?.deduped));
+
+  const d2 = await call("POST", "/memory/remember", undefined, { content: dContent, project: dProject });
+  const rd2 = shape("dedup: duplicate body", d2.body, rememberResultSchema);
+  check(
+    "dedup: identical content -> SAME id + deduped=true",
+    rd2 !== undefined && rd1 !== undefined && rd2.id === rd1.id && rd2.deduped === true,
+    `ids ${rd1?.id} vs ${rd2?.id}, deduped=${String(rd2?.deduped)}`,
+  );
+
+  // Case/whitespace variant must normalize to the SAME key end-to-end.
+  const d3 = await call("POST", "/memory/remember", undefined, {
+    content: `  DEDUP   e2e   content ${nonce}  `,
+    project: dProject,
+  });
+  const rd3 = shape("dedup: normalized variant body", d3.body, rememberResultSchema);
+  check(
+    "dedup: case/whitespace variant -> SAME id + deduped=true",
+    rd3 !== undefined && rd1 !== undefined && rd3.id === rd1.id && rd3.deduped === true,
+    `ids ${rd1?.id} vs ${rd3?.id}, deduped=${String(rd3?.deduped)}`,
+  );
+
+  const hDedup = shape(
+    "dedup: project health envelope",
+    (await call("GET", "/memory/health", { project: dProject })).body,
+    healthEnvelopeSchema,
+  );
+  check("dedup: duplicates collapse to exactly 1 memory", hDedup?.counts.memories === 1, `got ${hDedup?.counts.memories}`);
+
+  // Same content in a DIFFERENT project is a different memory (project in hash).
+  const d4 = await call("POST", "/memory/remember", undefined, { content: dContent, project: dProjectB });
+  const rd4 = shape("dedup: cross-project body", d4.body, rememberResultSchema);
+  check(
+    "dedup: same content DIFFERENT project -> different id, deduped=false",
+    rd4 !== undefined && rd1 !== undefined && rd4.id !== rd1.id && rd4.deduped === false,
+    `ids ${rd1?.id} vs ${rd4?.id}, deduped=${String(rd4?.deduped)}`,
+  );
+
+  // Race: two concurrent remembers of the same content — per-key lock means
+  // one insert + one dedup hit: same id, healthCount +1 only.
+  const raceProject = `verify-race-${randomUUID().slice(0, 8)}`;
+  const raceContent = `race e2e content ${nonce}`;
+  const [race1, race2] = await Promise.all([
+    call("POST", "/memory/remember", undefined, {
+      content: raceContent,
+      project: raceProject,
+      sessionId: "race-s1",
+    }),
+    call("POST", "/memory/remember", undefined, {
+      content: raceContent,
+      project: raceProject,
+      sessionId: "race-s2",
+    }),
+  ]);
+  const rr1 = shape("dedup race: first body", race1.body, rememberResultSchema);
+  const rr2 = shape("dedup race: second body", race2.body, rememberResultSchema);
+  check(
+    "dedup race: both 201",
+    race1.status === 201 && race2.status === 201,
+    `got ${race1.status}/${race2.status}`,
+  );
+  check(
+    "dedup race: SAME id, deduped flags {false,true}",
+    rr1 !== undefined &&
+      rr2 !== undefined &&
+      rr1.id === rr2.id &&
+      [rr1.deduped, rr2.deduped].sort().join(",") === "false,true",
+    `ids ${rr1?.id} vs ${rr2?.id}, flags ${String(rr1?.deduped)}/${String(rr2?.deduped)}`,
+  );
+  check(
+    "dedup race: sessionId echoes each REQUEST",
+    rr1?.sessionId === "race-s1" && rr2?.sessionId === "race-s2",
+    `${rr1?.sessionId} / ${rr2?.sessionId}`,
+  );
+  const hRace = shape(
+    "dedup race: project health envelope",
+    (await call("GET", "/memory/health", { project: raceProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "dedup race: healthCount +1 only (pair collapsed to 1 memory)",
+    hRace?.counts.memories === 1,
+    `got ${hRace?.counts.memories}`,
+  );
 
   /* G. sessions list. */
   const ses = await call("GET", "/memory/sessions", { project, limit: "50" });

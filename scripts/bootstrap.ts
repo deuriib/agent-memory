@@ -1,7 +1,7 @@
 /**
  * scripts/bootstrap.ts — CONTRACT §3 "Bootstrap retry".
  *
- * Creates the 7 indexes via `bootstrapIndexes()`, then polls `searchByText`
+ * Creates the 8 indexes via `bootstrapIndexes()`, then polls `searchByText`
  * until `index_not_found` clears (2s interval, 30s cap) so first-run searches
  * never 500. Prints READY / FAILED and exits non-zero on failure.
  *
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   try {
     await client.query(bootstrapIndexes().toQueryRequest()).send();
-    console.log("bootstrapIndexes: OK (7 indexes ensured)");
+    console.log("bootstrapIndexes: OK (8 indexes ensured)");
   } catch (err) {
     console.error(`FAILED — bootstrapIndexes rejected by ${url}: ${describeError(err)}`);
     process.exit(1);
