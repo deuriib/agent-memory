@@ -11,6 +11,7 @@
  */
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
 import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
+import { oneLine } from "../src/logline.js";
 
 /* ------------------------------------------------------------------ */
 /* Assertion plumbing (same shape as scripts/verify.ts)                */
@@ -292,6 +293,62 @@ function main(): void {
   } finally {
     restoreEnv();
   }
+
+  /* E. oneLine — CWE-117 / SEC-P121-01 render guard (pure, no Helix).
+   * Do NOT assert U+0085/NEL behavior — that residual is backlog SEC-P121-03. */
+
+  // (a) line-breakers and whitespace runs collapse to single spaces.
+  const wsCases: ReadonlyArray<readonly [input: string, expected: string]> = [
+    ["line\nbreak", "line break"],
+    ["cr\rreturn", "cr return"],
+    ["crlf\r\nend", "crlf end"],
+    ["tab\there", "tab here"],
+    ["multi   space  run", "multi space run"],
+  ];
+  check(
+    "oneLine: \\n / \\r / \\r\\n / tab / multi-space runs collapse to single spaces",
+    wsCases.every(([input, expected]) => oneLine(input) === expected),
+    JSON.stringify(wsCases.map(([input]) => oneLine(input))),
+  );
+  check(
+    "oneLine: collapsed output contains no \\n or \\r",
+    wsCases.every(([input]) => {
+      const out = oneLine(input);
+      return !out.includes("\n") && !out.includes("\r");
+    }),
+    JSON.stringify(wsCases.map(([input]) => oneLine(input))),
+  );
+
+  // (b) idempotent — a second pass never changes the rendered line.
+  check(
+    "oneLine: idempotent (oneLine(oneLine(x)) === oneLine(x))",
+    wsCases.every(([input]) => oneLine(oneLine(input)) === oneLine(input)) &&
+      oneLine(oneLine("  lead/trail \n\t ")) === oneLine("  lead/trail \n\t "),
+    "second pass differed",
+  );
+
+  // (c) non-corrupting — names / digits / ISO timestamps / booleans byte-identical.
+  const untouched = [
+    "readme",
+    "probe-p1-ttl",
+    "multi word name",
+    "1234567890",
+    "2026-09-23T10:00:00.000Z",
+    "true",
+    "false",
+  ];
+  check(
+    "oneLine: names/digits/ISO-timestamps/booleans byte-identical",
+    untouched.every((value) => oneLine(value) === value),
+    JSON.stringify(untouched.map((value) => oneLine(value))),
+  );
+
+  // (d) number/boolean inputs accepted (String()-rendered).
+  check(
+    "oneLine: number and boolean inputs accepted",
+    oneLine(42) === "42" && oneLine(0) === "0" && oneLine(true) === "true" && oneLine(false) === "false",
+    JSON.stringify([oneLine(42), oneLine(0), oneLine(true), oneLine(false)]),
+  );
 
   /* Summary (verify.ts format). */
   console.log(`\n${passed} passed, ${failures.length} failed`);

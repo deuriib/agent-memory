@@ -41,7 +41,7 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | None | Missing |
-| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (131) + `verify-lifecycle` (34) + `verify-capture` (115) + `verify-injection` (73) + `verify-env` (21), plus GitHub Actions CI (typecheck, injection, capture, lifecycle, gitleaks) | Verified — CI present; no unit suite |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (152) + `verify-lifecycle` (39) + `verify-capture` (115) + `verify-injection` (73) + `verify-env` (21), plus GitHub Actions CI (typecheck, injection, capture, lifecycle, gitleaks) | Verified — CI present; no unit suite |
 | Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | LICENSE, SECURITY, CONTRIBUTING, CHANGELOG (plus README, AGENTS, CONTRACT); no CODE_OF_CONDUCT / GOVERNANCE / MAINTAINERS / DESIGN | Verified — incomplete (P4.7) |
 | Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
@@ -81,7 +81,7 @@ passes, not when its tickets are "mostly" closed.
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P1.1 | Memory lifecycle: importance decay, TTL, auto-forget ✅ done (corte A) (2026-09-23) | A memory not recalled in N days loses weight and is eventually removable; nothing grows unbounded — decay `importance·e^(−λ·ageDays)` on the fused tie-break (`AGENT_MEMORY_DECAY_LAMBDA`, default OFF) + TTL hide with `ttl:` signal (`AGENT_MEMORY_TTL_DAYS`) + fail-closed `scripts/purge.ts` (`--days/--project\|--all/--dry-run`); probe3 (e) + verify-lifecycle 34 + verify 131 + purge dry-run/usage-guard green |
+| P1.1 | Memory lifecycle: importance decay, TTL, auto-forget ✅ done (corte A) (2026-09-23) | A memory not recalled in N days loses weight and is eventually removable; nothing grows unbounded — decay `importance·e^(−λ·ageDays)` on the fused tie-break (`AGENT_MEMORY_DECAY_LAMBDA`, default OFF) + TTL hide with `ttl:` signal (`AGENT_MEMORY_TTL_DAYS`) + fail-closed `scripts/purge.ts` (`--days/--project\|--all/--dry-run`); probe3 (e) + verify-lifecycle 39 + verify 152 + purge dry-run/usage-guard green |
 | P1.2 | Consolidation tiers | Near-duplicate memories merge instead of accumulating; merged set still recalls the originals |
 | P1.3 | Auto concept extraction ✅ done (2026-09-23) | `remember` derives concepts without an explicit `concepts[]`, so the graph branch fires on plain saves — `extractConcepts` (top-8, deterministic), explicit concepts win verbatim, verify graph-branch fused score == 3/61 |
 | P1.4 | Derived confidence | `importance` is computed from provenance + recall history, not just caller-supplied `0.5` |
@@ -92,7 +92,7 @@ passes, not when its tickets are "mostly" closed.
 
 | # | Item | Acceptance criterion |
 |---|---|---|
-| P2.1 | Expand hook coverage ✅ done (2026-09-23) | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` — all 7 `capture.mjs` events + plugin `execute.before` land an observation; `scripts/verify-capture.ts` 115 checks green (payload/origin/exit-0/silence/privacy canary) |
+| P2.1 | Expand hook coverage ✅ done (2026-09-23) | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` — each of the 7 `capture.mjs` events + plugin `execute.before` records an observation on first occurrence (repeats dedup — first-wins, contract §3); `scripts/verify-capture.ts` 115 checks green (payload/origin/exit-0/silence/privacy canary) |
 | P2.2 | Capture file edits and failures | A failed tool call and an edited file both produce an observation |
 | P2.3 | Transcript import | Import a persisted session transcript and have it searchable afterwards |
 | P2.4 | Session summarization / lessons | A closed session yields a compact summary + mined lessons, retrievable by `session` |

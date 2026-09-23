@@ -21,8 +21,9 @@
  *   (+ ` status=partial` when a failed run records deletions it completed),
  * and healthCount before/after lines (counts only). Every value interpolated
  * into a rendered stdout/stderr line is collapsed to a single line first
- * (oneLine — CWE-117/SEC-P121-01, same transform as the P3.1 delete-reason
- * guard in src/server.ts; PRINT-site only, query values stay verbatim).
+ * (oneLine, imported from src/logline.ts — CWE-117/SEC-P121-01, same
+ * transform as the P3.1 delete-reason guard in src/server.ts; PRINT-site
+ * only, query values stay verbatim).
  * Content is never printed. Talks directly to Helix (HELIX_URL, default
  * http://localhost:6969) — the running instance is never restarted.
  *
@@ -51,6 +52,7 @@ import {
   listProjects,
   listProjectsParams,
 } from "../db/queries";
+import { oneLine } from "../src/logline.js";
 
 const MS_PER_DAY = 86_400_000;
 const BATCH_LIMIT = 500; // real-run page size (spec: batches of 500)
@@ -60,19 +62,6 @@ const MAX_BATCHES = 10_000; // hard stop even with progress (runaway guard)
 
 const USAGE =
   "usage: npx tsx scripts/purge.ts --days <N>=1..6 digits> (--project <name> | --all) [--dry-run]";
-
-/**
- * Print-site single-line guard (CWE-117 / SEC-P121-01 + CE-003): EVERY value
- * interpolated into a rendered stdout/stderr line passes through here first —
- * collapse whitespace runs (incl. embedded `\n`/`\r`) to one space + trim,
- * the same transform as the P3.1 delete-reason guard in src/server.ts. Only
- * the PRINTED form is normalized; the query still receives the verbatim
- * value, so a stored newline-bearing project name can no longer forge a
- * second plan/health/governance line out of one purge output line.
- */
-function oneLine(value: string | number | boolean): string {
-  return String(value).replace(/\s+/g, " ").trim();
-}
 
 /**
  * Failure-path audit cursor (OPS-001/C2): REAL deletions confirmed so far,

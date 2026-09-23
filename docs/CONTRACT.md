@@ -192,9 +192,9 @@ absent, `limit=10`, `importance=0.5`, `origin="rest"`.
   session writes novel content.
 - **Single-writer assumption (RL-001):** Dedup is application-side and sound
   within ONE writer process (REST or MCP in a single server instance — our
-  documented deployment, §4 non-goal = multi-instance); cross-process writers
-  to one Helix instance are out of contract (residual risk, owner:
-  engineering).
+  documented deployment — multi-instance is a planned roadmap item (ROADMAP
+  P4.3), not a contract guarantee today); cross-process writers to one Helix
+  instance are out of contract (residual risk, owner: engineering).
 - **`RememberResult` gains `deduped: boolean`** (additive): `{id, sessionId,
   project, concepts, deduped}`. First write → `deduped:false`; duplicate hit →
   `deduped:true` + existing id. Both REST (201) and MCP (`memory_save`) echo it.
@@ -351,8 +351,9 @@ JSONL import, 20 agent adapters, full 54-tool MCP surface.
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**34 passed** — pure: dedupKey/hash golden,
-decay math incl. half-life, TTL filter, concept determinism). 
+`scripts/verify-lifecycle.ts` green (**39 passed** — pure: dedupKey/hash golden,
+decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
+render guard). 
 `scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helper).
 `scripts/verify.ts` end-to-end green (**152 passed**): health → remember (with

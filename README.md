@@ -513,10 +513,12 @@ All run clean:
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`34 passed` →
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`39 passed` →
   `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
   half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
-  concept extraction determinism + bounds. No Helix, no server — CI-runnable.
+  concept extraction determinism + bounds, `oneLine` CWE-117 render guard
+  (collapses `\n`/`\r`/tabs to single spaces, idempotent, non-corrupting
+  for names/digits/ISO/booleans). No Helix, no server — CI-runnable.
 - `npm run verify-capture` (`scripts/verify-capture.ts`) — **`115 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
   silence, prompt-text privacy canary, negatives (unsupported event, malformed

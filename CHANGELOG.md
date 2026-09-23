@@ -34,7 +34,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   (Ley 172-13) — plus the OpenCode plugin's 5th hook
   `tool.execute.before` (fire-and-forget `tool started: <name>`, own
   `memory*` skipped) (engineering/security, P2)
-- Local suites `scripts/verify-lifecycle.ts` (34 passed) and
+- Local suites `scripts/verify-lifecycle.ts` (39 passed) and
   `scripts/verify-capture.ts` (115 checks), both Helix-free and wired into CI
   (engineering, P0/P1/P2 gate)
 
@@ -46,8 +46,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   remember/dedup/decay/TTL/purge/7-event hooks/plugin `execute.before`
   semantics, §4 drops "Decay" from do-not-build, §5 verification bar
   (engineering, P1+P2.1)
-- `scripts/verify.ts` bar grows 102 → **131 passed** (derived-concepts,
-  graph-branch, dedup/race sections); README route prefix corrected to
+- `scripts/verify.ts` bar grows 102 → 131 → **152 passed** across lane +
+  gate remediation (derived-concepts, graph-branch, dedup/race, dedup×hook
+  (F4) sections); README route prefix corrected to
   `/memory`, hooks/config/verification docs refreshed (engineering, P1+P2.1)
 - Version 0.3.0 → 0.4.0 across `package.json`, lockfile, plugin `VERSION`,
   MCP server identifier, and README badge (engineering, this release)
