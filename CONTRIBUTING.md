@@ -61,12 +61,12 @@ not the upstream instance that may hold `3111` (its identity guard aborts
 read-only before any write against a non-agent-memory target).
 
 Full `package.json` script inventory: `typecheck`, `verify` (102-assertion
-E2E), `verify-env` (21-assertion env suite: legacy `AGENTMEMORY_*` fallback,
-hook zero-output, `EADDRINUSE` reroute hint), plus `bootstrap`, `dev`, `demo`
+E2E), `verify-env` (env boot, hook zero-output, `EADDRINUSE` reroute hint,
+legacy-ignored), plus `bootstrap`, `dev`, `demo`
 for setup/seeding — `verify-injection` has no npm alias and runs as
 `npx tsx scripts/verify-injection.ts` (73 assertions). The per-PR bar is the
 three commands above; also run `npm run verify-env` when your change touches
-env reading, the legacy fallback, or the port hint.
+env reading or the port hint.
 
 ## Commit convention
 

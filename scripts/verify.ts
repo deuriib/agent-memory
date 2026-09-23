@@ -12,10 +12,7 @@
  * target does not answer as our P3.1 server. Uses a unique
  * project per run so counts are isolated from demo data and re-runs stay
  * clean. Attaches Authorization automatically when AGENT_MEMORY_SECRET is
- * set in this shell (same env as the server). Legacy AGENTMEMORY_URL /
- * AGENTMEMORY_SECRET are accepted as a SILENT fallback (new name wins); no
- * stderr note is emitted — the CLI keeps its output machine-clean and the
- * server itself carries the one-time, name-only deprecation warning.
+ * set in this shell (same env as the server).
  *
  * Exit 0 only when every assertion passes.
  */
@@ -24,10 +21,9 @@ import { z } from "zod";
 import { embed } from "../src/embed.js";
 import { logSafeNote } from "../src/errors.js";
 
-const BASE_RAW =
-  process.env.AGENT_MEMORY_URL ?? process.env.AGENTMEMORY_URL ?? "http://127.0.0.1:3111";
+const BASE_RAW = process.env["AGENT_MEMORY_URL"] ?? "http://127.0.0.1:3111";
 const BASE = new URL(BASE_RAW.endsWith("/") ? BASE_RAW : `${BASE_RAW}/`);
-const SECRET = process.env["AGENT_MEMORY_SECRET"] ?? process.env["AGENTMEMORY_SECRET"];
+const SECRET = process.env["AGENT_MEMORY_SECRET"];
 
 /**
  * Golden snapshot: the first 6 non-zero (index, value) pairs of
@@ -257,15 +253,15 @@ async function main(): Promise<void> {
   /* Identity guard (read-only) — BEFORE the first write. The default target
    * 127.0.0.1:3111 is where the upstream `agentmemory` normally lives, and a
    * plain run would otherwise write test rows into it. POST
-   * /agentmemory/recap with `{}` is our P3.1 surface (every recap field is
+   * /memory/recap with `{}` is our P3.1 surface (every recap field is
    * optional) and reads nothing: 200 => the target is OUR server, anything
    * else (404 from upstream, connection failure, 401) => abort with no writes. */
-  const identity = await call("POST", "/agentmemory/recap", undefined, {});
+  const identity = await call("POST", "/memory/recap", undefined, {});
   if (identity.status !== 200) {
     console.error(
       [
         "",
-        `identity guard: POST ${endpoint("agentmemory/recap").href} -> ${identity.status}` +
+        `identity guard: POST ${endpoint("memory/recap").href} -> ${identity.status}` +
           (identity.status === -1
             ? ` (unreachable: ${String(identity.body)})`
             : ` (body=${brief(identity.body)})`),
@@ -280,10 +276,10 @@ async function main(): Promise<void> {
     );
     process.exit(1);
   }
-  console.log("identity: POST /agentmemory/recap -> 200 (our P3.1 server), proceeding");
+  console.log("identity: POST /memory/recap -> 200 (our P3.1 server), proceeding");
 
   /* B. Server reachable? */
-  const livez = await call("GET", "/agentmemory/livez");
+  const livez = await call("GET", "/memory/livez");
   if (livez.status === -1) {
     console.error(`\nserver not reachable at ${BASE.href} — start it first: npx tsx src/server.ts`);
     process.exit(1);
@@ -293,7 +289,7 @@ async function main(): Promise<void> {
 
   /* C. Health baseline on a fresh, unique project. */
   const project = `verify-${randomUUID().slice(0, 8)}`;
-  const h0res = await call("GET", "/agentmemory/health", { project });
+  const h0res = await call("GET", "/memory/health", { project });
   check("health: status 200", h0res.status === 200, `got ${h0res.status}; body=${brief(h0res.body)}`);
   const h0 = shape("health: {status, counts:{memories,sessions}}", h0res.body, healthEnvelopeSchema);
   check("health: fresh project -> 0 memories", h0?.counts.memories === 0, `got ${h0?.counts.memories}`);
@@ -305,7 +301,7 @@ async function main(): Promise<void> {
   const sidB = `verify-b-${randomUUID().slice(0, 8)}`;
   const sidC = `verify-c-${randomUUID().slice(0, 8)}`;
 
-  const remA = await call("POST", "/agentmemory/remember", undefined, {
+  const remA = await call("POST", "/memory/remember", undefined, {
     content: `JWT auth middleware signs tokens with HS256 and a 15 minute expiry ${nonce}`,
     concepts: ["auth", "jwt"],
     project,
@@ -324,7 +320,7 @@ async function main(): Promise<void> {
     check("remember A: id is a uuid", UUID_RE.test(rA.id), rA.id);
   }
 
-  const remB = await call("POST", "/agentmemory/remember", undefined, {
+  const remB = await call("POST", "/memory/remember", undefined, {
     content: `N+1 query fix: batched user lookups cut dashboard p95 latency from 820ms to 45ms ${nonce}`,
     concepts: ["performance", "sql"],
     project,
@@ -333,7 +329,7 @@ async function main(): Promise<void> {
   check("remember B: status 201", remB.status === 201, `got ${remB.status}`);
   const rB = shape("remember B: body shape", remB.body, rememberResultSchema);
 
-  const remC = await call("POST", "/agentmemory/remember", undefined, {
+  const remC = await call("POST", "/memory/remember", undefined, {
     content: `Rate limiting with a token bucket: 60 requests per minute, burst 10, respond 429 ${nonce}`,
     concepts: ["reliability"],
     project,
@@ -343,7 +339,7 @@ async function main(): Promise<void> {
   const rC = shape("remember C: body shape", remC.body, rememberResultSchema);
 
   // D: no sessionId / origin / importance / concepts -> contract defaults.
-  const remD = await call("POST", "/agentmemory/remember", undefined, {
+  const remD = await call("POST", "/memory/remember", undefined, {
     content: `defaults probe memory ${nonce}`,
     project,
   });
@@ -359,7 +355,7 @@ async function main(): Promise<void> {
   }
 
   /* E. bm25 search hits. */
-  const s1 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project, limit: 10 });
+  const s1 = await call("POST", "/memory/search", undefined, { query: nonce, project, limit: 10 });
   check("bm25: status 200", s1.status === 200, `got ${s1.status}; body=${brief(s1.body)}`);
   const bm = shape("bm25: {mode:'bm25', results, signals}", s1.body, bm25EnvelopeSchema);
   if (bm !== undefined) {
@@ -379,7 +375,7 @@ async function main(): Promise<void> {
   }
 
   /* F. smart-search (hybrid RRF) hits. */
-  const s2 = await call("POST", "/agentmemory/smart-search", undefined, {
+  const s2 = await call("POST", "/memory/smart-search", undefined, {
     query: "dashboard query latency",
     concepts: ["performance"],
     project,
@@ -398,7 +394,7 @@ async function main(): Promise<void> {
   }
 
   /* G. sessions list. */
-  const ses = await call("GET", "/agentmemory/sessions", { project, limit: "50" });
+  const ses = await call("GET", "/memory/sessions", { project, limit: "50" });
   check("sessions: status 200", ses.status === 200, `got ${ses.status}; body=${brief(ses.body)}`);
   const sesBody = shape("sessions: {sessions:[...]}", ses.body, sessionsEnvelopeSchema);
   if (sesBody !== undefined) {
@@ -412,7 +408,7 @@ async function main(): Promise<void> {
   }
 
   /* H. session memories. */
-  const mem = await call("GET", `/agentmemory/sessions/${encodeURIComponent(sidA)}/memories`, {
+  const mem = await call("GET", `/memory/sessions/${encodeURIComponent(sidA)}/memories`, {
     project,
     limit: "50",
   });
@@ -428,12 +424,12 @@ async function main(): Promise<void> {
   }
 
   /* I. forget. */
-  const fg = await call("POST", "/agentmemory/forget", undefined, { memoryId: rA.id });
+  const fg = await call("POST", "/memory/forget", undefined, { memoryId: rA.id });
   check("forget A: status 200", fg.status === 200, `got ${fg.status}; body=${brief(fg.body)}`);
   shape("forget A: {forgotten:true}", fg.body, z.object({ forgotten: z.literal(true) }));
 
   /* J. gone — three independent proofs. */
-  const mem2 = await call("GET", `/agentmemory/sessions/${encodeURIComponent(sidA)}/memories`, {
+  const mem2 = await call("GET", `/memory/sessions/${encodeURIComponent(sidA)}/memories`, {
     project,
     limit: "50",
   });
@@ -443,7 +439,7 @@ async function main(): Promise<void> {
     memBody2 !== undefined && !memBody2.memories.some((row) => row.memoryId === rA.id),
   );
 
-  const s3 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project, limit: 10 });
+  const s3 = await call("POST", "/memory/search", undefined, { query: nonce, project, limit: 10 });
   const bm2 = shape("gone: bm25 envelope after forget", s3.body, bm25EnvelopeSchema);
   check(
     "gone: bm25 returns exactly the 3 remaining memories",
@@ -451,14 +447,14 @@ async function main(): Promise<void> {
     bm2 === undefined ? "no envelope" : `got ${bm2.results.length} rows`,
   );
 
-  const fg2 = await call("POST", "/agentmemory/forget", undefined, { memoryId: rA.id });
+  const fg2 = await call("POST", "/memory/forget", undefined, { memoryId: rA.id });
   check("gone: forgetting A again -> 404", fg2.status === 404, `got ${fg2.status}; body=${brief(fg2.body)}`);
 
-  const fg3 = await call("POST", "/agentmemory/forget", undefined, { memoryId: randomUUID() });
+  const fg3 = await call("POST", "/memory/forget", undefined, { memoryId: randomUUID() });
   check("gone: forgetting unknown id -> 404", fg3.status === 404, `got ${fg3.status}; body=${brief(fg3.body)}`);
 
   /* K. healthCount() reflects the forget (4 seeded − 1 forgotten = 3). */
-  const h1res = await call("GET", "/agentmemory/health", { project });
+  const h1res = await call("GET", "/memory/health", { project });
   const h1 = shape("health after forget: envelope", h1res.body, healthEnvelopeSchema);
   check(
     "healthCount: memories = 3 after forget (4 − 1)",
@@ -472,17 +468,17 @@ async function main(): Promise<void> {
   );
 
   /* L. Boundary validation: every inbound payload is rejected when invalid. */
-  const bad1 = await call("POST", "/agentmemory/remember", undefined, {});
+  const bad1 = await call("POST", "/memory/remember", undefined, {});
   check("boundary: empty remember body -> 400", bad1.status === 400, `got ${bad1.status}`);
-  const bad2 = await call("POST", "/agentmemory/search", undefined, [1, 2, 3]);
+  const bad2 = await call("POST", "/memory/search", undefined, [1, 2, 3]);
   check("boundary: array body on search -> 400", bad2.status === 400, `got ${bad2.status}`);
-  const bad3 = await call("GET", "/agentmemory/nope");
+  const bad3 = await call("GET", "/memory/nope");
   check("boundary: unknown route -> 404", bad3.status === 404, `got ${bad3.status}`);
-  const bad4 = await call("POST", "/agentmemory/livez");
+  const bad4 = await call("POST", "/memory/livez");
   check("boundary: wrong method on livez -> 405", bad4.status === 405, `got ${bad4.status}`);
   let bad5Status = -2;
   try {
-    const response = await fetch(endpoint("/agentmemory/remember"), {
+    const response = await fetch(endpoint("/memory/remember"), {
       method: "POST",
       headers: authHeaders({ "content-type": "text/plain" }),
       body: "content=not-json-object",
@@ -509,7 +505,7 @@ async function main(): Promise<void> {
   const p31content = `P3.1 governed lesson round-trip: strict lesson payloads and audited deletes ${nonce}`;
 
   /* N1. lesson → 201 with echoed sessionId / project / concepts, uuid id. */
-  const les = await call("POST", "/agentmemory/lesson", undefined, {
+  const les = await call("POST", "/memory/lesson", undefined, {
     content: p31content,
     concepts: ["governance", "p31"],
     project: p31project,
@@ -531,7 +527,7 @@ async function main(): Promise<void> {
 
   /* N2. lesson body is STRICT — `origin` is server-owned and must be
    * rejected outright (400), not silently accepted. */
-  const lesOrigin = await call("POST", "/agentmemory/lesson", undefined, {
+  const lesOrigin = await call("POST", "/memory/lesson", undefined, {
     content: p31content,
     project: p31project,
     origin: "hook:Stop",
@@ -547,7 +543,7 @@ async function main(): Promise<void> {
   }
 
   /* N3. bm25 search for the nonce finds the lesson row with origin "lesson". */
-  const ps1 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project: p31project, limit: 10 });
+  const ps1 = await call("POST", "/memory/search", undefined, { query: nonce, project: p31project, limit: 10 });
   check("P3.1 search: status 200", ps1.status === 200, `got ${ps1.status}; body=${brief(ps1.body)}`);
   const pbm = shape("P3.1 search: {mode:'bm25', results, signals}", ps1.body, bm25EnvelopeSchema);
   if (pbm !== undefined) {
@@ -558,7 +554,7 @@ async function main(): Promise<void> {
 
   /* N4. recap of the lesson's session echoes the sessionId, count >= 1, and
    * the recap string contains the exact lesson content. */
-  const rc1 = await call("POST", "/agentmemory/recap", undefined, { sessionId: p31sid, project: p31project });
+  const rc1 = await call("POST", "/memory/recap", undefined, { sessionId: p31sid, project: p31project });
   check("P3.1 recap: status 200", rc1.status === 200, `got ${rc1.status}; body=${brief(rc1.body)}`);
   const rcp1 = shape("P3.1 recap: {recap, sessionId, count, signals}", rc1.body, recapEnvelopeSchema);
   if (rcp1 !== undefined) {
@@ -580,7 +576,7 @@ async function main(): Promise<void> {
 
   /* N5. project-wide handoff: typed counts, frozen first line, and the
    * lesson content (or its session line) present in the digest. */
-  const hd1 = await call("POST", "/agentmemory/handoff", undefined, { project: p31project });
+  const hd1 = await call("POST", "/memory/handoff", undefined, { project: p31project });
   check("P3.1 handoff: status 200", hd1.status === 200, `got ${hd1.status}; body=${brief(hd1.body)}`);
   const hnd1 = shape("P3.1 handoff: {handoff, sessionId, counts, signals}", hd1.body, handoffEnvelopeSchema);
   if (hnd1 !== undefined) {
@@ -598,13 +594,13 @@ async function main(): Promise<void> {
 
   /* N6. health baseline before the delete — exactly 1 memory / 1 session,
    * which also proves the rejected origin-key lesson (N2) stored nothing. */
-  const hBres = await call("GET", "/agentmemory/health", { project: p31project });
+  const hBres = await call("GET", "/memory/health", { project: p31project });
   const hB = shape("P3.1 health before delete: envelope", hBres.body, healthEnvelopeSchema);
   check("P3.1 health: 1 memory before delete", hB?.counts.memories === 1, `got ${hB?.counts.memories}`);
   check("P3.1 health: 1 session before delete", hB?.counts.sessions === 1, `got ${hB?.counts.sessions}`);
 
   /* N7. governed delete with the required reason → auditable receipt. */
-  const del1 = await call("POST", "/agentmemory/delete", undefined, {
+  const del1 = await call("POST", "/memory/delete", undefined, {
     memoryId: rL.id,
     reason: "p3.1 round-trip test",
   });
@@ -624,7 +620,7 @@ async function main(): Promise<void> {
   }
 
   /* N8. gone — five independent proofs the row is really gone. */
-  const ps2 = await call("POST", "/agentmemory/search", undefined, { query: nonce, project: p31project, limit: 10 });
+  const ps2 = await call("POST", "/memory/search", undefined, { query: nonce, project: p31project, limit: 10 });
   const pbm2 = shape("P3.1 gone: bm25 envelope after delete", ps2.body, bm25EnvelopeSchema);
   check(
     "P3.1 gone: bm25 no longer returns the lesson row",
@@ -632,7 +628,7 @@ async function main(): Promise<void> {
     pbm2 === undefined ? "no envelope" : `got ${pbm2.results.length} rows`,
   );
 
-  const hAres = await call("GET", "/agentmemory/health", { project: p31project });
+  const hAres = await call("GET", "/memory/health", { project: p31project });
   const hA = shape("P3.1 health after delete: envelope", hAres.body, healthEnvelopeSchema);
   check(
     "P3.1 health: memories dropped to 0 after delete",
@@ -640,7 +636,7 @@ async function main(): Promise<void> {
     `got ${hA?.counts.memories}`,
   );
 
-  const del2 = await call("POST", "/agentmemory/delete", undefined, { memoryId: rL.id, reason: "repeat delete" });
+  const del2 = await call("POST", "/memory/delete", undefined, { memoryId: rL.id, reason: "repeat delete" });
   check(
     "P3.1 delete: second delete of same id -> 404",
     del2.status === 404,
@@ -648,17 +644,17 @@ async function main(): Promise<void> {
   );
   shape("P3.1 delete: 404 body is {error:'not_found'}", del2.body, notFoundSchema);
 
-  const del3 = await call("POST", "/agentmemory/delete", undefined, { memoryId: rL.id });
+  const del3 = await call("POST", "/memory/delete", undefined, { memoryId: rL.id });
   check("P3.1 delete: missing reason -> 400", del3.status === 400, `got ${del3.status}; body=${brief(del3.body)}`);
 
-  const del4 = await call("POST", "/agentmemory/delete", undefined, {
+  const del4 = await call("POST", "/memory/delete", undefined, {
     memoryId: randomUUID(),
     reason: "unknown id probe",
   });
   check("P3.1 delete: unknown memoryId -> 404", del4.status === 404, `got ${del4.status}; body=${brief(del4.body)}`);
   shape("P3.1 delete: unknown-id 404 body is {error:'not_found'}", del4.body, notFoundSchema);
 
-  const rc2 = await call("POST", "/agentmemory/recap", undefined, { sessionId: p31sid, project: p31project });
+  const rc2 = await call("POST", "/memory/recap", undefined, { sessionId: p31sid, project: p31project });
   check("P3.1 recap after delete: status 200", rc2.status === 200, `got ${rc2.status}; body=${brief(rc2.body)}`);
   const rcp2 = shape("P3.1 recap after delete: envelope", rc2.body, recapEnvelopeSchema);
   check(

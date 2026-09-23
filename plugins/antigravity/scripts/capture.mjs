@@ -5,7 +5,7 @@
  * Plain Node ESM, ZERO dependencies. Reads Antigravity's hook JSON on stdin
  * (camelCase: conversationId, workspacePaths, toolCall.name, ...), takes the
  * event name from argv[2] (supported: PostToolUse, Stop), and POSTs ONE small
- * observation to /agentmemory/remember with origin="hook:<event>".
+ * observation to /memory/remember with origin="hook:<event>".
  *
  * Output contract (Antigravity hooks read stdout as JSON):
  *   - PostToolUse -> {}          (empty object, as documented)
@@ -22,9 +22,6 @@
  *     Tool args may contain file paths, commands, and user data — they are
  *     deliberately NOT captured.
  *   - AGENT_MEMORY_URL default: http://127.0.0.1:3111 (the REST service).
- *   - Legacy AGENTMEMORY_* names (URL / SECRET / PROJECT) are accepted as a
- *     SILENT fallback (new name wins). Deliberately NO deprecation warning —
- *     stderr stays empty, ever (same zero-output rule as hooks/capture.mjs).
  */
 import { randomUUID } from "node:crypto";
 
@@ -75,9 +72,7 @@ function observationFor(event, payload) {
 
 /** Tenant key: env override > first workspace dir name > "default". */
 function projectFor(payload) {
-  // SILENT legacy fallback (AGENTMEMORY_PROJECT) — deliberate: hooks print
-  // nothing, ever. New name wins when both are set.
-  const override = process.env.AGENT_MEMORY_PROJECT ?? process.env.AGENTMEMORY_PROJECT;
+  const override = process.env.AGENT_MEMORY_PROJECT;
   if (typeof override === "string" && override.trim().length > 0) {
     const cleaned = clean(override, 200);
     if (cleaned.length > 0) return cleaned;
@@ -139,22 +134,18 @@ async function main() {
     origin: `hook:${event}`, // frozen origin format from contract §3
   };
 
-  // SILENT legacy fallback (AGENTMEMORY_URL) — no warning, ever; stderr
-  // stays empty (hook contract). New name wins when both are set.
-  const base = process.env.AGENT_MEMORY_URL ?? process.env.AGENTMEMORY_URL ?? "http://127.0.0.1:3111";
+  const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
   let url;
   try {
     // URL API does the joining — no hand-built request strings, and the
     // trailing slash keeps any path prefix in AGENT_MEMORY_URL intact.
-    url = new URL("agentmemory/remember", base.endsWith("/") ? base : `${base}/`);
+    url = new URL("memory/remember", base.endsWith("/") ? base : `${base}/`);
   } catch {
     return finish(event); // misconfigured base URL: ignore
   }
 
   const headers = { "content-type": "application/json", accept: "application/json" };
-  // SILENT legacy fallback (AGENTMEMORY_SECRET) — new name wins; never warn,
-  // never log: this hook prints nothing, ever.
-  const secret = process.env.AGENT_MEMORY_SECRET ?? process.env.AGENTMEMORY_SECRET;
+  const secret = process.env.AGENT_MEMORY_SECRET;
   if (typeof secret === "string" && secret.length > 0) {
     headers.authorization = `Bearer ${secret}`; // same guard as REST, never logged
   }

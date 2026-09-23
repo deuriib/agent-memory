@@ -46,17 +46,15 @@ a concrete impact on this project. We welcome reports about those impacts.
 
 ## Secrets policy
 
-- The bearer secret comes from the environment first: **`AGENT_MEMORY_SECRET`**
-  (the legacy `AGENTMEMORY_SECRET` name is accepted as a deprecated fallback —
-  see the README *Configuration* section). The REST and MCP servers read the
-  **environment only**. The one exception is the **OpenCode plugin**, which
-  also accepts a `secret` plugin option; for the plugin the precedence is
-  `secret` option (from `opencode.json`) → `AGENT_MEMORY_SECRET` → legacy
-  `AGENTMEMORY_SECRET`. **Prefer the environment variable**; if you use the
+- The bearer secret comes from the environment: **`AGENT_MEMORY_SECRET`**.
+  The REST and MCP servers read the **environment only**. The one exception
+  is the **OpenCode plugin**, which also accepts a `secret` plugin option;
+  for the plugin the precedence is `secret` option (from `opencode.json`) →
+  `AGENT_MEMORY_SECRET`. **Prefer the environment variable**; if you use the
   `secret` option, treat `opencode.json` as a credential-bearing file and
   never commit a real secret in it.
 - **Guard-open is a documented default, not an accident:** with
-  `AGENT_MEMORY_SECRET` unset (and no legacy fallback set) the server runs
+  `AGENT_MEMORY_SECRET` unset the server runs
   **unauthenticated** — every route except `livez` answers without a bearer.
   That is the dev posture, matching upstream's open-localhost default; the
   compensating control is the default bind address **`127.0.0.1`**. An open

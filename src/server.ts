@@ -7,9 +7,7 @@
  *   route except `livez` requires `Authorization: Bearer <secret>`;
  *   mismatch -> 401. The secret value is never logged or echoed.
  * - binds 127.0.0.1 by default (AGENT_MEMORY_HOST overrides); port from
- *   AGENT_MEMORY_PORT, default 3111. Legacy AGENTMEMORY_PORT/_HOST names are
- *   accepted as a deprecated fallback (new name wins; ONE name-only stderr
- *   warning per variable, never values — `src/env.ts`).
+ *   AGENT_MEMORY_PORT, default 3111.
  * - EADDRINUSE prints the port-ownership + `AGENT_MEMORY_PORT=3151` reroute
  *   hint (never-kill-upstream) before exiting (REQ-P0-6).
  * - access log: method, path, status, duration only — never bodies,
@@ -22,14 +20,14 @@ import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
 import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
-import { readLegacyEnv } from "./env.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
+const ROUTE_PREFIX = "/memory";
 const DEFAULT_PROJECT = "default";
 const DEFAULT_LIMIT = 10;
 const DEFAULT_ORIGIN = "rest";
-/** `/agentmemory/lesson` forces this origin (contract §3, P3.1). */
+/** `/memory/lesson` forces this origin (contract §3, P3.1). */
 const LESSON_ORIGIN = "lesson";
 const DEFAULT_IMPORTANCE = 0.5;
 const MAX_BODY_BYTES = 1_048_576; // 1 MiB
@@ -233,26 +231,26 @@ async function routeRequest(
   res: ServerResponse,
 ): Promise<number> {
   const method = req.method ?? "GET";
-  const url = new URL(req.url ?? "/", "http://agentmemory.local"); // inbound parsing only
+  const url = new URL(req.url ?? "/", "http://memory.local"); // inbound parsing only
   const path = url.pathname;
 
-  // Everything under /agentmemory/ is guarded; `livez` alone is exempt.
-  if (!path.startsWith("/agentmemory/")) throw new HttpError(404, "not_found");
-  if (path !== "/agentmemory/livez" && !isBearerAuthorized(req.headers.authorization, secret)) {
+  // Everything under /memory/ is guarded; `livez` alone is exempt.
+  if (!path.startsWith("/memory/")) throw new HttpError(404, "not_found");
+  if (path !== "/memory/livez" && !isBearerAuthorized(req.headers.authorization, secret)) {
     res.setHeader("www-authenticate", "Bearer");
     sendJson(res, 401, { error: "unauthorized" });
     return 401;
   }
 
-  // GET /agentmemory/livez
-  if (path === "/agentmemory/livez") {
+  // GET /memory/livez
+  if (path === "/memory/livez") {
     requireMethod(method, "GET");
     sendJson(res, 200, { status: "ok" });
     return 200;
   }
 
-  // GET /agentmemory/health?project=
-  if (path === "/agentmemory/health") {
+  // GET /memory/health?project=
+  if (path === "/memory/health") {
     requireMethod(method, "GET");
     const query = parseOr400(healthQuerySchema, queryRecord(url));
     const counts = await store.healthCounts(query.project ?? DEFAULT_PROJECT);
@@ -260,8 +258,8 @@ async function routeRequest(
     return 200;
   }
 
-  // POST /agentmemory/remember
-  if (path === "/agentmemory/remember") {
+  // POST /memory/remember
+  if (path === "/memory/remember") {
     requireMethod(method, "POST");
     const body = parseOr400(rememberBodySchema, await readJsonBody(req));
     const result = await store.remember({
@@ -276,8 +274,8 @@ async function routeRequest(
     return 201;
   }
 
-  // POST /agentmemory/search
-  if (path === "/agentmemory/search") {
+  // POST /memory/search
+  if (path === "/memory/search") {
     requireMethod(method, "POST");
     const body = parseOr400(searchBodySchema, await readJsonBody(req));
     const envelope = await bm25Search(store, {
@@ -289,8 +287,8 @@ async function routeRequest(
     return 200;
   }
 
-  // POST /agentmemory/smart-search
-  if (path === "/agentmemory/smart-search") {
+  // POST /memory/smart-search
+  if (path === "/memory/smart-search") {
     requireMethod(method, "POST");
     const body = parseOr400(smartSearchBodySchema, await readJsonBody(req));
     const envelope = await hybridSearch(store, {
@@ -303,10 +301,10 @@ async function routeRequest(
     return 200;
   }
 
-  // GET /agentmemory/sessions
-  // GET /agentmemory/sessions/:sessionId/memories
-  if (path === "/agentmemory/sessions" || path.startsWith("/agentmemory/sessions/")) {
-    const segments = path.split("/"); // ["", "agentmemory", "sessions", …]
+  // GET /memory/sessions
+  // GET /memory/sessions/:sessionId/memories
+  if (path === "/memory/sessions" || path.startsWith("/memory/sessions/")) {
+    const segments = path.split("/"); // ["", "memory", "sessions", …]
     if (segments.length === 3) {
       requireMethod(method, "GET");
       const query = parseOr400(listQuerySchema, queryRecord(url));
@@ -332,8 +330,8 @@ async function routeRequest(
     throw new HttpError(404, "not_found");
   }
 
-  // POST /agentmemory/forget
-  if (path === "/agentmemory/forget") {
+  // POST /memory/forget
+  if (path === "/memory/forget") {
     requireMethod(method, "POST");
     const body = parseOr400(forgetBodySchema, await readJsonBody(req));
     const forgotten = await store.forget(body.memoryId);
@@ -345,8 +343,8 @@ async function routeRequest(
     return 200;
   }
 
-  // POST /agentmemory/recap
-  if (path === "/agentmemory/recap") {
+  // POST /memory/recap
+  if (path === "/memory/recap") {
     requireMethod(method, "POST");
     const body = parseOr400(recapBodySchema, await readJsonBody(req));
     const digest = await buildDigestLines(store, body);
@@ -359,8 +357,8 @@ async function routeRequest(
     return 200;
   }
 
-  // POST /agentmemory/handoff (body identical to recap)
-  if (path === "/agentmemory/handoff") {
+  // POST /memory/handoff (body identical to recap)
+  if (path === "/memory/handoff") {
     requireMethod(method, "POST");
     const body = parseOr400(recapBodySchema, await readJsonBody(req));
     const digest = await buildDigestLines(store, body);
@@ -382,8 +380,8 @@ async function routeRequest(
     return 200;
   }
 
-  // POST /agentmemory/lesson — remember with origin forced to "lesson"
-  if (path === "/agentmemory/lesson") {
+  // POST /memory/lesson — remember with origin forced to "lesson"
+  if (path === "/memory/lesson") {
     requireMethod(method, "POST");
     const body = parseOr400(lessonBodySchema, await readJsonBody(req));
     const result = await store.remember({
@@ -398,8 +396,8 @@ async function routeRequest(
     return 201;
   }
 
-  // POST /agentmemory/delete — governance delete (reason required)
-  if (path === "/agentmemory/delete") {
+  // POST /memory/delete — governance delete (reason required)
+  if (path === "/memory/delete") {
     requireMethod(method, "POST");
     const body = parseOr400(deleteBodySchema, await readJsonBody(req));
     const deleted = await store.forget(body.memoryId);
@@ -482,6 +480,12 @@ function parsePort(raw: string | undefined): number {
   return value;
 }
 
+/** Non-empty env read: unset or empty -> undefined. */
+function nonEmptyEnv(name: string): string | undefined {
+  const value = process.env[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 /**
  * Narrow structural read of a Node system error's `code` — typeof/`in`
  * narrowing only, no `any`, no cast (strict-TS rule).
@@ -516,10 +520,8 @@ function portInUseHint(port: number): string {
 }
 
 function main(): void {
-  // New name wins; legacy AGENTMEMORY_PORT/_HOST fall back with a one-time,
-  // name-only stderr warning (src/env.ts).
-  const port = parsePort(readLegacyEnv("AGENT_MEMORY_PORT", "AGENTMEMORY_PORT"));
-  const host = readLegacyEnv("AGENT_MEMORY_HOST", "AGENTMEMORY_HOST") ?? "127.0.0.1";
+  const port = parsePort(process.env["AGENT_MEMORY_PORT"]);
+  const host = nonEmptyEnv("AGENT_MEMORY_HOST") ?? "127.0.0.1";
   const secret = secretFromEnv();
 
   const server = createAgentMemoryServer({ secret });

@@ -52,8 +52,6 @@
  *   - CONFIG precedence: plugin option > environment variable > default.
  *     `project` falls back to the workspace directory name (same derivation as
  *     `hooks/capture.mjs`) so hook captures and plugin saves share a tenant key.
- *     Legacy `AGENTMEMORY_*` names are accepted as a SILENT fallback (new
- *     name wins) — no warning ever prints from the plugin surface.
  *
  * VERSION is kept in lockstep with package.json by hand (there is no shared
  * module here, unlike `~/.config/opencode/plugins/shared.ts`).
@@ -142,29 +140,15 @@ function option(options: Readonly<Record<string, unknown>>, key: string): string
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-const NEW_ENV_PREFIX = "AGENT_MEMORY_";
-
-/** AGENT_MEMORY_FOO -> AGENTMEMORY_FOO; passthrough for any other name. */
-function legacyEnvName(name: string): string {
-  return name.startsWith(NEW_ENV_PREFIX)
-    ? `AGENTMEMORY_${name.slice(NEW_ENV_PREFIX.length)}`
-    : name;
-}
-
 /**
- * Non-empty env read with a SILENT legacy fallback: AGENT_MEMORY_X falls
- * back to AGENTMEMORY_X when the new name is unset/empty (new name wins).
- * Deliberately prints NOTHING — plugin config runs inside the agent process,
- * so a deprecation line here would pollute the prompt/log. The plugin surface
- * stays quiet; the visible name-only warning belongs to the servers
- * (`src/env.ts`). Covers SECRET, URL, PROJECT, INJECT, INJECT_LIMIT and
- * INJECT_TTL_MS (all config reads route through here).
+ * Non-empty env read. Prints NOTHING — plugin config runs inside the agent
+ * process, so any output here would pollute the prompt/log. Covers SECRET,
+ * URL, PROJECT, INJECT, INJECT_LIMIT and INJECT_TTL_MS (all config reads
+ * route through here).
  */
 function env(name: string): string | undefined {
   const value: string | undefined = process.env[name];
-  if (typeof value === "string" && value.length > 0) return value;
-  const legacy: string | undefined = process.env[legacyEnvName(name)];
-  return typeof legacy === "string" && legacy.length > 0 ? legacy : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function parseBool(value: unknown): boolean | undefined {
@@ -556,7 +540,7 @@ export async function autoRecall(cfg: Config, sessionID: string, query: string):
   const outcome = await call(
     cfg,
     "POST",
-    "agentmemory/smart-search",
+    "memory/smart-search",
     { query, concepts: [], project: cfg.project, limit: cfg.injectLimit },
     AUTO_TIMEOUT_MS,
   );
@@ -660,7 +644,7 @@ export default Plugin.define({
           const origin = str(input.origin, MAX_ORIGIN) ?? DEFAULT_ORIGIN;
           const importance = fraction(input.importance, 0, 1) ?? DEFAULT_IMPORTANCE;
 
-          const outcome = await call(cfg, "POST", "agentmemory/remember", {
+          const outcome = await call(cfg, "POST", "memory/remember", {
             content,
             concepts,
             project,
@@ -707,7 +691,7 @@ export default Plugin.define({
           const query = str(input.query, MAX_QUERY);
           if (query === undefined) return invalid("`query` must be a non-empty string");
 
-          const outcome = await call(cfg, "POST", "agentmemory/search", {
+          const outcome = await call(cfg, "POST", "memory/search", {
             query,
             project: str(input.project, MAX_PROJECT) ?? cfg.project,
             limit: integer(input.limit, 1, 100) ?? DEFAULT_LIMIT,
@@ -757,7 +741,7 @@ export default Plugin.define({
           const query = str(input.query, MAX_QUERY);
           if (query === undefined) return invalid("`query` must be a non-empty string");
 
-          const outcome = await call(cfg, "POST", "agentmemory/smart-search", {
+          const outcome = await call(cfg, "POST", "memory/smart-search", {
             query,
             concepts: strList(input.concepts, MAX_CONCEPTS, MAX_CONCEPT) ?? [],
             project: str(input.project, MAX_PROJECT) ?? cfg.project,
@@ -790,7 +774,7 @@ export default Plugin.define({
           const memoryId = str(input.memoryId, MAX_MEMORY_ID);
           if (memoryId === undefined) return invalid("`memoryId` must be a non-empty string");
 
-          const outcome = await call(cfg, "POST", "agentmemory/forget", { memoryId });
+          const outcome = await call(cfg, "POST", "memory/forget", { memoryId });
           return outcome.ok ? ok(outcome.body) : failed(outcome.note);
         },
       });
@@ -816,7 +800,7 @@ export default Plugin.define({
           const input = isBag(raw) ? raw : {};
           const project = str(input.project, MAX_PROJECT) ?? cfg.project;
 
-          const outcome = await call(cfg, "GET", `agentmemory/health?project=${encodeURIComponent(project)}`, undefined);
+          const outcome = await call(cfg, "GET", `memory/health?project=${encodeURIComponent(project)}`, undefined);
           if (!outcome.ok) return failed(outcome.note);
 
           // `origin` strips any path, query or credentials before display.

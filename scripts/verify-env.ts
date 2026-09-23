@@ -1,28 +1,30 @@
 /**
- * Env-migration + port-conflict evidence (T-005 / T-006 ->
- * REQ-P0-5 / REQ-P0-6), written in the style of scripts/verify.ts
+ * Env + port-conflict evidence (T-005 / T-006 -> REQ-P0-5 / REQ-P0-6),
+ * written in the style of scripts/verify.ts
  * (sections, check(), counters, VERIFY PASS/FAIL, exit code).
  *
  *   npx tsx scripts/verify-env.ts        (npm run verify-env)
  *
  * Everything is observed on REAL spawned processes — nothing unit-mocked:
  *
- *   A. legacy-only migration. Spawns `src/server.ts` (npx tsx) with every
- *      AGENT_MEMORY_* name STRIPPED and only AGENTMEMORY_PORT/_HOST/_SECRET
- *      set, then proves: it boots on the legacy port (3199),
- *      /agentmemory/livez answers 200 WITHOUT a bearer (route exempt),
- *      /agentmemory/health answers 401 without and 200 with
- *      `Bearer <legacy secret>` (the legacy name armed the guard), stderr
- *      carries exactly ONE name-only deprecation warning per variable — and
- *      the secret's VALUE never reaches stderr or stdout.
- *   B. zero-output hook guarantee. Spawns hooks/capture.mjs under legacy
- *      AGENTMEMORY_* names with no server listening: exit 0 and BOTH
- *      stdout/stderr empty (the silent legacy fallback is deliberate).
+ *   A. new-env boot. Spawns `src/server.ts` (npx tsx) with AGENT_MEMORY_PORT /
+ *      _HOST / _SECRET set, then proves: it boots on the configured port
+ *      (3199), /memory/livez answers 200 WITHOUT a bearer (route exempt),
+ *      /memory/health answers 401 without and 200 with
+ *      `Bearer <secret>`, and the secret's VALUE never reaches stderr
+ *      or stdout.
+ *   B. zero-output hook guarantee. Spawns hooks/capture.mjs under
+ *      AGENT_MEMORY_* names with no server listening: exit 0 and BOTH
+ *      stdout/stderr empty.
  *   C. EADDRINUSE reroute hint. Binds the test port with a second listener,
  *      spawns the server again, and asserts stderr names the conflicting
  *      port, the never-kill-upstream rule (3111/3112/3113), the
  *      `AGENT_MEMORY_PORT=3151` example and the AGENT_MEMORY_URL client
  *      instruction — plus exit code 1.
+ *   D. legacy names ignored. Spawns the server with AGENT_MEMORY_PORT set
+ *      plus stale AGENTMEMORY_* names present, and proves the legacy names
+ *      have no effect: it listens on the new port and the legacy secret
+ *      does not arm the guard.
  *
  * Ports: ONLY 3199 is used. Never 3111/3112/3113 (upstream agentmemory —
  * NEVER killed here), never 3151 (documented reroute), never 6969 (Helix,
@@ -48,17 +50,10 @@ const TEST_URL = `http://${HOST}:${TEST_PORT}/`;
 const REROUTE_PORT = 3151;
 const HELIX_HOST = "127.0.0.1";
 const HELIX_PORT = 6969;
-/** Synthetic, random per run — proves warn-name-never-value without a real secret. */
-const LEGACY_SECRET = `synthetic-verify-env-${randomUUID()}`;
+/** Synthetic, random per run — proves the secret value never leaks. */
+const TEST_SECRET = `synthetic-verify-env-${randomUUID()}`;
 const BOOT_TIMEOUT_MS = 30_000;
 const EXIT_TIMEOUT_MS = 30_000;
-
-/** Legacy vars this run sets — each must warn exactly once, names only. */
-const LEGACY_VARS = [
-  ["AGENTMEMORY_PORT", "AGENT_MEMORY_PORT"],
-  ["AGENTMEMORY_HOST", "AGENT_MEMORY_HOST"],
-  ["AGENTMEMORY_SECRET", "AGENT_MEMORY_SECRET"],
-] as const;
 
 /* ------------------------------------------------------------------ */
 /* Assertion plumbing (verify.ts style)                                */
@@ -217,14 +212,15 @@ function spawnCapture(
   return spawned;
 }
 
-/** Spawn src/server.ts with ONLY legacy AGENTMEMORY_* names for our config. */
-function spawnServer(): Spawned {
+/** Spawn src/server.ts with AGENT_MEMORY_* names for our config. */
+function spawnServer(extraEnv: Record<string, string> = {}): Spawned {
   return spawnCapture("npx", ["tsx", "src/server.ts"], {
     cwd: ROOT,
-    env: legacyOnlyEnv({
-      AGENTMEMORY_PORT: String(TEST_PORT),
-      AGENTMEMORY_HOST: HOST,
-      AGENTMEMORY_SECRET: LEGACY_SECRET,
+    env: cleanEnv({
+      AGENT_MEMORY_PORT: String(TEST_PORT),
+      AGENT_MEMORY_HOST: HOST,
+      AGENT_MEMORY_SECRET: TEST_SECRET,
+      ...extraEnv,
     }),
     stdin: "ignore",
   });
@@ -232,10 +228,9 @@ function spawnServer(): Spawned {
 
 /**
  * Inherited env MINUS every AGENT_MEMORY_ and AGENTMEMORY_ prefixed key
- * (so the new name can never win this run and no stray legacy name leaks
- * in), plus exactly the legacy vars the caller wants to prove.
+ * (so no stray config leaks in), plus exactly the vars the caller wants.
  */
-function legacyOnlyEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
+function cleanEnv(extra: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith("AGENT_MEMORY_") || key.startsWith("AGENTMEMORY_")) continue;
@@ -249,7 +244,7 @@ async function waitUntilListening(target: Spawned, timeoutMs: number): Promise<b
   while (Date.now() < deadline) {
     if (target.exitCode() !== undefined) return false; // died — never listened
     try {
-      const response = await fetch(new URL("agentmemory/livez", TEST_URL), {
+      const response = await fetch(new URL("memory/livez", TEST_URL), {
         signal: AbortSignal.timeout(1_500),
       });
       if (response.status === 200) return target.exitCode() === undefined;
@@ -269,7 +264,7 @@ let blocker: Server | undefined;
 
 /** Returns false only on a FATAL condition that makes the rest meaningless. */
 async function sectionA(): Promise<boolean> {
-  section(`A. legacy-only env: boots on AGENTMEMORY_PORT, guard armed by AGENTMEMORY_SECRET`);
+  section(`A. new-env boot: AGENT_MEMORY_PORT/HOST/SECRET`);
 
   const free = await portFree(TEST_PORT);
   check(
@@ -289,7 +284,7 @@ async function sectionA(): Promise<boolean> {
   const server = spawnServer();
   const booted = await waitUntilListening(server, BOOT_TIMEOUT_MS);
   check(
-    `server: boots and listens on legacy AGENTMEMORY_PORT=${TEST_PORT} (AGENT_MEMORY_PORT stripped)`,
+    `server: boots and listens on AGENT_MEMORY_PORT=${TEST_PORT}`,
     booted,
     booted
       ? undefined
@@ -297,21 +292,17 @@ async function sectionA(): Promise<boolean> {
   );
   if (!booted) return false;
 
-  const livez = await getStatus("agentmemory/livez");
+  const livez = await getStatus("memory/livez");
   check("livez: 200 WITHOUT bearer (route exempt)", livez === 200, `got ${livez}`);
 
-  const noAuth = await getStatus("agentmemory/health");
-  check(
-    "health: 401 WITHOUT bearer (legacy AGENTMEMORY_SECRET armed the guard)",
-    noAuth === 401,
-    `got ${noAuth}`,
-  );
+  const noAuth = await getStatus("memory/health");
+  check("health: 401 WITHOUT bearer (secret armed the guard)", noAuth === 401, `got ${noAuth}`);
 
-  const withAuth = await getStatus("agentmemory/health", {
-    authorization: `Bearer ${LEGACY_SECRET}`,
+  const withAuth = await getStatus("memory/health", {
+    authorization: `Bearer ${TEST_SECRET}`,
   });
   check(
-    "health: 200 WITH Bearer <legacy secret> (legacy secret accepted)",
+    "health: 200 WITH Bearer <secret>",
     withAuth === 200,
     withAuth === 500
       ? "got 500 — Helix at localhost:6969 unreachable/mid-restart (REAL failure, not an auth defect)"
@@ -320,33 +311,18 @@ async function sectionA(): Promise<boolean> {
 
   const out = server.stdout();
   const err = server.stderr();
-  for (const [legacyName, newName] of LEGACY_VARS) {
-    check(
-      `stderr: name-only warning "${legacyName}" -> "${newName}"`,
-      err.includes(`deprecated ${legacyName} in use; rename to ${newName}`),
-      `stderr: ${brief(err)}`,
-    );
-  }
-  const counts = LEGACY_VARS.map(
-    ([legacyName]) => err.split(`deprecated ${legacyName} in use`).length - 1,
-  );
   check(
-    "stderr: exactly ONE warning per legacy variable (once-per-process dedupe)",
-    counts.every((count) => count === 1),
-    `counts=${counts.join(",")}`,
-  );
-  check(
-    "stderr: never contains the secret VALUE (warn name, never value)",
-    !err.includes(LEGACY_SECRET),
+    "stderr: never contains the secret VALUE",
+    !err.includes(TEST_SECRET),
     "the synthetic secret leaked into stderr",
   );
   check(
     "stdout: never contains the secret VALUE",
-    !out.includes(LEGACY_SECRET),
+    !out.includes(TEST_SECRET),
     "the synthetic secret leaked into stdout",
   );
 
-  // Free the test port for sections B and C.
+  // Free the test port for sections B, C and D.
   server.child.kill("SIGTERM");
   await race(server.exited, 5_000);
   if (server.exitCode() === undefined) server.child.kill("SIGKILL");
@@ -354,39 +330,31 @@ async function sectionA(): Promise<boolean> {
 }
 
 async function sectionB(): Promise<void> {
-  section("B. zero-output guarantee: hooks/capture.mjs SILENT legacy fallback");
+  section("B. zero-output guarantee: hooks/capture.mjs stays silent");
 
   const hook = spawnCapture(process.execPath, ["hooks/capture.mjs", "PostToolUse"], {
     cwd: ROOT,
-    env: legacyOnlyEnv({
+    env: cleanEnv({
       // Nothing listens on the test port now: the POST fails, gets swallowed.
-      AGENTMEMORY_URL: `http://${HOST}:${TEST_PORT}`,
-      AGENTMEMORY_SECRET: LEGACY_SECRET,
-      AGENTMEMORY_PROJECT: "verify-env",
+      AGENT_MEMORY_URL: `http://${HOST}:${TEST_PORT}`,
+      AGENT_MEMORY_SECRET: TEST_SECRET,
+      AGENT_MEMORY_PROJECT: "verify-env",
     }),
     stdin: "pipe",
   });
   hook.child.stdin?.end(
-    JSON.stringify({ tool_name: "Read", cwd: ROOT, session_id: "verify-env-legacy" }),
+    JSON.stringify({ tool_name: "Read", cwd: ROOT, session_id: "verify-env" }),
   );
   const code = await race(hook.exited, 15_000);
   check(
-    "hook: exits 0 under legacy-only AGENTMEMORY_* env",
+    "hook: exits 0 under AGENT_MEMORY_* env",
     code === 0,
     code === undefined ? "did not exit within 15s" : `exit code ${code}`,
   );
   const out = hook.stdout();
   const err = hook.stderr();
-  check(
-    "hook: stdout EMPTY (zero-output contract holds across the legacy fallback)",
-    out.length === 0,
-    `stdout: ${brief(out)}`,
-  );
-  check(
-    "hook: stderr EMPTY — no deprecation warning ever (silent fallback is deliberate)",
-    err.length === 0,
-    `stderr: ${brief(err)}`,
-  );
+  check("hook: stdout EMPTY (zero-output contract)", out.length === 0, `stdout: ${brief(out)}`);
+  check("hook: stderr EMPTY (zero-output contract)", err.length === 0, `stderr: ${brief(err)}`);
 }
 
 async function sectionC(): Promise<void> {
@@ -434,6 +402,54 @@ async function sectionC(): Promise<void> {
     err.includes(`AGENT_MEMORY_URL=http://127.0.0.1:${REROUTE_PORT}`),
     `stderr: ${brief(err)}`,
   );
+
+  // Release the blocker so section D can bind the test port.
+  await new Promise<void>((resolve) => listener.close(() => resolve()));
+  blocker = undefined;
+}
+
+async function sectionD(): Promise<void> {
+  section("D. legacy AGENTMEMORY_* names are ignored");
+
+  const free = await portFree(TEST_PORT);
+  check(`preflight: test port ${TEST_PORT} is free`, free);
+  if (!free) return;
+
+  const staleSecret = `stale-legacy-${randomUUID()}`;
+  const server = spawnServer({
+    AGENTMEMORY_PORT: "3999",
+    AGENTMEMORY_HOST: HOST,
+    AGENTMEMORY_SECRET: staleSecret,
+  });
+  const booted = await waitUntilListening(server, BOOT_TIMEOUT_MS);
+  check(
+    `server: listens on AGENT_MEMORY_PORT=${TEST_PORT} (stale AGENTMEMORY_PORT ignored)`,
+    booted,
+    booted ? undefined : `stderr: ${brief(server.stderr())}`,
+  );
+  if (!booted) {
+    server.child.kill("SIGTERM");
+    await race(server.exited, 5_000);
+    return;
+  }
+
+  const staleAuth = await getStatus("memory/health", {
+    authorization: `Bearer ${staleSecret}`,
+  });
+  check(
+    "health: stale legacy secret does NOT authenticate (401)",
+    staleAuth === 401,
+    `got ${staleAuth}`,
+  );
+
+  const openAuth = await getStatus("memory/health", {
+    authorization: `Bearer ${TEST_SECRET}`,
+  });
+  check("health: current secret still authenticates (200)", openAuth === 200, `got ${openAuth}`);
+
+  server.child.kill("SIGTERM");
+  await race(server.exited, 5_000);
+  if (server.exitCode() === undefined) server.child.kill("SIGKILL");
 }
 
 /* ------------------------------------------------------------------ */
@@ -463,6 +479,7 @@ async function runAll(): Promise<void> {
     if (continueAfterA) {
       await sectionB();
       await sectionC();
+      await sectionD();
     }
   } finally {
     await cleanup();

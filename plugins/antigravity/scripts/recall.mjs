@@ -23,9 +23,7 @@
  *     and an on-disk TTL cache so repeated invocations inject once per TTL.
  *   - NEVER logs, echoes or returns AGENT_MEMORY_SECRET; stderr stays empty.
  *   - Config: env-only, same names as the OpenCode plugin (AGENT_MEMORY_URL /
- *     _SECRET / _PROJECT / _INJECT / _INJECT_LIMIT / _INJECT_TTL_MS). Legacy
- *     AGENTMEMORY_* equivalents are accepted as a SILENT fallback (new name
- *     wins) — deliberately no deprecation warning: stderr stays empty, ever.
+ *     _SECRET / _PROJECT / _INJECT / _INJECT_LIMIT / _INJECT_TTL_MS).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -89,26 +87,15 @@ function clean(value, max) {
     .slice(0, max);
 }
 
-const NEW_PREFIX = "AGENT_MEMORY_";
-
-/** AGENT_MEMORY_FOO -> AGENTMEMORY_FOO; passthrough for any other name. */
-function legacyName(name) {
-  return name.startsWith(NEW_PREFIX) ? `AGENTMEMORY_${name.slice(NEW_PREFIX.length)}` : name;
-}
-
 /**
- * Read one config var with a SILENT legacy fallback: AGENT_MEMORY_X -> falls
- * back to AGENTMEMORY_X when the new name is unset/empty (new name wins).
- * Deliberately prints NOTHING — this hook's contract is empty stderr on every
- * path, so the server-style deprecation warning must never happen here.
- * envBool()/envInt() route through this helper, so INJECT, INJECT_LIMIT,
- * INJECT_TTL_MS, PROJECT, URL and SECRET all inherit the fallback.
+ * Read one config var (non-empty). Prints NOTHING — this hook's contract
+ * is empty stderr on every path. envBool()/envInt() route through this
+ * helper, so INJECT, INJECT_LIMIT, INJECT_TTL_MS, PROJECT, URL and SECRET
+ * all share the same semantics.
  */
 function env(name) {
   const value = process.env[name];
-  if (typeof value === "string" && value.length > 0) return value;
-  const legacy = process.env[legacyName(name)];
-  return typeof legacy === "string" && legacy.length > 0 ? legacy : undefined;
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function envBool(name) {
@@ -372,7 +359,7 @@ async function main() {
   const base = env("AGENT_MEMORY_URL") ?? DEFAULT_BASE;
   let url;
   try {
-    url = new URL("agentmemory/smart-search", base.endsWith("/") ? base : `${base}/`);
+    url = new URL("memory/smart-search", base.endsWith("/") ? base : `${base}/`);
   } catch {
     return finish(); // misconfigured base URL: inject nothing
   }

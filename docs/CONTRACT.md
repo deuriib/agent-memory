@@ -116,22 +116,22 @@ with `1/(1+ln(tf))` weighting, then **L2-normalize**. No network, no model downl
 
 `src/store.ts` — `MemoryStore` interface; `HelixStore` implements it over `db/queries.ts`.
 
-REST (`src/server.ts`), all under `/agentmemory`, JSON in/out:
+REST (`src/server.ts`), all under `/memory`, JSON in/out:
 
 | Method | Route | Body / query | Success |
 |---|---|---|---|
-| GET | `/agentmemory/livez` | — | 200 `{"status":"ok"}` |
-| GET | `/agentmemory/health` | — | 200 `{"status":"ok","counts":{…}}` |
-| POST | `/agentmemory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
-| POST | `/agentmemory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…]}` |
-| POST | `/agentmemory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…]}` |
-| GET | `/agentmemory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
-| GET | `/agentmemory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
-| POST | `/agentmemory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
-| POST | `/agentmemory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
-| POST | `/agentmemory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
-| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required, 1..1000) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
+| GET | `/memory/livez` | — | 200 `{"status":"ok"}` |
+| GET | `/memory/health` | — | 200 `{"status":"ok","counts":{…}}` |
+| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…]}` |
+| POST | `/memory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…]}` |
+| GET | `/memory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
+| GET | `/memory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
+| POST | `/memory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
+| POST | `/memory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
+| POST | `/memory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
+| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/delete` | `{memoryId, reason}` (`reason` required, 1..1000) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `sessionId` auto-generated (`crypto.randomUUID()`) when
 absent, `limit=10`, `importance=0.5`, `origin="rest"`.
@@ -177,7 +177,7 @@ then `score = Σ 1/(60 + rank_i)` per document, sort desc, tie-break by `importa
 then `createdAt`. Each upstream failure is caught and recorded in `signals` — a
 degraded search returns results with whatever sources succeeded, never a 500.
 
-**Auth:** when `AGENT_MEMORY_SECRET` is set, every `/agentmemory/*` route except
+**Auth:** when `AGENT_MEMORY_SECRET` is set, every `/memory/*` route except
 `livez` requires `Authorization: Bearer <secret>`; mismatch → 401, no secret →
 localhost open (matches upstream default). No secret value ever logged.
 
@@ -194,14 +194,14 @@ P3.1 tools mirror the REST bodies/response shapes above.
 
 Hooks (`hooks/capture.mjs`) — plain Node ESM, no deps. Reads hook JSON on stdin,
 event name from `argv[2]`. Supported: `SessionStart`, `PostToolUse`, `Stop`.
-POSTs one observation to `/agentmemory/remember` with `origin="hook:<event>"`.
+POSTs one observation to `/memory/remember` with `origin="hook:<event>"`.
 Never prints memory content or the secret. Exit 0 always (a dead memory server must
 never block the coding agent). `AGENT_MEMORY_URL` defaults to `http://127.0.0.1:3111`
 (the REST service, matching `src/server.ts`).
 
 > **Correction (Lane A found this):** an earlier draft of this contract said the
 > hook should default to `:6969`. That is wrong — `6969` is the raw Helix
-> instance, which serves no `/agentmemory/*` route, so a POST there could never
+> instance, which serves no `/memory/*` route, so a POST there could never
 > store anything. `3111` is the REST service port.
 
 **Port conflict (environment fact, verified):** `3111/3112/3113` may already be held

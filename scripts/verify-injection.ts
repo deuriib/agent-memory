@@ -36,7 +36,7 @@ function section(title: string): void {
 }
 
 /* ------------------------------------------------------------------ */
-/* Real captured response body (README.md, /agentmemory/smart-search)  */
+/* Real captured response body (README.md, /memory/smart-search)  */
 /* ------------------------------------------------------------------ */
 const REAL_BODY = JSON.stringify({
   mode: "hybrid",
@@ -326,7 +326,7 @@ check(
 check("one request issued", hits === 1, hits);
 check(
   "relative join preserved the /prefix/ path",
-  lastPath === "/prefix/agentmemory/smart-search",
+  lastPath === "/prefix/memory/smart-search",
   lastPath,
 );
 check("bearer header sent", lastAuth === "Bearer unit-test-secret", lastAuth);
@@ -376,7 +376,7 @@ mode = "500";
 const errOutcome = await call(
   { ...liveCfg, secret: BOOM_SECRET },
   "POST",
-  "agentmemory/smart-search",
+  "memory/smart-search",
   {},
   2_000,
 );
@@ -389,7 +389,7 @@ check(
 check("500 note does not leak the URL", !JSON.stringify(errOutcome).includes(String(port)), errOutcome);
 
 const deadSecretCfg = { ...liveCfg, base: "http://127.0.0.1:1", secret: BOOM_SECRET };
-const deadOutcome = await call(deadSecretCfg, "POST", "agentmemory/smart-search", {}, 2_000);
+const deadOutcome = await call(deadSecretCfg, "POST", "memory/smart-search", {}, 2_000);
 check("connection failure surfaced as ok:false", deadOutcome.ok === false, deadOutcome);
 check(
   "connection-failure note does not leak the secret",

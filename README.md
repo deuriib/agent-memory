@@ -47,7 +47,7 @@ safe.
 
 ### Retrieval
 
-`POST /agentmemory/smart-search` runs up to three independent sources:
+`POST /memory/smart-search` runs up to three independent sources:
 
 1. **vector** — query embedded to 384 dims, `vectorSearchWith` prefiltered by
    `project`,
@@ -68,7 +68,7 @@ newest first), then `memoryId` (asc) so output is fully deterministic.
 Failures degrade instead of exploding: each source runs independently, a source
 error is caught and recorded in a `signals` list, and the remaining sources
 still contribute rows. Even an all-sources-down search returns **200** with
-empty `results` + `signals` — never a 500. `POST /agentmemory/search` is the
+empty `results` + `signals` — never a 500. `POST /memory/search` is the
 BM25-only path with the same degradation rule.
 
 ## Quick start
@@ -102,18 +102,18 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 
 | Method | Route | Body / query | Success |
 |---|---|---|---|
-| GET | `/agentmemory/livez` | — | 200 `{"status":"ok"}` |
-| GET | `/agentmemory/health` | `?project=` | 200 `{"status":"ok","counts":{…}}` |
-| POST | `/agentmemory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
-| POST | `/agentmemory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…], signals:[…]}` |
-| POST | `/agentmemory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…], signals:[…]}` |
-| GET | `/agentmemory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
-| GET | `/agentmemory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
-| POST | `/agentmemory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
-| POST | `/agentmemory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
-| POST | `/agentmemory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/agentmemory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
-| POST | `/agentmemory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
+| GET | `/memory/livez` | — | 200 `{"status":"ok"}` |
+| GET | `/memory/health` | `?project=` | 200 `{"status":"ok","counts":{…}}` |
+| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…], signals:[…]}` |
+| POST | `/memory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…], signals:[…]}` |
+| GET | `/memory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
+| GET | `/memory/sessions/:sessionId/memories` | `?project=&limit=` | 200 `{memories:[…]}` |
+| POST | `/memory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
+| POST | `/memory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
+| POST | `/memory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
+| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `limit=10`, `importance=0.5`, `origin="rest"`,
 `sessionId` auto-generated (`crypto.randomUUID()`) when absent. Every REST
@@ -128,18 +128,18 @@ matter what the caller sends).
 
 ```bash
 # liveness
-curl -s http://127.0.0.1:3111/agentmemory/livez
+curl -s http://127.0.0.1:3111/memory/livez
 # {"status":"ok"}
 
 # health with counts
-curl -s 'http://127.0.0.1:3111/agentmemory/health?project=readme'
+curl -s 'http://127.0.0.1:3111/memory/health?project=readme'
 # {"status":"ok","counts":{"memories":2,"sessions":1}}
 ```
 
 **remember** — real captured request/response:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/agentmemory/remember \
+curl -s -X POST http://127.0.0.1:3111/memory/remember \
   -H 'content-type: application/json' \
   -d '{
     "content": "Implemented JWT auth in src/middleware/auth.ts: HS256 signing, 15-minute expiry, httpOnly cookie on login.",
@@ -154,7 +154,7 @@ curl -s -X POST http://127.0.0.1:3111/agentmemory/remember \
 **search** (BM25 only):
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/agentmemory/search \
+curl -s -X POST http://127.0.0.1:3111/memory/search \
   -H 'content-type: application/json' \
   -d '{"query": "jwt token expiry", "project": "readme", "limit": 5}'
 # {"mode":"bm25","results":[{"id":"…","memoryId":"…","content":"…","score":2.54,…,"source":"text","signals":[]}],"signals":[]}
@@ -163,7 +163,7 @@ curl -s -X POST http://127.0.0.1:3111/agentmemory/search \
 **smart-search** (hybrid RRF) — real captured request/response:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3111/agentmemory/smart-search \
+curl -s -X POST http://127.0.0.1:3111/memory/smart-search \
   -H 'content-type: application/json' \
   -d '{"query":"dashboard query latency","concepts":["performance"],"project":"readme","limit":5}'
 # 200
@@ -189,15 +189,15 @@ add a per-row `signals` array, and the envelope carries top-level `signals`
 
 ```bash
 # list sessions
-curl -s 'http://127.0.0.1:3111/agentmemory/sessions?project=readme&limit=5'
+curl -s 'http://127.0.0.1:3111/memory/sessions?project=readme&limit=5'
 # {"sessions":[{"sessionId":"readme-example","project":"readme","startedAt":"2026-09-22T13:30:38.921Z","updatedAt":"2026-09-22T13:30:39.066Z"}]}
 
 # one session's memories (ordered by node insertion, newest first — see Known limitations)
-curl -s 'http://127.0.0.1:3111/agentmemory/sessions/readme-example/memories?project=readme&limit=5'
+curl -s 'http://127.0.0.1:3111/memory/sessions/readme-example/memories?project=readme&limit=5'
 # {"memories":[{"id":"109","memoryId":"0a6b1c4f-…","content":"Fixed the dashboard N+1 query…","sessionId":"readme-example","origin":"rest","importance":0.5,"createdAt":"2026-09-22T13:30:39.062Z"}, …]}
 
 # hard-delete one memory (incident edges go with it)
-curl -s -X POST http://127.0.0.1:3111/agentmemory/forget \
+curl -s -X POST http://127.0.0.1:3111/memory/forget \
   -H 'content-type: application/json' \
   -d '{"memoryId":"0d850e3b-6ec5-49bb-bd94-42a1973912fa"}'
 # {"forgotten":true}   (404 {"error":"not_found"} when the id does not exist)
@@ -207,14 +207,14 @@ curl -s -X POST http://127.0.0.1:3111/agentmemory/forget \
 
 ```bash
 # store a lesson (strict body: origin is rejected; row gets origin="lesson")
-curl -s -X POST http://127.0.0.1:3111/agentmemory/lesson \
+curl -s -X POST http://127.0.0.1:3111/memory/lesson \
   -H 'content-type: application/json' \
   -d '{"content":"Always pass an explicit reason on deletes: audit trails depend on it.","concepts":["governance"],"project":"readme","sessionId":"readme-example"}'
 # 201
 # {"id":"…","sessionId":"readme-example","project":"readme","concepts":["governance"]}
 
 # governed delete with the required reason
-curl -s -X POST http://127.0.0.1:3111/agentmemory/delete \
+curl -s -X POST http://127.0.0.1:3111/memory/delete \
   -H 'content-type: application/json' \
   -d '{"memoryId":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","reason":"superseded by docs/CONTRACT.md"}'
 # {"deleted":true,"receipt":{"memoryId":"0d850e3b-6ec5-49bb-bd94-42a1973912fa","deletedAt":"2026-09-22T13:31:02.114Z"}}
@@ -286,7 +286,7 @@ error. Never commit a real secret — set it in the server's environment.
 `hooks/capture.mjs` is plain Node ESM with **zero dependencies**. It reads the
 host's hook JSON on stdin, takes the event name from `argv[2]` (supported:
 `SessionStart`, `PostToolUse`, `Stop`), and POSTs one small observation to
-`/agentmemory/remember` with `origin="hook:<event>"`.
+`/memory/remember` with `origin="hook:<event>"`.
 
 Wiring example (Claude Code `settings.json` hooks shape):
 
@@ -329,7 +329,7 @@ Guarantees (verified):
 ## Authentication
 
 - Set `AGENT_MEMORY_SECRET` to a non-empty value to arm the guard: every
-  `/agentmemory/*` route **except `livez`** then requires
+  `/memory/*` route **except `livez`** then requires
   `Authorization: Bearer <secret>`; mismatch → `401` with body
   `{"error":"unauthorized"}`.
 - **Unset `AGENT_MEMORY_SECRET` → open localhost** (matches the upstream
@@ -371,26 +371,6 @@ when `AGENT_MEMORY_SECRET` is unset.
 The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
 environment variable.
-
-**Legacy names.** `AGENTMEMORY_SECRET`, `AGENTMEMORY_PORT`,
-`AGENTMEMORY_URL`, `AGENTMEMORY_HOST`, and `AGENTMEMORY_PROJECT` are accepted
-as **deprecated fallbacks** (the upstream spelling). When both spellings are
-set to non-empty values, the `AGENT_MEMORY_*` name wins. The servers warn on
-stderr naming the legacy variable — **never printing its value**; the capture
-hooks fall back silently to keep their zero-output guarantee.
-
-Two migration traps:
-
-- **Both set to different values (split-brain):** the new name wins with **no
-  warning** — the stale legacy value is silently ignored, and a client still
-  presenting the legacy secret then gets `401` with **no server-side signal**
-  that its secret is out of date. Set exactly one spelling.
-- **Never set a new name to an empty string** — unset it instead. Empty and
-  unset mean different things on different surfaces: the server treats
-  `AGENT_MEMORY_SECRET=""` as unset (falls back to the legacy name), while the
-  capture hooks treat any set value as authoritative — so `""` means *no
-  bearer sent*, every capture `401`s, and their zero-output guarantee swallows
-  it.
 
 ## Known limitations
 
@@ -478,7 +458,7 @@ All run clean:
   and the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
   recap (every bullet session-scoped) → handoff → governed delete with receipt
   → gone → second delete 404 → counts). Before the first write it probes
-  `POST /agentmemory/recap` and aborts (exit 1, no writes) unless the target
+  `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
