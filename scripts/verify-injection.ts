@@ -20,7 +20,7 @@ import {
   parseRecall,
   formatRecall,
   autoRecall,
-} from "../.opencode/plugins/agent-memory";
+} from "../plugins/opencode/plugins/agent-memory";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
