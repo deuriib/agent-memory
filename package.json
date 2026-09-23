@@ -1,6 +1,6 @@
 {
   "name": "agent-memory",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "Persistent memory for AI coding agents, built on HelixDB (graph + vector + BM25 hybrid retrieval)",
@@ -23,6 +23,8 @@
     "verify-lifecycle": "tsx scripts/verify-lifecycle.ts",
     "verify-capture": "tsx scripts/verify-capture.ts",
     "purge": "tsx scripts/purge.ts",
+    "eval": "tsx scripts/eval.ts",
+    "verify-skills": "tsx scripts/verify-skills.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

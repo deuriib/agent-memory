@@ -5,6 +5,50 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [v0.5.0] — 2026-09-23
+
+### Added
+
+- **Derived confidence** (P1.4 / REQ-P1-4): `importance` omitted by the caller
+  is now computed at write time from provenance + structure
+  (`deriveWriteImportance`: lesson 0.75 / `hook:*` 0.55 / else 0.5 base +
+  0.025·min(concepts,8), clamp01) instead of defaulting to `0.5`; ranking-time
+  `confidenceBoost` (recall ledger, cap 10k, per-process) applied AFTER decay
+  on the fused tie-break — stored `importance` is never rewritten; the OpenCode
+  plugin no longer pins captures at a client-side 0.5 (engineering, P1)
+- **Tier-1 consolidation** (P1.2 / REQ-P1-2): `remember` merges
+  near-duplicates — `Jaccard(tokens) ≥ AGENT_MEMORY_MERGE_JACCARD` (default
+  0.9, fail-closed OFF on bad config) over a `searchByText` probe under the
+  dedup FIFO lock: content concatenated (substring guard closes the re-merge
+  loop), `embedding`/`dedupKey` rewritten via `updateMemoryContent`,
+  incoming's concepts re-linked from the survivor, survivor `memoryId` stable,
+  response gains `consolidated: true`; `probe4` proved live that `setProperty`
+  refreshes text+vector indexes (engineering, P1)
+- **Eval harness** (P1.5 / REQ-P1-5): adapter-pluggable `EvalClient`
+  (`scripts/eval.ts`, `EVAL_MODE=rest`), deterministic in-repo corpus
+  (`eval/corpus.ts`, 40 docs / 15 queries with qrels, zero network), scores
+  R@5/R@10/MRR@10/nDCG@10 for bm25 + hybrid in project `agent-memory-eval`,
+  writes our own numbers to `docs/benchmarks/SCORECARD.md` — upstream's
+  benchmark numbers are never claimed (engineering/ops, P1)
+- **Skill set** (P3.2 / REQ-P3-2): 8 invocable skills — `recall`, `remember`,
+  `recap`, `handoff`, `forget`, `lesson`, `commit-context`, `session-history`
+  — contract-accurate route/tool tables + examples, indexed by
+  `skills/memory/SKILL.md` (whose stale "7 tools" became all 11); plus
+  `scripts/verify-skills.ts`: 73 structural checks + 46 live route round-trips
+  (engineering/docs, P3)
+
+### Changed
+
+- `docs/CONTRACT.md` **v1.1 → v1.2**: derived-importance default replaces
+  `importance=0.5`, `RememberResult.consolidated`, tier-1 consolidation +
+  `AGENT_MEMORY_MERGE_JACCARD` semantics, recall-boost tie-break order,
+  `updateMemoryContent` in §2, tier-1 out of §4's do-not-build, §5 bar (86 /
+  212 / 119 / probe4 / eval) (engineering, P1+P3.2)
+- `scripts/verify.ts` bar 152 → **212 passed**; `verify-lifecycle` 39 → **86
+  passed** (confidence + consolidation goldens) (engineering, P1)
+- Version 0.4.0 → 0.5.0 across `package.json`, lockfile, plugin `VERSION`,
+  MCP server identifier, and README badge (engineering, P1+P3.2)
+
 ## [v0.4.0] — 2026-09-23
 
 ### Added

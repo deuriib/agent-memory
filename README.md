@@ -1,6 +1,6 @@
 # agent-memory
 
-[![Version](https://img.shields.io/badge/version-v0.4.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.5.0-blue.svg)](CHANGELOG.md)
 
 Persistent memory for AI coding agents — a v1 replica of
 [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) rebuilt on
@@ -96,8 +96,10 @@ npm run bootstrap               # create the 8 indexes, poll until ready
 npm run demo                    # seed 3 sessions, run keyword/semantic/hybrid searches
 npm run dev                     # REST server on http://127.0.0.1:3111
 npm run verify                  # end-to-end verification against the running server
-npm run verify-lifecycle        # pure dedupKey/decay/TTL/concepts checks (no server)
+npm run verify-lifecycle        # pure dedupKey/decay/TTL/concepts/confidence/merge checks (no server)
 npm run verify-capture          # 7-event hook E2E vs a local counting server (no Helix)
+npm run verify-skills           # structural + live round-trip of the 8 skills (running server)
+npm run eval                    # retrieval scorecard -> docs/benchmarks/SCORECARD.md (running server)
 ```
 
 `--disk --persist` writes `storage = "disk"` into `helix.toml`, and that key —
@@ -107,7 +109,8 @@ whose `helix.toml` has no `storage = "disk"` key runs memory storage, and
 every restart wipes it.
 
 Scripts (from `package.json`): `bootstrap`, `dev`, `demo`, `verify`,
-`verify-env`, `verify-lifecycle`, `verify-capture`, `purge`, `typecheck`.
+`verify-env`, `verify-lifecycle`, `verify-capture`, `verify-skills`, `eval`,
+`purge`, `typecheck`.
 
 ## REST API
 
@@ -410,6 +413,7 @@ when `AGENT_MEMORY_SECRET` is unset.
 | `AGENT_MEMORY_INJECT_TTL_MS` | `45000` | OpenCode plugin | Auto-recall cache TTL in ms, bounding network cost inside the request hot path (`1000`–`600000`) |
 | `AGENT_MEMORY_TTL_DAYS` | *(unset = off)* | REST + MCP searches, store | Hide memories older than N days from search results (reported as a `ttl:` signal); must parse to a finite number > 0, else OFF |
 | `AGENT_MEMORY_DECAY_LAMBDA` | *(unset = off)* | REST + MCP searches, store | Per-day decay rate λ for the fused-row tie-break: weight = `importance · e^(−λ·ageDays)`; invalid/≤ 0 → decay OFF; stored `importance` is never modified |
+| `AGENT_MEMORY_MERGE_JACCARD` | `0.9` | REST + MCP `remember`, store | Tier-1 consolidation: near-duplicates with `Jaccard(tokens) ≥ threshold` merge into one survivor (content concatenated, never discarded); parseable in (0,1) selects the threshold, anything else (≤0, ≥1, garbage) → consolidation OFF (fail-closed) |
 
 The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
@@ -470,11 +474,13 @@ Stated plainly — these are real, not hypothetical:
    with the upstream, but it does **not** understand true semantic synonyms.
    Swap `src/embed.ts` for a real embedding model when semantics matter.
 
-5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): 4-tier
-   consolidation, LLM auto-compress, viewer UI, session replay, JSONL import,
-   multi-agent adapters (20 upstream), and the full 54-tool MCP surface.
-   (Read-time decay + TTL + `purge.ts` shipped in v0.4.0 — "corte A"; recall-based
-   decay and consolidation tiers are still out of scope.)
+5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): consolidation
+   tiers 2–4 (upstream's full 4-tier model), LLM auto-compress, viewer UI,
+   session replay, JSONL import, multi-agent adapters (20 upstream), and the
+   full 54-tool MCP surface.
+   (Read-time decay + TTL + `purge.ts` shipped in v0.4.0 — "corte A";
+   tier-1 near-duplicate consolidation, derived confidence and the eval
+   harness shipped in v0.5.0 — the remaining tiers stay out of scope.)
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
@@ -496,29 +502,37 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`152 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`212 passed, 0 failed` →
   `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
   → smart-search hits → sessions list → session memories → forget → gone →
   counts reflect it, plus embedder determinism, defaults, boundary validation,
   the P3.1 round-trip: lesson → search hits with `origin:"lesson"` →
   recap (every bullet session-scoped) → handoff → governed delete with receipt
-  → gone → second delete 404 → counts, and the v1.1 P1.3/P1.6 sections:
+  → gone → second delete 404 → counts, the v1.1 P1.3/P1.6 sections:
   derived default concepts ≤8 → graph-branch proof (fused score == 3/61) →
   content-hash dedup round-trip: same id + `deduped:true` + counts stable,
   cross-project distinct, concurrent race → same id → dedup × hook first-wins:
   same fixed hook content in a NEW session → same id, no new row, no Session
-  node for that session). Before the first write it probes
+  node for that session, and the v1.2 sections: derived importance
+  (no-caller-value == `deriveWriteImportance(origin, concepts.length)`, explicit
+  wins, recall-lift ordering) + tier-1 consolidation (3 near-dup variants →
+  1 row with `consolidated:true`, each variant's wording recalls it,
+  healthCount +1, merged-text re-save → exact-dedup loop guard). Before the
+  first write it probes
   `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`39 passed` →
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`86 passed` →
   `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
   half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
   concept extraction determinism + bounds, `oneLine` CWE-117 render guard
   (collapses `\n`/`\r`/tabs to single spaces, idempotent, non-corrupting
-  for names/digits/ISO/booleans). No Helix, no server — CI-runnable.
+  for names/digits/ISO/booleans), plus §F derived confidence
+  (deriveWriteImportance goldens, confidenceBoost monotonic/clamp, recall
+  ledger) and §G consolidation (jaccard, threshold fail-closed OFF, substring
+  guard). No Helix, no server — CI-runnable.
 - `npm run verify-capture` (`scripts/verify-capture.ts`) — **`115 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
   silence, prompt-text privacy canary, negatives (unsupported event, malformed
@@ -534,6 +548,21 @@ All run clean:
 - `npx tsx scripts/probe3.ts` — **`OVERALL: GREEN`**: live-instance proof for
   dedup lookup round-trip, application-side (non-)uniqueness, and `ltParam`
   strict older-than on `dateTime` (feeds `purge.ts`).
+- `npx tsx scripts/probe4.ts` — **`12 passed`**: live proof that
+  `updateMemoryContent`'s `setProperty` refreshes BOTH the text and vector
+  indexes (verdict A — the tier-1 merge ships in-place, survivor id stable).
+- `npm run verify-skills` (`scripts/verify-skills.ts`) — **`119 checks` →
+  `VERIFY SKILLS PASS`**: 73 structural checks across the 8
+  `skills/*/SKILL.md` (frontmatter, name == dir, contract route + MCP tool
+  per skill, index links, secret patterns) + 46 live round-trips exercising
+  every skill's frozen route under project `verify-skills`, behind the same
+  identity guard as `verify`.
+- `npm run eval` (`scripts/eval.ts`) — **`EVAL PASS`**: seeds the in-repo
+  corpus (`eval/corpus.ts`, 40 docs / 15 queries, project
+  `agent-memory-eval`, idempotent via dedup) and writes our own R@5 / R@10 /
+  MRR@10 / nDCG@10 for bm25 + hybrid to
+  [`docs/benchmarks/SCORECARD.md`](docs/benchmarks/SCORECARD.md) — upstream's
+  published numbers are never claimed as ours.
 - `npx tsx scripts/purge.ts --dry-run` — prints would-delete count + ids and
   deletes nothing; missing `--days` → usage + exit 2 (fail closed).
 - `npm run demo` — `demo OK`: BM25 hits at scores 2.54 / 1.59 / 0.88, vector
@@ -550,6 +579,18 @@ All run clean:
   up; all 7 events work; only the allowlisted summary is stored (planted path
   `/tmp/secret-should-not-be-captured.txt` and a prompt canary both confirmed
   NOT stored).
+
+## Skills
+
+Invocable agent skills live under [`skills/`](skills/), each mapping one job to
+the frozen REST + MCP surface (the frontmatter `description` is what an agent
+matches on — see [`skills/memory/SKILL.md`](skills/memory/SKILL.md) for the
+index): `recall` (hybrid/BM25 recall), `remember` (save + dedup/consolidation
+semantics), `recap`, `handoff`, `forget` (permanent delete) / governance
+delete, `lesson` (origin-forced), `commit-context` (capture durable state
+before a commit), and `session-history` (sessions → memories → recap).
+`npm run verify-skills` structurally validates all 8 and live round-trips
+every route against a running server.
 
 ## Contributing & security
 

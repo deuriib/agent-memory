@@ -60,7 +60,7 @@
  */
 import { Plugin } from "@opencode/plugin";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -70,7 +70,6 @@ const DEFAULT_BASE = "http://127.0.0.1:3111";
 const DEFAULT_PROJECT = "default";
 const DEFAULT_LIMIT = 10;
 const DEFAULT_ORIGIN = "opencode-plugin";
-const DEFAULT_IMPORTANCE = 0.5;
 const TIMEOUT_MS = 2_000;
 
 /** Auto-recall runs on every model request — tighter than the tool cap. */
@@ -672,7 +671,8 @@ export default Plugin.define({
               type: "number",
               minimum: 0,
               maximum: 1,
-              description: "0..1 tie-break weight used when fused ranks are equal. Defaults to 0.5.",
+              description:
+                "0..1 tie-break weight used when fused ranks are equal. Omitted → the server derives it from provenance (origin) + derived concepts.",
             },
           },
           required: ["content"],
@@ -690,7 +690,10 @@ export default Plugin.define({
           const project = str(input.project, MAX_PROJECT) ?? cfg.project;
           const sessionId = str(input.sessionId, MAX_SESSION) ?? String(toolContext.sessionID);
           const origin = str(input.origin, MAX_ORIGIN) ?? DEFAULT_ORIGIN;
-          const importance = fraction(input.importance, 0, 1) ?? DEFAULT_IMPORTANCE;
+          // REQ-P1-4: omit `importance` when the caller gave none — the server
+          // derives it from provenance + derived concepts (a plugin-side 0.5
+          // default would pin every capture at caller-supplied 0.5 forever).
+          const importance = fraction(input.importance, 0, 1);
 
           const outcome = await call(cfg, "POST", "memory/remember", {
             content,
@@ -698,7 +701,7 @@ export default Plugin.define({
             project,
             sessionId,
             origin,
-            importance,
+            ...(importance !== undefined ? { importance } : {}),
           });
           return outcome.ok ? ok(outcome.body) : failed(outcome.note);
         },

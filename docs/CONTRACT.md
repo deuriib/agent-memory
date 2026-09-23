@@ -1,4 +1,4 @@
-# agent-memory — v1.1 Frozen Contract
+# agent-memory — v1.2 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
@@ -14,6 +14,13 @@ TTL filter + `purge.ts`, 7 supported hook events with per-event content
 allowlist, plugin `tool.execute.before`. §4 drops "Decay" from the
 out-of-scope list; §5 grows two local suites. Everything below reflects the
 shipped code.
+
+**v1.2 amendment (2026-09-23, P1-remainder + P3.2 lane):** `importance` is now
+DERIVED when the caller omits it (P1.4 — replaces the `0.5` default), the fused
+tie-break gains a recall boost AFTER decay (in-process recall ledger, P1.4),
+`RememberResult` gains `consolidated` with tier-1 near-duplicate consolidation
+under `AGENT_MEMORY_MERGE_JACCARD` (P1.2), `updateMemoryContent()` joins §2,
+and §5 grows `probe4` + `verify-skills` + the eval harness scorecard.
 
 ## 0. Verified facts (do not re-litigate)
 
@@ -53,7 +60,8 @@ Node properties (top-level — indexed/searchable fields must not be nested):
   `origin` (string), `importance` (f64, 0..1), `createdAt` (dateTime), `embedding` (f32[384]),
   `dedupKey` (string, unique index #8; `sha256(project + "\n" + normalize(content))`
   where normalize = lowercase + collapse whitespace runs + trim — added in v1.1,
-  legacy rows may lack it)
+  legacy rows may lack it; v1.2 tier-1 consolidation REWRITES it on the survivor
+  to the hash of the merged content)
 - `Concept`: `name` (string, unique), `project` (string)
 
 `project` is the tenant/scope value for every vector and text index. Search routes
@@ -76,6 +84,7 @@ healthCount():     ReadBatch          // params: project (string)  -> memory/ses
 findMemoryByDedupKey(): ReadBatch     // v1.1, §3: params: dedupKey (string) -> memory row
 listExpired():     ReadBatch          // v1.1, §3: params: project (string), cutoff (dateTime), limit (i64)
 listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> RAW Session rows {project} (dedup is the CALLER's job — purge.ts Set)
+updateMemoryContent(): WriteBatch     // v1.2, §3: params: memoryId (string), content (string), embedding (array f32), dedupKey (string), concepts (array object), project (string) — anchors by memoryId, setProperty content/embedding/dedupKey under varNotEmpty, re-links `concepts` from the "memory" var via conceptBody(), returns ["updated","memory"]
 ```
 
 Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
@@ -145,7 +154,7 @@ REST (`src/server.ts`), all under `/memory`, JSON in/out:
 |---|---|---|---|
 | GET | `/memory/livez` | — | 200 `{"status":"ok"}` |
 | GET | `/memory/health` | — | 200 `{"status":"ok","counts":{…}}` |
-| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts, deduped, consolidated}` |
 | POST | `/memory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…]}` |
 | POST | `/memory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…]}` |
 | GET | `/memory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
@@ -153,11 +162,19 @@ REST (`src/server.ts`), all under `/memory`, JSON in/out:
 | POST | `/memory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
 | POST | `/memory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
 | POST | `/memory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts}` |
+| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts, deduped, consolidated}` |
 | POST | `/memory/delete` | `{memoryId, reason}` (`reason` required, 1..1000) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
 Defaults: `project="default"`, `sessionId` auto-generated (`crypto.randomUUID()`) when
-absent, `limit=10`, `importance=0.5`, `origin="rest"`.
+absent, `limit=10`, `origin="rest"`.
+
+**v1.2 derived importance (P1.4):** when the caller OMITS `importance`, the
+store derives it at write time — `deriveWriteImportance(origin,
+concepts.length)` = base (origin `lesson` → 0.75, `hook:*` → 0.55, else → 0.5)
++ `0.025 · min(concepts.length, 8)`, clamped 0..1 (pure, deterministic,
+`src/confidence.ts`). An explicit caller value ALWAYS wins and is stored
+verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
+`rest`-origin BASE before the concept bonus.
 
 **v1.1 remember semantics** (`src/store.ts` + `src/concepts.ts` + `src/lifecycle.ts`):
 
@@ -198,6 +215,38 @@ absent, `limit=10`, `importance=0.5`, `origin="rest"`.
 - **`RememberResult` gains `deduped: boolean`** (additive): `{id, sessionId,
   project, concepts, deduped}`. First write → `deduped:false`; duplicate hit →
   `deduped:true` + existing id. Both REST (201) and MCP (`memory_save`) echo it.
+- **`RememberResult` gains `consolidated: boolean`** (v1.2, additive): the 201
+  body is `{id, sessionId, project, concepts, deduped, consolidated}` —
+  `consolidated:true` means this save merged into an existing near-duplicate
+  survivor (see tier-1 below) and NO new row was created; `id` is the
+  SURVIVOR's id, echoing the REQUEST's sessionId/concepts (dedup first-wins
+  echo rule).
+- **Tier-1 consolidation (v1.2, P1.2):** after the exact-dedup pre-check
+  misses, `remember` probes `searchByText(content, k=20)` (project-scoped;
+  probe ERRORS PROPAGATE — fail-closed, same posture as the dedup pre-check:
+  a broken probe never lets a possible near-duplicate through) and merges:
+  candidates with `Jaccard(tokenize(a), tokenize(b)) ≥
+  AGENT_MEMORY_MERGE_JACCARD` qualify; the survivor is chosen deterministically
+  (jaccard DESC → importance DESC → memoryId ASC, locale-free). The merge runs
+  under the same per-key FIFO lock: content is CONCATENATED (never discarded —
+  substring guard: if the incoming is already contained in the survivor the
+  update is skipped entirely, which also closes the re-merge loop when someone
+  later saves the concatenated text), `embedding` + `dedupKey` are rewritten to
+  the merged content, the incoming's effective concepts (explicit wins, else
+  derived) are re-linked FROM the survivor via `updateMemoryContent`, and NO
+  Session node is created (dedup first-wins family — sessions materialize on
+  novel writes only). Env `AGENT_MEMORY_MERGE_JACCARD`: ABSENT → 0.9 (ON),
+  parseable in (0,1) → that threshold, everything else (≤0, ≥1, non-finite) →
+  OFF fail-closed (no probe, straight to insert). probe4 proved on the live
+  instance that `setProperty` refreshes BOTH the text and vector indexes.
+- **Derived recall confidence (v1.2, P1.4, ranking-time):** both search paths
+  call `noteRecall(memoryId)` for every RETURNED row; the fused tie-break (see
+  fusion paragraph below) uses `confidenceBoost(decayedImportance(…),
+  recallCount)` — decay FIRST, then `boost = clamp01(i + 0.2·n/(n+1))` over an
+  in-process recall ledger (Map, cap 10 000 entries — cleared on overflow,
+  best-effort, PER-PROCESS: counts reset on restart and are not shared across
+  writers). Stored/`importance` shown to callers is never rewritten — ranking
+  inputs (decay + boost) influence ORDER only.
 - **Decay (P1.1 corte A):** the fused-row tie-break uses the DECAYED importance
   `importance · e^(−λ · ageDays)` (`decayedImportance`, λ from
   `AGENT_MEMORY_DECAY_LAMBDA`, per-day rate; absent/invalid/≤0 → factor 1 = OFF).
@@ -268,9 +317,12 @@ raw vector hit's `score` is `0` until RRF assigns one. `source` is
 run `searchByVector`, `searchByText`, `graphSearch` (when `concepts` present),
 then `score = Σ 1/(60 + rank_i)` per document, sort desc, tie-break by DECAYED
 importance (v1.1: `importance · e^(−λ·ageDays)`, see above — λ=0/off means plain
-`importance`), then `createdAt`. TTL filtering runs on both search paths before
-return. Each upstream failure is caught and recorded in `signals` — a
-degraded search returns results with whatever sources succeeded, never a 500.
+`importance`) and then RECALL-BOOSTED (v1.2: `confidenceBoost(…, recallCount)`
+applied AFTER decay, see the v1.2 bullets — one fixed clock + one ledger read
+per search), then `createdAt`, then `memoryId`. TTL filtering runs on both
+search paths before return. Each upstream failure is caught and recorded in
+`signals` — a degraded search returns results with whatever sources succeeded,
+never a 500.
 
 **Auth:** when `AGENT_MEMORY_SECRET` is set, every `/memory/*` route except
 `livez` requires `Authorization: Bearer <secret>`; mismatch → 401, no secret →
@@ -344,27 +396,43 @@ N+1 query fix, rate limiting) then runs keyword + semantic searches and prints h
 
 ## 4. Out of scope for v1 (do not build)
 
-~~Decay~~ (added v1.1 corte A: read-time decay + TTL + `purge.ts` — consolidation
-tiers remain out), 4-tier consolidation, LLM auto-compress, viewer UI, Replay,
-JSONL import, 20 agent adapters, full 54-tool MCP surface.
+~~Decay~~ (added v1.1 corte A: read-time decay + TTL + `purge.ts`),
+~~tier-1 near-duplicate consolidation~~ (added v1.2: `AGENT_MEMORY_MERGE_JACCARD`
+merge — tiers 2–4 of upstream's consolidation, LLM auto-compress, viewer UI,
+Replay, JSONL import, 20 agent adapters, full 54-tool MCP surface remain out).
 
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**39 passed** — pure: dedupKey/hash golden,
+`scripts/verify-lifecycle.ts` green (**86 passed** — pure: dedupKey/hash golden,
 decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
-render guard). 
+render guard, **§F derived confidence** (deriveWriteImportance goldens,
+confidenceBoost monotonic/clamp, recall ledger), **§G consolidation**
+(jaccard/threshold-fail-closed/substring guard)).
 `scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helper).
-`scripts/verify.ts` end-to-end green (**152 passed**): health → remember (with
+`scripts/verify.ts` end-to-end green (**212 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
 search hits it → recap contains it → handoff contains it → governed delete (with
-reason) → gone → second delete 404 → `healthCount()` reflects it → plus v1.1:
-derived default concepts ≤8 → graph-branch proof (fused score == 3/61) → dedup
+reason) → gone → second delete 404 → `healthCount()` reflects it → derived
+default concepts ≤8 → graph-branch proof (fused score == 3/61) → dedup
 round-trip (same id, `deduped:true`, cross-project distinct, race → same id) →
-dedup × hook first-wins: same fixed hook content in a new session → same id,
-no new row, no Session node for the new session (F4).
+dedup × hook first-wins (F4) → **§O derived confidence** (importance without a
+caller value == `deriveWriteImportance(origin, echoedConcepts.length)`, explicit
+wins, recall-lift ordering via the ledger) → **§P consolidation** (3 variants →
+1 row with `consolidated:true`, each variant's wording recalls the survivor,
+healthCount +1, re-save of the merged text → exact-dedup loop guard).
+`scripts/verify-skills.ts` green (**119 checks**: 73 structural across the 8
+`skills/*/SKILL.md` + 46 live round-trips — every skill's frozen route exercised
+under project `verify-skills` behind the `verify.ts` identity guard).
+`scripts/probe4.ts` GREEN (**12 passed** — live proof that
+`updateMemoryContent`'s `setProperty` refreshes BOTH text and vector indexes:
+verdict A).
+`scripts/eval.ts` (**EVAL PASS**) seeds the in-repo corpus (`eval/corpus.ts`,
+40 docs / 15 queries, project `agent-memory-eval`) and writes our own numbers
+(R@5 / R@10 / MRR@10 / nDCG@10, bm25 + hybrid) to
+`docs/benchmarks/SCORECARD.md` — upstream's published numbers are never claimed.
 `scripts/verify-injection.ts` (**73**), `scripts/verify-env.ts` (**21**) green.
 `scripts/probe3.ts` GREEN. `scripts/purge.ts --dry-run` + usage guard exit 2.
 Demo green.
