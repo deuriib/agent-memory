@@ -6,3 +6,18 @@
 # All default rules remain active everywhere else — proven by the
 # planted-secret test recorded in commit ci(gitleaks) below.
 edd07e54a069a21d77e7fcbf5fd4b3822d3dd3b7:docs/specs/40_workspace/quality-gate/P0/evidence/p0-4-restart-canary.log:generic-api-key:2
+
+# Reviewed false positives (2026-09-23, ship-release v0.4.0 / W1 first CI run):
+# scripts/verify-lifecycle.ts matches rule generic-api-key at lines 131/132
+# as introduced by commit 101e063 (now 132/133 after later insertions) —
+# GOLDEN_KEY_B and GOLDEN_KEY_DIFF are sha256 golden TEST VECTORS for the
+# public dedupKey scheme sha256(project + "\n" + normalize(content)).
+# Proof of non-secrecy: both recomputed byte-exact from the public test
+# inputs — sha256("proj-b\nhello world today") == GOLDEN_KEY_B and
+# sha256("proj-a\ndifferent content entirely") == GOLDEN_KEY_DIFF (GOLDEN_KEY_A
+# same provenance); they authenticate nothing and no secret material exists.
+# Suppressions are scoped to these exact fingerprints (commit:file:rule:line).
+# All default rules remain active everywhere else — proven by the
+# planted-secret test recorded in P0.
+101e06333e8e5ee985d0e7b8c47e2a8ee08ca28a:scripts/verify-lifecycle.ts:generic-api-key:131
+101e06333e8e5ee985d0e7b8c47e2a8ee08ca28a:scripts/verify-lifecycle.ts:generic-api-key:132
