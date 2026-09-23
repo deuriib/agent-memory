@@ -16,7 +16,7 @@
 | Implementation | `src/concepts.ts` (b27364b) · `src/lifecycle.ts` (101e063, 45380b5, 9210208) · `src/logline.ts` (83e2f3a) · `src/store.ts` (b27364b, 101e063, 9210208) · `src/search.ts` (45380b5) · `db/queries.ts` (101e063, 45380b5) · `hooks/capture.mjs` (8fbd795) · `plugins/opencode/plugins/agent-memory.ts` (8fbd795, 6f7f708) · `scripts/purge.ts` (45380b5, 9210208, 83e2f3a) | done |
 | Tests / Evidence | `scripts/verify.ts` **152/152** (own run, our server `AGENT_MEMORY_PORT=3151`, stopped after) · `verify-lifecycle` **39/39** · `verify-capture` **115/115** · `verify-injection` **73/73 ok, 0 fail** · `verify-env` **21/21** · `scripts/probe3.ts` GREEN (b2/d1/d2/d3/a3-2/(e) present in file; plan/gate run logs) · `npm run typecheck` exit 0 · no-any/no-TODO grep = 0 matches · purge usage-guard exit 2 + dry-run `would-delete=1` (re-run this session) · `bootstrap` 8 indexes · CI workflow `.github/workflows/ci.yml` (verify-lifecycle + verify-capture + secret-scan) | done |
 | Docs | `docs/CONTRACT.md` v1.1 · `README.md` (env vars, purge, 7 events, badge) · `CHANGELOG.md` v0.4.0 · `ROADMAP.md` P1.1/P1.3/P1.6/P2.1 ticks · `TEST_MATRIX.md` (T-101…T-108) · `IMPLEMENTATION_PLAN.md` (steps 1–7, gates checked) | done |
-| Domain artifact | `docs/specs/40_workspace/quality-gate/P1-P21/GATE_REPORT.md` (OPEN) + 9 reviewer artifacts (same dir) + W1/W2 waiver rows + `docs/adr/ADR-0001-application-side-dedup-uniqueness.md` | done |
+| Domain artifact | `docs/specs/50_archive/P1-P21/GATE_REPORT.md` (OPEN) + 9 reviewer artifacts (same dir) + W1/W2 waiver rows + `docs/adr/ADR-0001-application-side-dedup-uniqueness.md` | done |
 
 ## Definition of Done Checklist
 
@@ -84,7 +84,7 @@ DoD annex — **Common (all 8 domains)**, evidence per box:
 
 **Documentation:**
 
-- [x] API docs updated / domain artifact filed — CONTRACT v1.1 (frozen names unchanged, v1.1 additions documented §0–§3) + README; gate artifacts in agreed location `docs/specs/40_workspace/quality-gate/P1-P21/`.
+- [x] API docs updated / domain artifact filed — CONTRACT v1.1 (frozen names unchanged, v1.1 additions documented §0–§3) + README; gate artifacts in agreed location `docs/specs/50_archive/P1-P21/`.
 - [x] Changelog entry added — `CHANGELOG.md` `[v0.4.0] — 2026-09-23`.
 - [x] ADR written (architecture contract changed) — `docs/adr/ADR-0001-application-side-dedup-uniqueness.md` (CONTRACT v1→v1.1, probe3 b2/d1/d2/d3 evidence).
 
@@ -103,8 +103,8 @@ Zero PII/secrets/tokens/credentials in this HANDOFF and ADR — allowlisted evid
 
 `frame-ship:ship-release` — version **0.4.0** lockstep already done (package.json, lockfile, `src/mcp.ts` L375, plugin `VERSION` L63, README badge) and the CHANGELOG v0.4.0 entry exists. What they need:
 
-- Gate report (OPEN, 9/9, COND 10/10, W1/W2 pass): `docs/specs/40_workspace/quality-gate/P1-P21/GATE_REPORT.md`.
-- This handoff: `docs/specs/40_workspace/quality-gate/P1-P21/HANDOFF.md`.
+- Gate report (OPEN, 9/9, COND 10/10, W1/W2 pass): `docs/specs/50_archive/P1-P21/GATE_REPORT.md`.
+- This handoff: `docs/specs/50_archive/P1-P21/HANDOFF.md`.
 - Release-notes draft + per-step rollback points live in `IMPLEMENTATION_PLAN.md` (Rollback Points L43–54).
 - **Confirm W1 on push:** first CI `secret-scan` green at/after `9210208` before merge (owner: orchestrator).
 - ADR-0001 filed for the contract change: `docs/adr/ADR-0001-application-side-dedup-uniqueness.md`.

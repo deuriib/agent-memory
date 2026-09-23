@@ -51,7 +51,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   (F4) sections); README route prefix corrected to
   `/memory`, hooks/config/verification docs refreshed (engineering, P1+P2.1)
 - Version 0.3.0 → 0.4.0 across `package.json`, lockfile, plugin `VERSION`,
-  MCP server identifier, and README badge (engineering, this release)
+  MCP server identifier, and README badge (engineering, P1+P2.1)
+
+### Fixed
+
+- Purge governance/audit lines: CWE-117 newline forgery — print-side
+  `oneLine()` normalizer extracted to `src/logline.ts` + 5 CI assertions in
+  `verify-lifecycle` section E (security, P1+P2.1 gate COND-004 / COND-007)
+- Dedup store pre-check fails closed on shape drift — transport error or a
+  response missing the frozen `memory` return throws instead of reading as a
+  miss (engineering, P1+P2.1 gate resilience F1)
+- Purge failure paths write an allowlisted single-line `status=partial` audit
+  record before exit 1 when deletions happened, plus per-batch
+  `purge-progress` (automation/ops, P1+P2.1 gate COND-006)
+- Doc-truth corrections: falsified `contentHash` docstring, nonexistent-test
+  citations, plan/README false-pointer cells, `dedayImportance` →
+  `decayedImportance` typo — swept to 0 instances across all six docs
+  (engineering, P1+P2.1 gate COND-005 / COND-008 / COND-010)
 
 ## [v0.3.0] — 2026-09-22
 

@@ -1,3 +1,189 @@
+# Release Notes: v0.4.0
+
+**Date:** 2026-09-23
+**Release Manager:** orchestrator (frame-ship lane; ship mechanics executed by
+the operations function per ship-release role binding — stated as the role
+assumption for this lane)
+**Specs Included:** P1 (P1.1 + P1.3 + P1.6) + P2.1 — `ROADMAP.md` §P1
+"Recall quality & lifecycle" + §P2 "Capture breadth"
+**Domains-Touched:** engineering, security, automation/ops, data lens
+(finance / legal / marketing / people / revenue: **N/A** — code+docs lane, no
+such surface in the diff)
+**Ship Type:** deploy (local library/server release; no external deployment
+target; no breaking changes → README/INSTALL/MIGRATION templates cited, not
+required)
+
+## Highlights
+
+- **Recall quality** — explicit `concepts` win verbatim, and a save without
+  them now derives a deterministic top-8 concept set, so plain saves feed the
+  concept-graph branch of hybrid search — proven live: the derived-concepts
+  graph branch contributes fused score == **3/61** (`scripts/verify.ts`
+  D-section).
+- **Write-side dedup, first-wins** — saving the same fact twice returns the
+  existing id with `deduped:true` and creates one retrievable row; Helix does
+  not enforce unique indexes, so uniqueness is application-side under a
+  per-key FIFO lock — decision record:
+  `docs/adr/ADR-0001-application-side-dedup-uniqueness.md`.
+- **Memory lifecycle (corte A, opt-in)** — TTL hides expired rows from both
+  searches with an explicit `ttl: hidden N expired rows` signal; read-time
+  decay (`importance · e^(−λ·ageDays)`) is a fused tie-break only — stored
+  `importance` never mutates; `scripts/purge.ts` is the fail-closed governance
+  CLI (`--days/--project|all/--dry-run`). Both env knobs default **OFF**.
+- **Hook breadth** — all 7 `capture.mjs` events plus the OpenCode plugin's
+  `tool.execute.before` observe; prompt text is **never** stored (privacy
+  canary asserted non-stored, `verify-capture` 115/115).
+- **Quality gate OPEN** — 9/9 dedicated reviewers pass after 3 remediation
+  rounds, 10/10 conditions cleared, waivers W1/W2 recorded with the
+  three-block bar; final evidence: typecheck 0 · verify **152/152** ·
+  lifecycle **39/39** · capture **115/115** · injection **73** · env **21/21** ·
+  probe3 GREEN · bootstrap 8 indexes · purge dry-run + usage guards exit 2 ·
+  demo OK.
+
+## Changes
+
+### Features
+
+- Auto concept extraction: `src/concepts.ts` (deterministic top-8, tf → lex
+  tie-break, stopwords dropped) + `src/embed.ts` `tokenize` export; derivation
+  only when `concepts` is absent (explicit wins verbatim) (P1.3 / REQ-P1-3,
+  engineering)
+- Write-side dedup: `dedupKey = sha256(project + "\n" + normalize(content))`
+  property + index #8 + `findMemoryByDedupKey` + `remember()` pre-check under
+  the per-key in-process FIFO lock; a hit returns the existing row with the
+  additive `deduped:true` field (P1.6 / REQ-P1-6, engineering)
+- Memory lifecycle: `src/lifecycle.ts` decay/TTL pure functions + fused
+  tie-break integration in `src/search.ts` + `scripts/purge.ts` governance
+  CLI (`AGENT_MEMORY_TTL_DAYS` / `AGENT_MEMORY_DECAY_LAMBDA`, default OFF)  (P1.1 / REQ-P1-1, engineering/ops)
+- Hook coverage: `capture.mjs` 3 → 7 events (`PostToolUseFailure`,
+  `PreCompact`, `SessionEnd`, `UserPromptSubmit`) + OpenCode plugin
+  `tool.execute.before` observe (fire-and-forget, own `memory*` tools
+  skipped) (P2.1 / REQ-P2-1, engineering/security)
+- `docs/CONTRACT.md` v1 → v1.1: §0 probe3 facts, §1 `dedupKey` + index #8,
+  §2 new exports, §3 dedup/decay/TTL/hook semantics + single-writer
+  assumption, §4 decay removed from do-not-build, §5 verification bar
+  (REQ-P1-1/P1-3/P1-6/P2-1, engineering)
+- `docs/adr/ADR-0001-application-side-dedup-uniqueness.md` — first ADR of the
+  repo, required by the contract change v1 → v1.1 (engineering)
+- Version 0.4.0 lockstep across all 6 carriers: `package.json`,
+  `package-lock.json` root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`,
+  README badge (engineering, this release)
+- Docs sync: CHANGELOG v0.4.0 entry, README (env knobs, purge, 7 events,
+  verification counts, badge), ROADMAP P1.1/P1.3/P1.6/P2.1 ticks, TEST_MATRIX
+  T-101..T-108 (engineering)
+- CI gains `verify-lifecycle` + `verify-capture` jobs in
+  `.github/workflows/ci.yml` alongside typecheck / verify-injection /
+  sha256-pinned gitleaks secret-scan (automation/ops)
+
+### Fixes
+
+- CWE-117 newline forgery in purge governance/audit lines — print-side
+  `oneLine()` normalizer extracted to `src/logline.ts` + 5 CI assertions in
+  `verify-lifecycle` section E (gate COND-004 / COND-007, security)
+- Store dedup pre-check now fails **closed** on shape drift — a transport
+  error or a response missing the frozen `memory` return throws instead of
+  being read as a miss (gate resilience F1, engineering)
+- Purge failure paths write an allowlisted single-line `status=partial` audit
+  record before exit 1 whenever deletions happened, plus per-batch
+  `purge-progress` (gate COND-006, automation/ops)
+- Doc-truth corrections: falsified `contentHash` docstring + nonexistent-test
+  citations, plan/README false-pointer cells, `dedayImportance` →
+  `decayedImportance` typo — class swept to 0 instances across all six docs
+  (gate COND-005 / COND-008 / COND-010, engineering)
+
+### Domain Ships
+
+- **Security:** SEC-01 (CWE-117) + SEC-02 both FIXED-VERIFIED by the
+  independent security reviewer — path:
+  `docs/specs/50_archive/P1-P21/security-reviewer.md`; SEC-03/SEC-04 (Low)
+  tracked with owner + expiry (P1-P21)
+- **Automation/ops:** `verify-lifecycle` + `verify-capture` wired into CI and
+  green; waiver **W1** pre-merge condition stands — first sha256-pinned CI
+  `secret-scan` run green at/after `9210208`, owner: orchestrator (P1-P21)
+- **Data:** `dedupKey` lineage documented (CONTRACT §1 — hash never leaves
+  store projections), no backfill by design (probe3 a3-2: legacy nodes  missing the property are harmless), Concept-orphan finding DAT-001 tracked
+  with owner + expiry (P1-P21)
+- **Engineering:** gate record
+  `docs/specs/50_archive/P1-P21/GATE_REPORT.md` (**OPEN** — 9/9 pass,
+  COND-001..010 cleared, W1/W2 three-block) +
+  `docs/specs/50_archive/P1-P21/HANDOFF.md` (Status: complete) + ADR-0001 for
+  the contract change (P1-P21)
+
+### Breaking Changes
+
+- **None — additive; no behavior removed or renamed.** Behavioral notes:
+  - Repeat saves return the **first** row (first-wins): a dedup hit creates no
+    second row and no `Session` node — sessions materialize on novel writes
+    only; tests asserting "one new row per save" must expect the first id.
+  - `remember` / `lesson` responses gain the additive `deduped` boolean field
+    (201 bodies now carry it).
+  - Two new env knobs exist — `AGENT_MEMORY_TTL_DAYS` and
+    `AGENT_MEMORY_DECAY_LAMBDA` — both default **OFF**: unset ⇒ behavior
+    identical to v0.3.0 (opt-in, no ranking/hide surprises).
+  - `capture.mjs` now accepts **7** events (was 3): hosts wired to
+    `PostToolUseFailure` / `PreCompact` / `SessionEnd` / `UserPromptSubmit`
+    start capturing — teams asserting event **silence** for those names must
+    update expectations (in-repo suite asserts all 7 already).
+  - Migration guide **N/A**: README/INSTALL/MIGRATION templates cited, not
+    required (ship-type `deploy` without breaking changes). Undo path:
+    rollback plan below.
+
+## Known Issues
+
+- **W1 — pre-merge condition (owner: orchestrator):** local gitleaks was
+  unavailable this session (2× download timeout, escalated); do not merge
+  until the first CI `secret-scan` run green at/after `9210208`.
+  Compensating control: the sha256-pinned gitleaks job was untouched by this
+  lane (`.github/` diff `eb279a6..83e2f3a` = 0 lines).
+- **W2 — purge has no Helix request timeout** (accepted risk; the SDK exposes
+  none): compensating controls = fail-closed arg guard, `BATCH_LIMIT` /
+  `MAX_BATCHES` bounds, per-batch `purge-progress`, operator Ctrl-C;
+  re-review at v0.5.0 or 2026-12-22, whichever first — owner: engineering.
+- **Tracked findings (owner + expiry each)** → table in
+  `docs/specs/50_archive/P1-P21/GATE_REPORT.md`: DAT-001 (Concept orphans on
+  forget, Medium), T-107/T-108 (route-level TTL / λ-on E2E coverage gaps,
+  Medium), SEC-03/SEC-04 (Low), plus RL-004/RL-007 and hygiene rows —
+  expiries 2026-10-31 / v0.5.0 unless the row says otherwise.
+- **Single-writer-process assumption** — application-side dedup is sound only
+  within ONE writer process; cross-process writers to one Helix instance are
+  out of contract (CONTRACT §3 "Single-writer assumption"; multi-instance =
+  ROADMAP P4.3) — owner: engineering.
+
+## Rollback / Undo
+
+- **Code:** revert the feature range `1c410ee..97e9d9b` — 10 commits:
+  `b27364b` (REQ-P1-3) → `101e063` (REQ-P1-6) → `45380b5` (REQ-P1-1) →
+  `8fbd795` (REQ-P2-1) → `6f7f708` (v0.4.0 lockstep + CI) → `eb279a6`
+  (contract v1.1) → `9210208` + `83e2f3a` (gate remediation) → `d59d23a`
+  (gate OPEN) → `97e9d9b` (handoff + ADR) — plus the release commit appended
+  at ship; or check out tag **`v0.3.0`** for a full undo. Version markers
+  return to 0.3.0 (README badge, `package-lock.json`, `src/mcp.ts`, plugin
+  `VERSION`, `package.json`).
+- **Additive-inert by design:** old code ignores the `dedupKey` property and
+  index #8 — the repo has no index-drop (`bootstrapIndexes` only creates), so
+  a bootstrapped instance keeps an orphaned, unused unique index, which
+  probe3 proved is inert; both env knobs are OFF by default, so a revert is
+  behavior-neutral; **no destructive backfill ran** — legacy rows were never
+  rewritten. Per-step points (`IMPLEMENTATION_PLAN.md` "Rollback Points"):
+  step 1 revert `src/concepts.ts` + store/embed hunks (no schema touched);
+  step 2 revert `db/queries.ts` + store dedup hunks (index orphaned, not
+  dropped; `deduped` removal is additive-reversible); step 3 revert
+  `src/search.ts` + `src/lifecycle.ts` + `scripts/purge.ts` (defaults OFF ⇒
+  no live behavior change); step 4 revert `capture.mjs` + plugin registration
+  + `verify-capture.ts` (per-event exit-0 guarantee preserved).
+- **Data:** none needed — dev-instance data is seed/verify data (probe writes
+  isolated to `probe-p1-*` projects); no production data risk.
+- Owner: engineering owner + orchestrator. ETA: immediate.
+
+## PII checkpoint (Ley 172-13)
+
+Zero PII/secrets/tokens in this release or these notes — allowlisted evidence
+only (suite counts, commit SHAs, paths, verdicts, owners by role); prompt-text
+canary asserted non-stored (`verify-capture` 115/115); hook observations are
+fixed-string/tool-name only; wide disclosure: none.
+
+---
+
 # Release Notes: v0.3.0
 
 **Date:** 2026-09-22

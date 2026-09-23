@@ -24,7 +24,7 @@ Strictly 1 dedicated subagent per reviewer, zero bundled reviews. 9 reviewers di
 | security | security-reviewer | ✅ pass | 2 (SEC-01 Med CWE-117, SEC-02 Low) → both FIXED-VERIFIED; SEC-03/04 Low backlog | 3 | `security-reviewer.md` |
 | automation/ops | automation-reviewer | ✅ pass | 4 (OPS-001 Med) → FIXED-VERIFIED (live mid-run proof); gitleaks → waiver row below | 2 | `automation-reviewer.md` |
 
-All artifacts live beside this report: `docs/specs/40_workspace/quality-gate/P1-P21/`.
+All artifacts live beside this report: `docs/specs/50_archive/P1-P21/`.
 
 ## Conditions for Opening
 

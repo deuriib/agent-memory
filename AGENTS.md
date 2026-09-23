@@ -12,7 +12,7 @@ helix query dev --file examples/request.json     # send a query JSON request
 helix query dev -e 'readBatch().varAs("users", g().nWithLabel("User")).returning(["users"])'
 helix status                                  # instance state
 helix logs dev                                   # container logs
-helix stop dev                                   # stop (in-memory data is lost; use --disk to persist)
+helix stop dev                                   # stop (data persists — helix.toml sets storage = "disk")
 ```
 
 There is no `helix compile` or `helix check` — queries are validated by the running

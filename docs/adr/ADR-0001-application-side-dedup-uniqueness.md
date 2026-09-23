@@ -45,4 +45,4 @@ stays fast; it never carries the uniqueness guarantee.
 - Guarded by suites: `verify-lifecycle` golden keys, `verify.ts` dedup/race/F4 sections.
 
 **Links:** `docs/CONTRACT.md` §0/§1/§3 · `src/lifecycle.ts` header + `contentHash` ·
-`scripts/probe3.ts` (b2/d1/d2/d3/a3-2) · `docs/specs/40_workspace/quality-gate/P1-P21/GATE_REPORT.md`
+`scripts/probe3.ts` (b2/d1/d2/d3/a3-2) · `docs/specs/50_archive/P1-P21/GATE_REPORT.md`
