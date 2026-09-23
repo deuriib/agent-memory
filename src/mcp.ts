@@ -10,6 +10,7 @@
  * - stdout carries ONLY the MCP protocol — all diagnostics go to stderr,
  *   sanitized (no secrets, no memory content, no remote message bodies).
  */
+import { pathToFileURL } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { ErrorCode, McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -120,7 +121,9 @@ function failed(payload: { error: string }): CallToolResult {
 /* Recap/handoff digest assembly lives in `src/digest.ts` — shared with the
  * REST lane so the frozen REST↔MCP mirror cannot drift (contract §3). */
 
-function registerTools(mcp: McpServer, store: MemoryStore, secret: string | undefined): void {
+/* Exported (COND-QA-02 / CE-003): tests wire these 11 frozen tools onto an
+ * in-memory transport to assert the adapter's importance pass-through. */
+export function registerTools(mcp: McpServer, store: MemoryStore, secret: string | undefined): void {
   /**
    * Uniform gate + error boundary: auth first (throws an MCP `unauthorized`
    * error on mismatch), then the store operation; unexpected failures become
@@ -379,7 +382,16 @@ async function main(): Promise<void> {
   await mcp.connect(new StdioServerTransport());
 }
 
-main().catch((err: unknown) => {
-  console.error(`[agent-memory mcp] fatal: ${logSafeNote(err)}`);
-  process.exit(1);
-});
+/* Entrypoint guard: run stdio main() ONLY when this file is the process
+ * entrypoint (`npx tsx src/mcp.ts`, relative or absolute — argv[1] resolves
+ * to the same file URL as import.meta.url under tsx, proven in all README
+ * launch forms). Importing this module for tests must NEVER hijack stdout —
+ * stdio carries the MCP protocol, so an import-triggered connect would eat
+ * the test runner's output channel. */
+const entrypoint = process.argv[1];
+if (entrypoint !== undefined && import.meta.url === pathToFileURL(entrypoint).href) {
+  main().catch((err: unknown) => {
+    console.error(`[agent-memory mcp] fatal: ${logSafeNote(err)}`);
+    process.exit(1);
+  });
+}

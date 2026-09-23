@@ -13,8 +13,10 @@ fused tie-break — stored `importance` sigue nunca reescrito (mismo patrón que
 decay); (3) P1.2 near-dupe = Jaccard(tokens) ≥ umbral, default
 `AGENT_MEMORY_MERGE_JACCARD=0.9` (≤0/inválido/≥1 → OFF) — **ON por defecto**
 porque el acceptance del roadmap lo da por hecho y el merge concatena
-(NUNCA descarta) contenido: riesgo de pérdida de texto = 0, umbral alto
-declarado; (4) P1.2 survivor in-place (`setProperty` content/embedding/
+(NUNCA descarta) contenido: pérdida de texto = 0 en el caso secuencial —
+excepción declarada en gate P1R-P32/RL-001 (variantes CONCURRENTES bajo
+dedupKeys distintas pueden perder un append; residual aceptado con dueño +
+expiry, ver CONTRACT §3 tier-1); umbral alto declarado; (4) P1.2 survivor in-place (`setProperty` content/embedding/
 dedupKey) preservando `memoryId`, con probe previo en el dev instance y
 fallback declarado strategy-B (insert fila merged + forget variantes) si el
 servidor no refresca índices tras `setProperty`; (5) P1.5 corpus propio
@@ -25,7 +27,7 @@ superficie compartida (mismo desvío declarado que el lane P1+P2.1, aquí
 reproducido — aislamiento por propiedad de archivos).
 **Domains-Touched:** engineering (store/search/queries/confidence/consolidate),
 ops (eval harness), docs (CONTRACT v1.2, README, CHANGELOG, skills), CI
-(ningún script nuevo a CI: eval/skills/verify exigen server vivo)
+(`verify-skills --structural` added server-free; eval/verify remain local-only)
 **Prior lanes:** P0 closed, P1.1/P1.3/P1.6 + P2.1 closed at v0.4.0, P3.1 at
 v0.2.0. This plan replaces the previous content in-place (lane singleton).
 
@@ -57,8 +59,9 @@ plugin, plan/matrix; a lane needing a shared file briefs the orchestrator).
   hunks; MERGE env has no index artifacts; rows already merged in the dev
   instance are seed/verify data (probe projects `probe-p1-*`), no prod risk.
   Assumption stated: merge ON by default mutates survivor content in place —
-  concatenation never loses text; rollback of merged rows is not promised
-  (dev-instance data only).
+  concatenation never loses text SEQUENTIALLY (the concurrent-distinct-variant
+  append-loss exception of RL-001 is declared in CONTRACT §3 tier-1);
+  rollback of merged rows is not promised (dev-instance data only).
 - After step 3: delete `eval/` + `scripts/eval.ts` + `docs/benchmarks/` — no
   runtime path imports them.
 - After step 4: delete the 8 skill dirs + `verify-skills.ts` — no runtime
@@ -67,12 +70,13 @@ plugin, plan/matrix; a lane needing a shared file briefs the orchestrator).
 ## Quality Gates
 
 - [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0
-- [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — **86 passed, 0 failed** (39 → +§F 23 confidence +§G consolidation)
+- [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — **104 passed, 0 failed** (39 → +§F 23 confidence +§G 24 consolidation + §F-bis/§H/§I gate-remediation 18)
 - [x] Engineering: `npx tsx scripts/verify-capture.ts` green — **115 checks, 0 failed** (no regression)
 - [x] Engineering: `npx tsx scripts/verify-injection.ts` green — **ALL PASS (73)**, 0 failed (no regression)
-- [x] Engineering: `npm run verify` green against OUR server on **3151** — **212 passed, 0 failed**; §O confidence + §P consolidation green; upstream on 3111 untouched; (+ `verify-env` 21)
-- [x] Engineering: `probe4` **12 passed → VERDICT A** (in-place `updateMemoryContent`, strategy-B fallback NOT needed); `verify-skills` **119 checks → VERIFY SKILLS PASS**; `eval` **EVAL PASS** (bm25 & hybrid R@5/R@10/MRR@10/nDCG@10 = 1.0000 on our 40-doc/15-query corpus) writes `docs/benchmarks/SCORECARD.md` with our own numbers; `purge.ts` usage guard exit 2
-- [x] Security: no secrets in eval corpus/scorecard/logs; skills carry the no-secrets/PII rule; plugin saves no pinned default importance; no new env vars besides `AGENT_MEMORY_MERGE_JACCARD` (documented, fail-closed OFF on bad config); **gitleaks: local binary unavailable (declared) → CI P0.2 secret-scan job enforces on push**
+- [x] Engineering: `npm run verify` green against OUR server on **3151** — **214 passed, 0 failed**; §O confidence + §P consolidation + MCP adapter pass-through green; upstream on 3111 untouched; (+ `verify-env` 21)
+- [x] Engineering: `probe4` **12 passed → VERDICT A** (in-place `updateMemoryContent`, strategy-B fallback NOT needed); `verify-skills` **119 checks → VERIFY SKILLS PASS** (73 of them server-free via `--structural`, CI-wired); `eval` **EVAL PASS** (bm25 & hybrid R@5/R@10/MRR@10/nDCG@10 = 1.0000 on our 40-doc/15-query corpus — corpus-specific, disclaimed on the scorecard; metric math regression-tested by §H goldens) writes `docs/benchmarks/SCORECARD.md` with our own numbers; `purge.ts` usage guard exit 2
+- [x] Security: no secrets in eval corpus/scorecard/logs; skills carry the no-secrets/PII rule; plugin saves no pinned default importance; no new env vars besides `AGENT_MEMORY_MERGE_JACCARD` (documented, fail-closed OFF on bad config) + harness-only `EVAL_MODE` (eval.ts only, never read by the server, unknown mode → exit 1); **gitleaks: local binary unavailable (declared) → CI P0.2 secret-scan job enforces on push**
 - [x] Docs: CONTRACT v1.2 amendments match shipped code; README (config row, skills section, verification counts, quick start); CHANGELOG v0.5.0; version 0.5.0 lockstep ×5 (package.json, lockfile, mcp.ts, plugin, badge)
-- [x] Automation/ops: no CI change needed (new `eval`/`verify-skills` scripts need a live server — documented local-only like `verify`); no new REQUIRED env var (merge defaults ON with fail-closed OFF path)
+- [x] Automation/ops: CI change = +1 step `npx tsx scripts/verify-skills.ts --structural` (server-free PART1 — gate remediation AUT-Low-B); `verify`/`eval` remain local-only (need a live server); no new REQUIRED env var (merge defaults ON with fail-closed OFF path; `EVAL_MODE` harness-only, never read by the server, unknown → exit 1)
+- [x] Gate P1R-P32: 9 independent reviewers (3 pass / 6 conditional / 0 closed) → every condition FIXED (tests/docs/CI) or WAIVED with owner + expiry under C3 → gate **OPEN** — `docs/specs/40_workspace/quality-gate/P1R-P32/GATE_REPORT.md`
 - N/A: finance / legal / marketing / people / revenue (engineering + docs change)

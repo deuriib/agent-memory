@@ -67,12 +67,14 @@ Fusion**:
 score(doc) = Σ 1 / (60 + rank_i)      over every source that returned it
 ```
 
-Ranks are 1-based. Ties break by **decayed** `importance` (desc) — with
-`AGENT_MEMORY_DECAY_LAMBDA` set, a row's weight is `importance · e^(−λ·ageDays)`,
-so older, never-recalled rows sink (λ unset/invalid/≤0 → plain importance, the
-default) — then `createdAt` (desc, newest first), then `memoryId` (asc) so output
-is fully deterministic. The returned `importance` field is always the stored value;
-decay is ranking-only.
+Ranks are 1-based. Ties break by **decayed-then-recall-boosted** `importance`
+(desc): first `importance · e^(−λ·ageDays)` when `AGENT_MEMORY_DECAY_LAMBDA`
+is set (older, never-recalled rows sink; λ unset/invalid/≤0 → plain
+importance), then a recall boost `+ 0.2·n/(n+1)` where `n` is how many times
+this process returned the row (in-process recall ledger, cap 10k, resets on
+restart) — then `createdAt` (desc, newest first), then `memoryId` (asc) so
+output is fully deterministic. The returned `importance` field is always the
+stored value; decay and the recall boost are ranking-only.
 
 Both search paths also honor `AGENT_MEMORY_TTL_DAYS` (v1.1): rows older than the
 TTL are hidden and reported as `signals: ["ttl: hidden N expired rows"]` — explicit
@@ -102,6 +104,10 @@ npm run verify-skills           # structural + live round-trip of the 8 skills (
 npm run eval                    # retrieval scorecard -> docs/benchmarks/SCORECARD.md (running server)
 ```
 
+Run `bootstrap` **before the first write**: the dedup lookup, the
+consolidation probe, and both searches all depend on the 8 indexes — writes
+fail closed (500) while an index is missing.
+
 `--disk --persist` writes `storage = "disk"` into `helix.toml`, and that key —
 not the flag — is what decides persistence. This repo's `helix.toml` already
 sets it, so a plain `helix start dev` keeps data across restarts. A project
@@ -122,7 +128,7 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 |---|---|---|---|
 | GET | `/memory/livez` | — | 200 `{"status":"ok"}` |
 | GET | `/memory/health` | `?project=` | 200 `{"status":"ok","counts":{…}}` |
-| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts, deduped}` |
+| POST | `/memory/remember` | `{content, concepts?, project?, sessionId?, origin?, importance?}` | 201 `{id, sessionId, project, concepts, deduped, consolidated}` |
 | POST | `/memory/search` | `{query, project?, limit?}` | 200 `{mode:"bm25", results:[…], signals:[…]}` |
 | POST | `/memory/smart-search` | `{query, concepts?, project?, limit?}` | 200 `{mode:"hybrid", results:[…], signals:[…]}` |
 | GET | `/memory/sessions` | `?project=&limit=` | 200 `{sessions:[…]}` |
@@ -130,11 +136,15 @@ set, add `-H "Authorization: Bearer $AGENT_MEMORY_SECRET"` to every call except
 | POST | `/memory/forget` | `{memoryId}` | 200 `{forgotten:true}` / 404 |
 | POST | `/memory/recap` | `{project?, sessionId?, limit?}` | 200 `{recap, sessionId, count, signals}` |
 | POST | `/memory/handoff` | `{project?, sessionId?, limit?}` | 200 `{handoff, sessionId, counts, signals}` |
-| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts, deduped}` |
+| POST | `/memory/lesson` | `{content, concepts?, project?, sessionId?, importance?}` (no `origin`) | 201 `{id, sessionId, project, concepts, deduped, consolidated}` |
 | POST | `/memory/delete` | `{memoryId, reason}` (`reason` required) | 200 `{deleted:true, receipt:{memoryId, deletedAt}}` / 404 |
 
-Defaults: `project="default"`, `limit=10`, `importance=0.5`, `origin="rest"`,
-`sessionId` auto-generated (`crypto.randomUUID()`) when absent. Every REST
+Defaults: `project="default"`, `limit=10`, `origin="rest"`, `sessionId`
+auto-generated (`crypto.randomUUID()`) when absent. `importance` (v1.2): an
+explicit 0..1 value is stored as-is; when omitted the store **derives** it
+from provenance + structure — base lesson 0.75 / `hook:*` 0.55 / else 0.5,
++ 0.025·min(concepts,8), clamp01 (the old `0.5` default is retired; see
+[`docs/CONTRACT.md`](docs/CONTRACT.md) §3). Every REST
 body is a strict zod object: **unknown keys are rejected with 400** — so
 `lesson` never accepts `origin` (sending it → 400; the row is always stored
 with `origin="lesson"`) and `delete` requires `reason`. MCP input schemas are
@@ -414,6 +424,7 @@ when `AGENT_MEMORY_SECRET` is unset.
 | `AGENT_MEMORY_TTL_DAYS` | *(unset = off)* | REST + MCP searches, store | Hide memories older than N days from search results (reported as a `ttl:` signal); must parse to a finite number > 0, else OFF |
 | `AGENT_MEMORY_DECAY_LAMBDA` | *(unset = off)* | REST + MCP searches, store | Per-day decay rate λ for the fused-row tie-break: weight = `importance · e^(−λ·ageDays)`; invalid/≤ 0 → decay OFF; stored `importance` is never modified |
 | `AGENT_MEMORY_MERGE_JACCARD` | `0.9` | REST + MCP `remember`, store | Tier-1 consolidation: near-duplicates with `Jaccard(tokens) ≥ threshold` merge into one survivor (content concatenated, never discarded); parseable in (0,1) selects the threshold, anything else (≤0, ≥1, garbage) → consolidation OFF (fail-closed) |
+| `EVAL_MODE` | `rest` | eval harness only (`scripts/eval.ts`) | Adapter selector for the pluggable `EvalClient`; unknown mode fails closed (exit 1). Never read by the server |
 
 The three plugin rows are read with `options` > env > default, so a matching
 `inject` / `injectLimit` / `injectTtlMs` key on the plugin itself wins over the
@@ -496,13 +507,33 @@ Stated plainly — these are real, not hypothetical:
    or displaying vector results, `score` for BM25/RRF. Both are surfaced on
    the REST row.
 
+8. **Concurrent distinct-variant merges can lose one append — accepted
+   residual (owner: engineering).** The consolidation FIFO lock is keyed by
+   content hash, so it serializes *identical* content only: two concurrent
+   saves of *different* near-dup variants that pick the same survivor both
+   read the pre-merge content, last writer wins, and both callers still get
+   `consolidated:true`. Recoverable — the caller keeps its text and
+   re-saving re-merges. Declared in
+   [`docs/CONTRACT.md`](docs/CONTRACT.md) §3 tier-1 (a); tracked in
+   [`ROADMAP.md`](ROADMAP.md) §1.3 with expiry **2026-12-31 or the start of
+   P4.3 multi-instance work, whichever first** — at P4.3 survivor-level
+   serialization becomes mandatory. Gate P1R-P32 / RL-001.
+
+9. **With tier-1 ON, an unhealthy text index fails WRITES too.** Every novel
+   `remember` runs the near-dupe probe (`textSearchWith`), so
+   `index_not_found` surfaces as **500s on writes**, not just degraded
+   search — `npx tsx scripts/bootstrap.ts` restores writes (idempotent;
+   run it *before* the first write). The probe sends the full incoming
+   content (≤200 kB) as the BM25 query, bounded by the 15 s per-operation
+   timeout. Fail-closed is the documented posture (gate P1R-P32 / RL-003).
+
 ## Verification
 
 All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`212 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`214 passed, 0 failed` →
   `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
   → smart-search hits → sessions list → session memories → forget → gone →
   counts reflect it, plus embedder determinism, defaults, boundary validation,
@@ -517,22 +548,27 @@ All run clean:
   (no-caller-value == `deriveWriteImportance(origin, concepts.length)`, explicit
   wins, recall-lift ordering) + tier-1 consolidation (3 near-dup variants →
   1 row with `consolidated:true`, each variant's wording recalls it,
-  healthCount +1, merged-text re-save → exact-dedup loop guard). Before the
+  healthCount +1, merged-text re-save → exact-dedup loop guard) + the MCP
+  adapter pass-through (`InMemoryTransport`: save without `importance` → the
+  store sees `undefined`, explicit value wins). Before the
   first write it probes
   `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`86 passed` →
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`104 passed` →
   `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
   half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
   concept extraction determinism + bounds, `oneLine` CWE-117 render guard
   (collapses `\n`/`\r`/tabs to single spaces, idempotent, non-corrupting
   for names/digits/ISO/booleans), plus §F derived confidence
   (deriveWriteImportance goldens, confidenceBoost monotonic/clamp, recall
-  ledger) and §G consolidation (jaccard, threshold fail-closed OFF, substring
-  guard). No Helix, no server — CI-runnable.
+  ledger), §F-bis the decay-THEN-boost order golden (λ on, discriminating),
+  §G consolidation (jaccard, threshold fail-closed OFF, substring
+  guard), §H hand-computed eval-metric goldens (R@5/R@10/MRR/nDCG/aggregate),
+  and §I fail-closed near-dupe probe + TTL×expired-survivor guard + plugin
+  no-default source checks. No Helix, no server — CI-runnable.
 - `npm run verify-capture` (`scripts/verify-capture.ts`) — **`115 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
   silence, prompt-text privacy canary, negatives (unsupported event, malformed
@@ -556,7 +592,8 @@ All run clean:
   `skills/*/SKILL.md` (frontmatter, name == dir, contract route + MCP tool
   per skill, index links, secret patterns) + 46 live round-trips exercising
   every skill's frozen route under project `verify-skills`, behind the same
-  identity guard as `verify`.
+  identity guard as `verify`. `--structural` runs only the 73 checks with
+  **no server** — that mode is what CI executes.
 - `npm run eval` (`scripts/eval.ts`) — **`EVAL PASS`**: seeds the in-repo
   corpus (`eval/corpus.ts`, 40 docs / 15 queries, project
   `agent-memory-eval`, idempotent via dedup) and writes our own R@5 / R@10 /

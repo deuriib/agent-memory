@@ -18,11 +18,17 @@
  */
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+/* MCP adapter seam (COND-QA-02 / CE-003): official SDK client + in-memory
+ * transport only — no HTTP, no server, safe before the identity guard. */
+import { Client as MCPClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { confidenceBoost, deriveWriteImportance, recallCount, resetRecalls } from "../src/confidence.js";
 import { embed } from "../src/embed.js";
 import { logSafeNote } from "../src/errors.js";
+import { registerTools } from "../src/mcp.js";
 import { bm25Search, hybridSearch } from "../src/search.js";
-import type { MemoryStore, SearchHit } from "../src/store.js";
+import type { MemoryStore, RememberInput, SearchHit } from "../src/store.js";
 
 const BASE_RAW = process.env["AGENT_MEMORY_URL"] ?? "http://127.0.0.1:3111";
 const BASE = new URL(BASE_RAW.endsWith("/") ? BASE_RAW : `${BASE_RAW}/`);
@@ -256,6 +262,72 @@ async function main(): Promise<void> {
     goldenActual === GOLDEN,
     `got ${goldenActual}, want ${GOLDEN}`,
   );
+
+  /* A2. MCP adapter importance pass-through (COND-QA-02 / CE-003) —
+   * SERVER-FREE: the frozen `memory_save` tool wired over an in-memory
+   * transport with a stub store (no HTTP, no writes — runs BEFORE the
+   * identity guard). Absent `importance` must reach store.remember as
+   * `undefined` (DERIVED at insert per REQ-P1-4 — never the retired 0.5
+   * default); an explicit 0.7 must arrive verbatim. */
+  const mcpRememberInputs: RememberInput[] = [];
+  const mcpStubStore: MemoryStore = {
+    remember: (input) => {
+      mcpRememberInputs.push(input);
+      return Promise.resolve({
+        id: "mcp-stub-id",
+        sessionId: input.sessionId,
+        project: input.project,
+        concepts: [...input.concepts],
+        deduped: false,
+        consolidated: false,
+      });
+    },
+    searchByText: () => Promise.resolve([]),
+    searchByVector: () => Promise.resolve([]),
+    graphSearch: () => Promise.resolve([]),
+    listSessions: () => Promise.resolve([]),
+    sessionMemories: () => Promise.resolve([]),
+    forget: () => Promise.resolve(false),
+    healthCounts: () => Promise.resolve({ memories: 0, sessions: 0 }),
+  };
+  const mcpServer = new McpServer({ name: "verify-mcp", version: "0.0.0" });
+  registerTools(mcpServer, mcpStubStore, undefined); // no secret -> auth gate passes without _meta
+  const [mcpClientTransport, mcpServerTransport] = InMemoryTransport.createLinkedPair();
+  const mcpClient = new MCPClient({ name: "verify-mcp-client", version: "0.0.0" });
+  await Promise.all([mcpServer.connect(mcpServerTransport), mcpClient.connect(mcpClientTransport)]);
+  try {
+    const noImportance = await mcpClient.callTool({
+      name: "memory_save",
+      arguments: { content: "mcp importance absent probe" },
+    });
+    check(
+      "mcp adapter: memory_save WITHOUT importance -> store sees undefined (NOT 0.5)",
+      noImportance.isError !== true &&
+        mcpRememberInputs.length === 1 &&
+        mcpRememberInputs[0]?.importance === undefined,
+      JSON.stringify({
+        isError: noImportance.isError === true,
+        importance: mcpRememberInputs[0]?.importance,
+      }),
+    );
+    const explicitImportance = await mcpClient.callTool({
+      name: "memory_save",
+      arguments: { content: "mcp importance explicit probe", importance: 0.7 },
+    });
+    check(
+      "mcp adapter: memory_save WITH importance 0.7 -> store sees 0.7 verbatim",
+      explicitImportance.isError !== true &&
+        mcpRememberInputs.length === 2 &&
+        mcpRememberInputs[1]?.importance === 0.7,
+      JSON.stringify({
+        isError: explicitImportance.isError === true,
+        importance: mcpRememberInputs[1]?.importance,
+      }),
+    );
+  } finally {
+    await mcpClient.close();
+    await mcpServer.close();
+  }
 
   /* Identity guard (read-only) — BEFORE the first write. The default target
    * 127.0.0.1:3111 is where the upstream `agentmemory` normally lives, and a

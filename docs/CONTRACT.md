@@ -40,6 +40,7 @@ and §5 grows `probe4` + `verify-skills` + the eval harness scorecard.
 | A node **missing** the indexed property is accepted (legacy `dedupKey`-less rows are harmless; no backfill blocker) | probe3 a3-2 |
 | `Predicate.ltParam` on a `dateTime` property: strict older-than, project-scoped, `$id Asc` deterministic (server does not sort DateTime keys) | probe3 (e) |
 | `Predicate.ltParam`/range filters do **not** require a range index — they run as residual predicates after the equality anchor on `project` | probe3 (e) |
+| `setProperty` on indexed properties (`content`/`embedding`/`dedupKey`) refreshes BOTH the text and vector indexes in place — a tier-1 merge is immediately retrievable as merged content | probe4 VERDICT A (12 passed, live dev instance) |
 
 Never restart or stop the dev instance. It runs with `storage = "disk"` (key in
 `helix.toml`, set by P0.4).
@@ -238,7 +239,27 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   novel writes only). Env `AGENT_MEMORY_MERGE_JACCARD`: ABSENT → 0.9 (ON),
   parseable in (0,1) → that threshold, everything else (≤0, ≥1, non-finite) →
   OFF fail-closed (no probe, straight to insert). probe4 proved on the live
-  instance that `setProperty` refreshes BOTH the text and vector indexes.
+  instance that `setProperty` refreshes BOTH the text and vector indexes
+  (§0 fact).
+  **Gate P1R-P32 declarations (v1.2):** (a) **CONCURRENCY** — the FIFO lock
+  is keyed by content hash, so it serializes IDENTICAL content only; two
+  concurrent saves of DISTINCT variants that select the SAME survivor can
+  lose one append while both callers receive `consolidated:true` (accepted
+  residual, owner engineering, within the single-writer RL-001 contract —
+  tracked in ROADMAP §1.3, expiry 2026-12-31 or the P4.3 multi-instance
+  start, whichever first, re-review owner engineering); (b) **ATOMICITY** —
+  the merge is ONE `writeBatch`, but
+  mid-batch atomicity is an ENGINE ASSUMPTION, not a §0-verified fact:
+  concept links ride the same batch with no return var (a partial commit
+  would still pass the presence asserts) and the substring guard does not
+  heal it (a retry sees merged text and skips the write) — consequence
+  accepted, owner engineering; re-verify on Helix upgrade or by 2026-12-31; (c) **TTL×MERGE** — probe candidates run
+  through `filterExpired` first, so a TTL-expired survivor can never absorb
+  a fresh write (TTL unset → no-op); (d) **PROVENANCE** — WHICH rows merged
+  is not durably recorded (first-wins family; every variant's text survives
+  inside the survivor's concatenated content); (e) **INDEX DEPENDENCY** — the
+  probe needs the text index: run `bootstrap` first; writes fail closed while
+  an index is missing.
 - **Derived recall confidence (v1.2, P1.4, ranking-time):** both search paths
   call `noteRecall(memoryId)` for every RETURNED row; the fused tie-break (see
   fusion paragraph below) uses `confidenceBoost(decayedImportance(…),
@@ -404,14 +425,20 @@ Replay, JSONL import, 20 agent adapters, full 54-tool MCP surface remain out).
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**86 passed** — pure: dedupKey/hash golden,
+`scripts/verify-lifecycle.ts` green (**104 passed** — pure: dedupKey/hash golden,
 decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
 render guard, **§F derived confidence** (deriveWriteImportance goldens,
-confidenceBoost monotonic/clamp, recall ledger), **§G consolidation**
-(jaccard/threshold-fail-closed/substring guard)).
+confidenceBoost monotonic/clamp, recall ledger), **§F-bis** the decay-THEN-boost
+order golden (λ on: equals the hand-computed decay+boost AND differs from the
+wrong order — gate CE-002), **§G consolidation**
+(jaccard/threshold-fail-closed/substring guard), **§H** hand-computed eval
+metric goldens (R@5/R@10/MRR/nDCG/aggregate — gate CE-001/COND-QA-01),
+**§I** fail-closed near-dupe probe (induced probe error → `remember` rejects,
+insert never runs) + TTL×expired-survivor guard + plugin no-default source
+checks — gate COND-QA-03 / RL-002 / COND-QA-02b).
 `scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helper).
-`scripts/verify.ts` end-to-end green (**212 passed**): health → remember (with
+`scripts/verify.ts` end-to-end green (**214 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
 search hits it → recap contains it → handoff contains it → governed delete (with
@@ -420,19 +447,33 @@ default concepts ≤8 → graph-branch proof (fused score == 3/61) → dedup
 round-trip (same id, `deduped:true`, cross-project distinct, race → same id) →
 dedup × hook first-wins (F4) → **§O derived confidence** (importance without a
 caller value == `deriveWriteImportance(origin, echoedConcepts.length)`, explicit
-wins, recall-lift ordering via the ledger) → **§P consolidation** (3 variants →
-1 row with `consolidated:true`, each variant's wording recalls the survivor,
-healthCount +1, re-save of the merged text → exact-dedup loop guard).
+wins, recall-lift ordering via the ledger; ledger/tie ordering runs the REAL
+search path in-process against a stub store — CE-003) + **MCP adapter
+pass-through** (`InMemoryTransport`: save without `importance` → the store sees
+`undefined`, explicit value wins — gate COND-QA-02) → **§P consolidation** (3
+variants → 1 row with `consolidated:true`, each variant's wording recalls the
+survivor, healthCount +1, re-save of the merged text → exact-dedup loop guard).
 `scripts/verify-skills.ts` green (**119 checks**: 73 structural across the 8
-`skills/*/SKILL.md` + 46 live round-trips — every skill's frozen route exercised
-under project `verify-skills` behind the `verify.ts` identity guard).
+`skills/*/SKILL.md` — also runnable server-free as `verify-skills --structural`
+and CI-wired — + 46 live round-trips: every skill's frozen route exercised
+under project `verify-skills` behind the `verify.ts` identity guard). Rows are
+cleaned per run (4/4); the +4 `Session` nodes per run persist (3 random sids +
+1 governance save — count source `scripts/verify-skills.ts`) and no Session
+deletion path exists: **run budget = 25 runs** (≈100 Session nodes) before the
+operator resets the `verify-skills` project or the dev instance — accepted
+residual, owner engineering, re-review at P4.1 (gate P1R-P32 / COND-DAT-002).
 `scripts/probe4.ts` GREEN (**12 passed** — live proof that
 `updateMemoryContent`'s `setProperty` refreshes BOTH text and vector indexes:
 verdict A).
 `scripts/eval.ts` (**EVAL PASS**) seeds the in-repo corpus (`eval/corpus.ts`,
 40 docs / 15 queries, project `agent-memory-eval`) and writes our own numbers
 (R@5 / R@10 / MRR@10 / nDCG@10, bm25 + hybrid) to
-`docs/benchmarks/SCORECARD.md` — upstream's published numbers are never claimed.
+`docs/benchmarks/SCORECARD.md` — upstream's published numbers are never
+claimed. Metric math is regression-tested by the §H goldens; scores are
+corpus-specific (the in-repo corpus yields all-rank-1 — disclaimed on the
+scorecard's face), not a general retrieval claim. The `agent-memory-eval`
+rows are benchmark fixtures: purpose scoring, deletion `purge.ts`/`forget`,
+retention until manually purged (declared — DAT-003).
 `scripts/verify-injection.ts` (**73**), `scripts/verify-env.ts` (**21**) green.
 `scripts/probe3.ts` GREEN. `scripts/purge.ts --dry-run` + usage guard exit 2.
 Demo green.

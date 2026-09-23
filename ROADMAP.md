@@ -41,7 +41,7 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | In-repo corpus (40 docs / 15 qrels), `npm run eval` → `docs/benchmarks/SCORECARD.md` with our R@5/MRR/nDCG | Partial — our numbers, smaller corpus |
-| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (212) + `verify-lifecycle` (86) + `verify-skills` (119) + `verify-capture` (115) + `verify-injection` (73) + `verify-env` (21) + `probe3`/`probe4` + `eval`, plus GitHub Actions CI (typecheck, injection, capture, lifecycle, gitleaks) | Verified — CI present; no unit suite |
+| Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (214) + `verify-lifecycle` (104) + `verify-skills` (119 + 73 structural in CI) + `verify-capture` (115) + `verify-injection` (73) + `verify-env` (21) + `probe3`/`probe4` + `eval`, plus GitHub Actions CI (typecheck, injection, capture, lifecycle, structural skills, gitleaks) | Verified — CI present; no unit suite |
 | Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | LICENSE, SECURITY, CONTRIBUTING, CHANGELOG (plus README, AGENTS, CONTRACT); no CODE_OF_CONDUCT / GOVERNANCE / MAINTAINERS / DESIGN | Verified — incomplete (P4.7) |
 | Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
@@ -58,6 +58,16 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
   stacking duplicates; a bounded TTL+LRU cache keeps it off the hot path.
 - **Graph-native storage.** Concepts, memories and their `HAS_CONCEPT` edges are
   first-class nodes, so the graph branch of fusion is a traversal, not a join.
+
+### 1.3 Tracked residuals (gate-accepted, dated)
+
+Accepted at review with owner + expiry; re-review on the expiry trigger.
+
+| ID | Residual | Owner | Accepted | Expiry / trigger | Declared in |
+|---|---|---|---|---|---|
+| RL-001 / F-02 / RK-001 | Concurrent saves of *distinct* near-dup variants can lose one append (the per-key FIFO serializes identical content only; both callers still get `consolidated:true`; text recoverable from the caller) | engineering | 2026-09-23, gate P1R-P32 | **2026-12-31 or the start of P4.3 multi-instance work, whichever first** — P4.3 makes survivor-level serialization mandatory | `docs/CONTRACT.md` §3 tier-1 (a) + README *Known limitations* #8 |
+| DAT-001 | Concept nodes have no drop path — `forget` erases Memory only, so derived concept tokens (now re-linked on every merge) outlive right-to-erasure requests (no PII: tokens only) | engineering | re-baselined 2026-09-23, gate P1R-P32 (prior expiry "…or v0.5.0" expired unremediated) | **2026-12-31 or v0.6.0, whichever first** — declare Concept retention + orphan-cleanup procedure, or implement the drop | `docs/specs/40_workspace/quality-gate/P1R-P32/GATE_REPORT.md` C3 |
+| F-01 | `updateMemoryContent` mid-batch atomicity is an engine assumption (one `writeBatch`, unverified); concept links have no return var and the substring guard does not heal a partial commit | engineering | re-baselined 2026-09-23, gate P1R-P32 | next Helix engine upgrade (re-verify) or 2026-12-31, whichever first | `docs/CONTRACT.md` §3 tier-1 (b) |
 
 ---
 

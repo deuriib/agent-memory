@@ -79,6 +79,7 @@ import {
 } from "../db/queries.js";
 import { embed } from "../src/embed.js";
 import { contentHash, normalizeContent } from "../src/lifecycle.js";
+import { oneLine } from "../src/logline.js";
 
 const url = process.env.HELIX_URL ?? "http://localhost:6969";
 const client = Client.server(url);
@@ -141,7 +142,11 @@ function check(name: string, condition: boolean, detail?: string): void {
 function describeError(err: unknown): string {
   if (err !== null && typeof err === "object" && "kind" in err) {
     const helix = err as HelixError;
-    const details = "details" in helix && helix.details !== undefined ? ` — ${helix.details}` : "";
+    // SEC-001: `details` is upstream-controlled free text — print it ONLY
+    // through oneLine (CWE-117) so a newline-bearing detail can never forge
+    // a second probe/governance line on this rendered output.
+    const details =
+      "details" in helix && helix.details !== undefined ? ` — ${oneLine(helix.details)}` : "";
     return `HelixError kind=${String(helix.kind)} message=${String(helix.message)}${details}`;
   }
   if (err instanceof Error) return `${err.constructor.name}: ${err.message}`;

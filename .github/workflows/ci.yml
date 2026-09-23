@@ -26,6 +26,8 @@ jobs:
       # P1/P2.1 gates: pure lifecycle math + 7-event hook E2E — both Helix-free.
       - run: npx tsx scripts/verify-lifecycle.ts
       - run: npx tsx scripts/verify-capture.ts
+      # Skills contract gate, structural mode (73 checks) — no server, no network.
+      - run: npx tsx scripts/verify-skills.ts --structural
 
   secret-scan:
     runs-on: ubuntu-latest

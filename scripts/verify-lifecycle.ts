@@ -9,11 +9,24 @@
  * Mirrors scripts/verify.ts assertion plumbing: PASS/FAIL lines, a summary
  * count, VERIFY PASS / VERIFY FAIL, exit 1 on any failure.
  */
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
 import { confidenceBoost, deriveWriteImportance, noteRecall, recallCount, resetRecalls } from "../src/confidence.js";
 import { isNearDuplicate, jaccard, mergeThreshold, mergedContent } from "../src/consolidate.js";
 import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
 import { oneLine } from "../src/logline.js";
+/* COND-QA-01: the §H goldens score with the SAME module the eval harness
+ * uses (extracted VERBATIM from scripts/eval.ts — pure, zero imports). */
+import { aggregate, ndcgAt10, recallAt, scoreQuery, type QueryScore } from "../eval/metrics.js";
+/* CE-002: the extracted decay→boost tie-break helper under order test. */
+import { tieBreakImportance } from "../src/search.js";
+/* §I: real store flow with the transport seam stubbed — ZERO network. */
+import { HelixStore, type RememberInput, type SearchHit } from "../src/store.js";
+
+/** Repo root for fs checks (§J) — this file lives in <root>/scripts/. */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /* ------------------------------------------------------------------ */
 /* Assertion plumbing (same shape as scripts/verify.ts)                */
@@ -32,7 +45,7 @@ function check(name: string, condition: boolean, detail?: string): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   /* A. extractConcepts (REQ-P1-3 / T-101). */
 
   // Determinism: same input -> byte-identical list, every call, no clock.
@@ -517,6 +530,37 @@ function main(): void {
   );
   resetRecalls(); // leave the ledger empty for any section appended later
 
+  /* F-bis. Tie-break ORDER (COND-QA-02 / CE-002) — decay FIRST, then the
+   * recall boost, through the exported tieBreakImportance helper (extracted
+   * verbatim from compareFusedAt). λ>0 via env (saved/restored); createdAt
+   * exactly 10 days before a FIXED nowMs; n>0. Expected values are hand
+   * expressions of the formula — they never call decayedImportance or
+   * confidenceBoost, so a broken helper cannot self-certify. */
+  try {
+    const FB_NOW = Date.parse("2026-06-15T00:00:00.000Z"); // fixed clock — pure
+    const FB_CREATED = new Date(FB_NOW - 10 * 86_400_000).toISOString(); // exactly 10d before
+    process.env["AGENT_MEMORY_DECAY_LAMBDA"] = String(Math.LN2 / 10); // half-life 10d -> factor 0.5 at 10d
+
+    // Hand: clamp01(0.6 · e^(−λ·10) + 0.2·3/4) = 0.6·0.5 + 0.15 = 0.45.
+    const handExpected = 0.6 * 0.5 + (0.2 * 3) / (3 + 1);
+    const actual = tieBreakImportance(0.6, FB_CREATED, FB_NOW, 3);
+    check(
+      "tieBreak: decay FIRST then boost — hand 0.6·e^(−λ·10) + 0.2·3/4 = 0.45 ±1e-9",
+      Math.abs(actual - handExpected) <= 1e-9,
+      `${actual} vs hand ${handExpected}`,
+    );
+
+    // Wrong order (boost THEN decay): 0.5 · (0.6 + 0.15) = 0.375 — must differ.
+    const wrongOrder = 0.5 * (0.6 + (0.2 * 3) / (3 + 1));
+    check(
+      "tieBreak: wrong order decay(boost(stored)) differs by > 1e-9 (0.375 vs 0.45)",
+      Math.abs(actual - wrongOrder) > 1e-9,
+      `${actual} vs wrong-order ${wrongOrder}`,
+    );
+  } finally {
+    restoreEnv(); // restores AGENT_MEMORY_DECAY_LAMBDA + AGENT_MEMORY_TTL_DAYS to their original values
+  }
+
   /* G. consolidation tier-1 (REQ-P1-2 / T-202) — pure goldens for
    * jaccard / mergeThreshold (env saved+restored) / isNearDuplicate /
    * mergedContent's substring guard. No Helix, no server. */
@@ -648,6 +692,253 @@ function main(): void {
     restoreMerge();
   }
 
+  /* H. eval/metrics goldens (COND-QA-01) — every expected value is a
+   * hand-computed literal (never produced by the function under test), so a
+   * formula breakage cannot self-certify. eps 1e-9 throughout. */
+
+  // Relevant docs at ranks 1 and 7 (1-based) in a top-10 ranked list.
+  const H_RANKED_1_7 = ["rel-a", "d2", "d3", "d4", "d5", "d6", "rel-b", "d8", "d9", "d10"];
+  const H_RELEVANT_2 = ["rel-a", "rel-b"];
+  check(
+    "metrics: recall@5 with relevant at ranks 1&7 -> 1/2 = 0.5",
+    recallAt(H_RANKED_1_7, H_RELEVANT_2, 5) === 0.5,
+    String(recallAt(H_RANKED_1_7, H_RELEVANT_2, 5)),
+  );
+  check(
+    "metrics: recall@10 with relevant at ranks 1&7 -> 2/2 = 1.0",
+    recallAt(H_RANKED_1_7, H_RELEVANT_2, 10) === 1,
+    String(recallAt(H_RANKED_1_7, H_RELEVANT_2, 10)),
+  );
+  check(
+    "metrics: relevant never retrieved -> recall@10 = 0",
+    recallAt(H_RANKED_1_7, ["absent-doc"], 10) === 0,
+    String(recallAt(H_RANKED_1_7, ["absent-doc"], 10)),
+  );
+
+  // MRR: first relevant at rank 3 -> 1/3 (±1e-9); none -> 0.
+  const H_RANKED_3 = ["d1", "d2", "rel-a", "d4", "d5", "d6", "d7", "d8", "d9", "d10"];
+  const H_MRR3 = scoreQuery("mrr rank 3", H_RANKED_3, ["rel-a"]);
+  check(
+    "metrics: MRR first relevant at rank 3 -> 1/3 ±1e-9",
+    Math.abs(H_MRR3.reciprocal - 1 / 3) <= 1e-9,
+    String(H_MRR3.reciprocal),
+  );
+  const H_MRR_NONE = scoreQuery("mrr none", H_RANKED_1_7, ["absent-doc"]);
+  check(
+    "metrics: MRR none retrieved -> firstRank 0, reciprocal 0",
+    H_MRR_NONE.firstRank === 0 && H_MRR_NONE.reciprocal === 0,
+    JSON.stringify({ firstRank: H_MRR_NONE.firstRank, reciprocal: H_MRR_NONE.reciprocal }),
+  );
+
+  // nDCG@10, relevant at ranks 1 & 3: DCG = 1 + 1/log2(4) = 1.5;
+  // IDCG = 1 + 1/log2(3)  ->  nDCG = 1.5 / (1 + 1/log2(3)).
+  const H_RANKED_1_3 = ["rel-a", "d2", "rel-b", "d4", "d5", "d6", "d7", "d8", "d9", "d10"];
+  const H_NDCG_1_3 = ndcgAt10(H_RANKED_1_3, H_RELEVANT_2);
+  check(
+    "metrics: nDCG ranks 1&3 -> 1.5 / (1 + 1/log2(3)) ±1e-9",
+    Math.abs(H_NDCG_1_3 - 1.5 / (1 + 1 / Math.log2(3))) <= 1e-9,
+    String(H_NDCG_1_3),
+  );
+
+  // MISS case: relevant at rank 9 — outside recall@5 but inside nDCG@10.
+  const H_RANKED_9 = ["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8", "rel-a", "d10"];
+  check(
+    "metrics: rank-9 MISS — recall@5 = 0 yet nDCG@10 > 0",
+    recallAt(H_RANKED_9, ["rel-a"], 5) === 0 && ndcgAt10(H_RANKED_9, ["rel-a"]) > 0,
+    JSON.stringify({
+      recall5: recallAt(H_RANKED_9, ["rel-a"], 5),
+      ndcg10: ndcgAt10(H_RANKED_9, ["rel-a"]),
+    }),
+  );
+
+  // Rank-1 perfect ordering -> nDCG exactly 1, rendered "1.0000".
+  const H_NDCG_1 = ndcgAt10(H_RANKED_1_3, ["rel-a"]); // only rel-a relevant -> ideal rank 1
+  check(
+    "metrics: rank-1 nDCG = 1.0000 (toFixed(4))",
+    H_NDCG_1 === 1 && H_NDCG_1.toFixed(4) === "1.0000",
+    `${String(H_NDCG_1)} -> ${H_NDCG_1.toFixed(4)}`,
+  );
+
+  // aggregate over hand-built QueryScore literals: cells (1.0, 0.5, 0.0) -> mean 0.5.
+  const hq = (query: string, v: number): QueryScore => ({
+    query,
+    relevant: ["r"],
+    firstRank: v > 0 ? 1 : 0,
+    recall5: v,
+    recall10: v,
+    reciprocal: v,
+    ndcg10: v,
+  });
+  const H_AGG = aggregate("bm25", [hq("cell 1.0", 1), hq("cell 0.5", 0.5), hq("cell 0.0", 0)]);
+  check(
+    "metrics: aggregate of (1.0, 0.5, 0.0) -> every cell 0.5 ±1e-9",
+    Math.abs(H_AGG.recall5 - 0.5) <= 1e-9 &&
+      Math.abs(H_AGG.recall10 - 0.5) <= 1e-9 &&
+      Math.abs(H_AGG.mrr10 - 0.5) <= 1e-9 &&
+      Math.abs(H_AGG.ndcg10 - 0.5) <= 1e-9,
+    JSON.stringify({
+      recall5: H_AGG.recall5,
+      recall10: H_AGG.recall10,
+      mrr10: H_AGG.mrr10,
+      ndcg10: H_AGG.ndcg10,
+    }),
+  );
+
+  /* I. Store-level seam tests — real HelixStore flow with `send` /
+   * `searchByText` stubbed via own-property dispatch: ZERO network, no
+   * server, CI-safe (construction does no I/O — see the offline check). */
+
+  // Offline factory: record every transport call, answer by call order.
+  // call 0 = dedup pre-check (legitimate MISS); call >= 1 = the insert.
+  // searchByText is the near-dup probe seam (public method, overrideable).
+  const makeSeamStore = (sends: unknown[], probe: () => Promise<SearchHit[]>): HelixStore => {
+    const store = new HelixStore("http://127.0.0.1:9"); // unreachable port — proves no connection is made
+    Object.assign(store, {
+      send: async (request: unknown): Promise<unknown> => {
+        sends.push(request);
+        if (sends.length === 1) return { memory: null }; // dedup pre-check: MISS
+        return { memory: [{ memoryId: "insert-ok" }] }; // fabricated insert success
+      },
+      searchByText: probe,
+    });
+    return store;
+  };
+
+  const savedTtlI = process.env["AGENT_MEMORY_TTL_DAYS"];
+  const savedMergeI = process.env["AGENT_MEMORY_MERGE_JACCARD"];
+  const restoreI = (): void => {
+    if (savedTtlI === undefined) delete process.env["AGENT_MEMORY_TTL_DAYS"];
+    else process.env["AGENT_MEMORY_TTL_DAYS"] = savedTtlI;
+    if (savedMergeI === undefined) delete process.env["AGENT_MEMORY_MERGE_JACCARD"];
+    else process.env["AGENT_MEMORY_MERGE_JACCARD"] = savedMergeI;
+  };
+  try {
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "0.9"; // probe ON — explicit, host-independent
+
+    /* I-a. Fail-closed probe (COND-QA-03): a broken near-dup text probe must
+     * PROPAGATE (never silently skip the merge) AND the insert must never run. */
+    const i1Sends: unknown[] = [];
+    const i1 = makeSeamStore(i1Sends, () => Promise.reject(new Error("probe down")));
+    const i1Input: RememberInput = {
+      content: "fail closed probe content alpha beta gamma",
+      project: "verify-lifecycle",
+      sessionId: "i1",
+      origin: "test",
+      concepts: [],
+    };
+    let probeErr: unknown;
+    try {
+      await i1.remember(i1Input);
+    } catch (err) {
+      probeErr = err;
+    }
+    check(
+      'probe fail-closed: searchByText failure propagates as "probe down" (merge never silently skipped)',
+      probeErr instanceof Error && probeErr.message === "probe down",
+      probeErr instanceof Error ? probeErr.message : String(probeErr),
+    );
+    check(
+      "probe fail-closed: insert NEVER sent — only the dedup pre-check ran (sends=1)",
+      i1Sends.length === 1,
+      `sends=${i1Sends.length}`,
+    );
+
+    /* Offline guarantee: importing src/store.ts (done at module load above)
+     * + constructing HelixStore against an unreachable port performs NO
+     * network I/O — any load-time connection here would already have thrown
+     * or hung this Helix-free CI suite. */
+    let constructOk = false;
+    try {
+      const probeStore = new HelixStore("http://127.0.0.1:9");
+      constructOk = probeStore !== undefined;
+    } catch {
+      constructOk = false;
+    }
+    check(
+      "store: import + construct are offline (no load-time network side effect)",
+      constructOk,
+      "HelixStore construction threw",
+    );
+
+    /* I-b. TTL × merge golden (reliability): an EXPIRED identical near-dup
+     * candidate must be dropped BEFORE the jaccard loop -> plain insert.
+     * Without the filterExpired guard the substring guard would swallow it
+     * (consolidated=true, NO insert) — this discriminates the two orders. */
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "1"; // TTL 1 day
+    const expiredContent = "ttl guard candidate content delta epsilon zeta";
+    const expiredHit: SearchHit = {
+      id: "e1",
+      memoryId: "expired-hit",
+      content: expiredContent, // IDENTICAL to the incoming -> jaccard 1 >= 0.9
+      sessionId: "old-session",
+      origin: "rest",
+      importance: 0.5,
+      createdAt: new Date(Date.now() - 10 * 86_400_000).toISOString(), // age 10d > TTL 1d -> expired
+      score: 3.5,
+    };
+    const i4Sends: unknown[] = [];
+    const i4 = makeSeamStore(i4Sends, () => Promise.resolve([expiredHit]));
+    const i4Result = await i4.remember({
+      content: expiredContent,
+      project: "verify-lifecycle",
+      sessionId: "i4",
+      origin: "test",
+      concepts: [],
+    });
+    check(
+      "TTL×merge: expired identical candidate dropped -> plain insert (consolidated=false, deduped=false, 2 sends)",
+      i4Result.consolidated === false &&
+        i4Result.deduped === false &&
+        i4Sends.length === 2,
+      JSON.stringify({
+        consolidated: i4Result.consolidated,
+        deduped: i4Result.deduped,
+        sends: i4Sends.length,
+      }),
+    );
+
+    // Control: TTL OFF -> the same candidate survives, consolidates via the
+    // substring guard (consolidated=true, NO insert send) — proves the TTL
+    // filter is the only thing that changed between the two runs.
+    delete process.env["AGENT_MEMORY_TTL_DAYS"];
+    const i5Sends: unknown[] = [];
+    const i5 = makeSeamStore(i5Sends, () => Promise.resolve([expiredHit]));
+    const i5Result = await i5.remember({
+      content: expiredContent,
+      project: "verify-lifecycle",
+      sessionId: "i5",
+      origin: "test",
+      concepts: [],
+    });
+    check(
+      "TTL×merge: TTL OFF control -> same candidate consolidates (consolidated=true, 1 send)",
+      i5Result.consolidated === true && i5Sends.length === 1,
+      JSON.stringify({ consolidated: i5Result.consolidated, sends: i5Sends.length }),
+    );
+  } finally {
+    restoreI();
+  }
+
+  /* J. opencode plugin importance default (COND-QA-02 / CE-004) — fs check
+   * against the shipped plugin source (READ-ONLY, no import: the plugin
+   * pulls the opencode runtime). The plugin must not pin a 0.5 default; it
+   * spreads `importance` ONLY when the caller supplied one so the server
+   * derives it (REQ-P1-4). */
+  const pluginSource = readFileSync(
+    join(REPO_ROOT, "plugins/opencode/plugins/agent-memory.ts"),
+    "utf8",
+  );
+  check(
+    "plugin: NO DEFAULT_IMPORTANCE anywhere in agent-memory.ts",
+    !pluginSource.includes("DEFAULT_IMPORTANCE"),
+    "DEFAULT_IMPORTANCE found",
+  );
+  check(
+    "plugin: omit-when-absent spread present verbatim (importance !== undefined ? { importance } : {})",
+    pluginSource.includes("importance !== undefined ? { importance } : {}"),
+    "spread guard not found",
+  );
+
   /* Summary (verify.ts format). */
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {
@@ -657,4 +948,7 @@ function main(): void {
   console.log("VERIFY PASS");
 }
 
-main();
+main().catch((err: unknown) => {
+  console.error(`verify-lifecycle crashed: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(1);
+});

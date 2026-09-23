@@ -1,4 +1,73 @@
-# Release Notes: v0.4.0
+# Release Notes: v0.5.0
+
+**Date:** 2026-09-23
+**Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
+operations function per ship-release role binding — role assumption stated
+for this lane)
+**Specs Included:** P1 remainder (P1.4 derived confidence + P1.2 tier-1
+consolidation + P1.5 eval harness) + P3.2 skill set — `ROADMAP.md` §P1 + §P3
+**Domains-Touched:** engineering, automation/ops, data lens, docs
+(finance / legal / marketing / people / revenue: **N/A** — code+docs lane)
+**Ship Type:** deploy (local library/server release; no external deployment
+target; additive API — one behavior change: omitted `importance` is derived)
+
+## Highlights
+
+- **Derived confidence (P1.4)** — `importance` omitted by the caller is
+  computed from provenance + structure (lesson 0.75 / `hook:*` 0.55 / else
+  0.5 base + 0.025·min(concepts,8), clamp01) instead of defaulting to `0.5`;
+  the fused tie-break applies a recall boost AFTER decay over an in-process
+  ledger (per-process, cap 10k); explicit caller values always win; the
+  OpenCode plugin no longer pins a client-side `0.5`.
+- **Tier-1 consolidation (P1.2)** — near-duplicates (Jaccard ≥
+  `AGENT_MEMORY_MERGE_JACCARD`, default 0.9, fail-closed OFF on bad config)
+  merge into ONE survivor: content concatenated (substring guard closes the
+  re-merge loop), `embedding`/`dedupKey` rewritten in place, survivor
+  `memoryId` stable, response gains `consolidated:true`; TTL-expired
+  survivors are excluded from the probe. probe4 proved the in-place rewrite
+  refreshes both text and vector indexes (VERDICT A, 12 checks).
+- **Eval harness (P1.5)** — adapter-pluggable `EvalClient` (`EVAL_MODE`),
+  deterministic in-repo corpus (40 docs / 15 queries + qrels, zero network),
+  R@5/R@10/MRR@10/nDCG@10 for bm25 + hybrid, our own numbers in
+  `docs/benchmarks/SCORECARD.md` (corpus-specific, disclaimed on its face;
+  metric math regression-tested by `verify-lifecycle` §H goldens).
+- **Skill set (P3.2)** — 8 invocable skills (`recall`, `remember`, `recap`,
+  `handoff`, `forget`, `lesson`, `commit-context`, `session-history`),
+  contract-accurate tables + examples, indexed by `skills/memory/SKILL.md`;
+  `verify-skills` structurally validates all 8 (server-free `--structural`
+  mode, CI-wired) and live round-trips every frozen route (119 checks).
+
+## Contract
+
+`docs/CONTRACT.md` v1.1 → **v1.2**: derived-importance default replaces
+`importance=0.5`, `RememberResult.consolidated`, tier-1 merge semantics +
+gate P1R-P32 declarations (concurrency exception, atomicity assumption,
+TTL×merge guard, merge provenance, index dependency), recall-boost tie-break
+order, `updateMemoryContent` in §2, probe4 fact in §0. Backward compatible:
+additive response fields, no route/tool renames.
+
+## Verification
+
+`typecheck` 0 · `verify-lifecycle` **104/104** · `verify` **214/214** (3151) ·
+`verify-skills` **119/119** (+ `--structural` 73/73) · `probe4` 12 (VERDICT A)
+· `eval` EVAL PASS · `verify-capture` 115 · `verify-injection` 73 ·
+`verify-env` 21 · `purge` usage guard exit 2 · counts in `TEST_MATRIX.md`.
+
+## Quality gate
+
+9 independent reviewers → 3 pass / 6 conditional / 0 closed; all conditions
+fixed or waived with owner + expiry → gate **OPEN**:
+`docs/specs/40_workspace/quality-gate/P1R-P32/GATE_REPORT.md`.
+
+## Rollback
+
+Six separable commits (`df39d7d`, `591c79c`, `39fec28`, `c69636d`,
+`2deda68` + gate remediation) — revert to `d17294b` restores v0.4.0
+behavior; merged rows in the dev instance are seed/verify data only.
+
+---
+
+# Release Notes: v0.4.0 (previous)
 
 **Date:** 2026-09-23
 **Release Manager:** orchestrator (frame-ship lane; ship mechanics executed by

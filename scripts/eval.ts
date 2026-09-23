@@ -31,8 +31,12 @@
  *   fails loudly as a corpus-content bug).
  *
  *   Metrics over all queries, cutoffs 5/10: Recall@5, Recall@10, MRR@10
- *   (first relevant rank), nDCG@10 (binary relevance). No randomness
- *   anywhere — identical inputs produce identical numbers.
+ *   (first relevant rank), nDCG@10 (binary relevance). Determinism
+ *   (qualified per RL-004): the metrics in eval/metrics.ts are PURE — same
+ *   corpus + same ranked id lists produce byte-identical numbers. The recall
+ *   LEDGER that shapes search ORDERING is process-local, warm, best-effort
+ *   state (never persisted): it can reorder fused ties in a warm process,
+ *   i.e. it affects which ids ARRIVE here, never how they are scored.
  *
  *   Security: AGENT_MEMORY_SECRET, when non-empty, is added as a bearer
  *   header and never logged; the scorecard and stdout carry no secrets or
@@ -40,9 +44,10 @@
  *
  * Exit codes: 0 success (scorecard written), 1 any failure (clear message).
  *
- * Reproduce (also written into the scorecard):
- *   terminal 1:  AGENT_MEMORY_PORT=3152 npx tsx src/server.ts
- *   terminal 2:  AGENT_MEMORY_URL=http://127.0.0.1:3152 npx tsx scripts/eval.ts
+ * Reproduce (also written into the scorecard with the ACTUAL base URL this
+ * run resolved — static example matches README's port):
+ *   terminal 1:  AGENT_MEMORY_PORT=3151 npx tsx src/server.ts
+ *   terminal 2:  AGENT_MEMORY_URL=http://127.0.0.1:3151 npx tsx scripts/eval.ts
  * Helix dev (localhost:6969) must already be up — never restart/stop it.
  * If searches report index_not_found, run `npx tsx scripts/bootstrap.ts`
  * (idempotent) first.
@@ -51,6 +56,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { logSafeNote } from "../src/errors.js";
 import { EVAL_DOCS, EVAL_QUERIES, type EvalDoc, type EvalQuery } from "../eval/corpus.js";
+/* COND-QA-01: metrics extracted VERBATIM into eval/metrics.ts (pure, no
+ * scripts/ imports) so the harness and the §H goldens score with ONE code
+ * path — zero scoring behavior change. */
+import { aggregate, scoreQuery, type ModeAggregate, type QueryScore } from "../eval/metrics.js";
 
 /* ------------------------------------------------------------------ */
 /* Configuration (env-driven, contract naming)                          */
@@ -63,6 +72,16 @@ const SEED_ORIGIN = "eval";
 /** Contract default (docs/CONTRACT.md §3) — the runbook exports our port. */
 const BASE = new URL(process.env["AGENT_MEMORY_URL"] ?? "http://127.0.0.1:3111");
 const NORMALIZED_BASE = new URL(BASE.href.endsWith("/") ? BASE.href : `${BASE.href}/`);
+/** ACTUAL port/origin of THIS run's target — the Reproduce block and the
+ * fail runbooks print these instead of a hardcoded example port, so the
+ * scorecard always tells the truth about where its numbers came from. */
+const RUN_PORT =
+  NORMALIZED_BASE.port !== ""
+    ? NORMALIZED_BASE.port
+    : NORMALIZED_BASE.protocol === "https:"
+      ? "443"
+      : "80";
+const RUN_ORIGIN = NORMALIZED_BASE.origin; // scheme://host[:port], no trailing slash
 const SECRET = process.env["AGENT_MEMORY_SECRET"];
 /** Top-k for every search: Recall@5/@10, MRR@10, nDCG@10 all fit in 10. */
 const EVAL_LIMIT = 10;
@@ -299,90 +318,26 @@ function validateCorpus(): void {
 }
 
 /* ------------------------------------------------------------------ */
-/* Metrics (deterministic, binary relevance)                           */
+/* Metrics — extracted VERBATIM into eval/metrics.ts (COND-QA-01):      */
+/* recallAt / ndcgAt10 / scoreQuery / aggregate + QueryScore /          */
+/* ModeAggregate now live in the pure module imported above. Zero       */
+/* scoring behavior change — one implementation, shared with the        */
+/* verify-lifecycle §H goldens.                                          */
 /* ------------------------------------------------------------------ */
-
-interface QueryScore {
-  query: string;
-  relevant: string[];
-  /** 1-based rank of the first relevant doc in the top-10; 0 = not retrieved. */
-  firstRank: number;
-  recall5: number;
-  recall10: number;
-  /** 1/firstRank within top-10, else 0. */
-  reciprocal: number;
-  ndcg10: number;
-}
-
-interface ModeAggregate {
-  mode: "bm25" | "hybrid";
-  recall5: number;
-  recall10: number;
-  mrr10: number;
-  ndcg10: number;
-  perQuery: QueryScore[];
-}
-
-function recallAt(ranked: string[], relevant: string[], k: number): number {
-  const top = new Set(ranked.slice(0, k));
-  let found = 0;
-  for (const id of relevant) if (top.has(id)) found += 1;
-  return found / relevant.length;
-}
-
-function ndcgAt10(ranked: string[], relevant: string[]): number {
-  const relevantSet = new Set(relevant);
-  let dcg = 0;
-  const depth = Math.min(ranked.length, 10);
-  for (let i = 0; i < depth; i++) {
-    const id = ranked[i];
-    if (id !== undefined && relevantSet.has(id)) dcg += 1 / Math.log2(i + 2);
-  }
-  let idcg = 0;
-  const ideal = Math.min(relevant.length, 10);
-  for (let i = 0; i < ideal; i++) idcg += 1 / Math.log2(i + 2);
-  return idcg > 0 ? dcg / idcg : 0;
-}
-
-function scoreQuery(query: string, ranked: string[], relevant: string[]): QueryScore {
-  let firstRank = 0;
-  for (let i = 0; i < ranked.length; i++) {
-    const id = ranked[i];
-    if (id !== undefined && relevant.includes(id)) {
-      firstRank = i + 1;
-      break;
-    }
-  }
-  return {
-    query,
-    relevant,
-    firstRank,
-    recall5: recallAt(ranked, relevant, 5),
-    recall10: recallAt(ranked, relevant, 10),
-    reciprocal: firstRank > 0 ? 1 / firstRank : 0,
-    ndcg10: ndcgAt10(ranked, relevant),
-  };
-}
-
-function aggregate(mode: "bm25" | "hybrid", perQuery: QueryScore[]): ModeAggregate {
-  const n = perQuery.length;
-  const mean = (pick: (score: QueryScore) => number): number =>
-    perQuery.reduce((sum, score) => sum + pick(score), 0) / n;
-  return {
-    mode,
-    recall5: mean((score) => score.recall5),
-    recall10: mean((score) => score.recall10),
-    mrr10: mean((score) => score.reciprocal),
-    ndcg10: mean((score) => score.ndcg10),
-    perQuery,
-  };
-}
 
 /* ------------------------------------------------------------------ */
 /* Scorecard rendering                                                 */
 /* ------------------------------------------------------------------ */
 
 const fmt = (value: number): string => value.toFixed(4);
+
+/** True when BOTH modes put every query's first relevant doc at rank 1. */
+function allFirstRankOne(bm25: ModeAggregate, hybrid: ModeAggregate): boolean {
+  return (
+    bm25.perQuery.every((score) => score.firstRank === 1) &&
+    hybrid.perQuery.every((score) => score.firstRank === 1)
+  );
+}
 
 function mdCell(text: string): string {
   return text.replace(/\|/g, "\\|");
@@ -402,6 +357,29 @@ function renderScorecard(
   lines.push("");
   lines.push("All numbers below were generated by this run against OUR server");
   lines.push("(`scripts/eval.ts`) — our measurements, nothing borrowed from any upstream.");
+  lines.push("");
+  lines.push(`Scope: CORPUS-SPECIFIC — ${EVAL_DOCS.length} documents / ${EVAL_QUERIES.length} queries from`);
+  lines.push(
+    allFirstRankOne(bm25, hybrid)
+      ? "eval/corpus.ts only; in this run every query put its first relevant doc at rank 1 in"
+      : "eval/corpus.ts only; see the per-query appendix for first ranks.",
+  );
+  if (allFirstRankOne(bm25, hybrid)) {
+    lines.push(
+      "both modes. That is a property of THIS small in-repo corpus — NOT a general retrieval-",
+    );
+    lines.push(
+      "quality claim, and never a comparison against upstream: upstream agentmemory numbers are",
+    );
+    lines.push("never ours and are never mixed into this card.");
+  } else {
+    lines.push(
+      "Scores are a property of THIS small in-repo corpus — NOT a general retrieval-quality claim,",
+    );
+    lines.push(
+      "and never a comparison against upstream: upstream agentmemory numbers are never ours.",
+    );
+  }
   lines.push("");
   lines.push("| | |");
   lines.push("|---|---|");
@@ -460,14 +438,14 @@ function renderScorecard(
   lines.push("## Reproduce");
   lines.push("");
   lines.push("```bash");
-  lines.push("# terminal 1 — OUR REST server on port 3152");
+  lines.push(`# terminal 1 — OUR REST server on port ${RUN_PORT} (the port THIS run actually used)`);
   lines.push("# (Helix dev at localhost:6969 must already be up — NEVER restart or stop it;");
   lines.push("#  3111 may be held by the upstream agentmemory — never kill it, never write to it)");
-  lines.push("AGENT_MEMORY_PORT=3152 npx tsx src/server.ts");
+  lines.push(`AGENT_MEMORY_PORT=${RUN_PORT} npx tsx src/server.ts`);
   lines.push("");
-  lines.push("# terminal 2 — run the harness (AGENT_MEMORY_URL defaults to the contract");
-  lines.push("# default http://127.0.0.1:3111; point it at OUR server's port)");
-  lines.push("AGENT_MEMORY_URL=http://127.0.0.1:3152 npx tsx scripts/eval.ts");
+  lines.push(`# terminal 2 — run the harness against the exact base URL of this run`);
+  lines.push(`# (AGENT_MEMORY_URL defaults to the contract default http://127.0.0.1:3111)`);
+  lines.push(`AGENT_MEMORY_URL=${RUN_ORIGIN} npx tsx scripts/eval.ts`);
   lines.push("```");
   lines.push("");
   lines.push("Notes:");
@@ -478,6 +456,10 @@ function renderScorecard(
   lines.push(`- \`EVAL_MODE\` defaults to \`rest\`; a new mode only needs another \`EvalClient\``);
   lines.push(`  implementation in \`scripts/eval.ts\`.`);
   lines.push(`- \`AGENT_MEMORY_SECRET\` is forwarded as a bearer header when set (never logged).`);
+  lines.push(`- Determinism (RL-004): the metrics are pure — same corpus + same ranked ids ->`);
+  lines.push(`  identical numbers. Search ORDERING can differ in a warm process because the`);
+  lines.push(`  in-process recall ledger (never persisted) tilts fused ties; the ranks in this`);
+  lines.push(`  appendix are what THIS run observed.`);
   lines.push(`- If searches report \`index_not_found\`, run \`npx tsx scripts/bootstrap.ts\` first`);
   lines.push(`  (idempotent), then re-run.`);
   lines.push("");
@@ -500,8 +482,8 @@ async function main(): Promise<void> {
   if (identity.status === -1) {
     fail(
       `cannot reach ${NORMALIZED_BASE.href} (GET/recap unreachable: ${String(identity.body)}) — ` +
-        `start OUR server first:\n\n  AGENT_MEMORY_PORT=3152 npx tsx src/server.ts\n\n` +
-        `then re-run:\n\n  AGENT_MEMORY_URL=http://127.0.0.1:3152 npx tsx scripts/eval.ts\n\n` +
+        `start OUR server first:\n\n  AGENT_MEMORY_PORT=${RUN_PORT} npx tsx src/server.ts\n\n` +
+        `then re-run:\n\n  AGENT_MEMORY_URL=${RUN_ORIGIN} npx tsx scripts/eval.ts\n\n` +
         `No data was written.`,
     );
   }
@@ -527,8 +509,8 @@ async function main(): Promise<void> {
   } catch (err) {
     fail(
       `health gate failed at ${NORMALIZED_BASE.href} (${logSafeNote(err)}) — start OUR server ` +
-        `(AGENT_MEMORY_PORT=3152 npx tsx src/server.ts), then re-run with ` +
-        `AGENT_MEMORY_URL=http://127.0.0.1:3152 npx tsx scripts/eval.ts`,
+        `(AGENT_MEMORY_PORT=${RUN_PORT} npx tsx src/server.ts), then re-run with ` +
+        `AGENT_MEMORY_URL=${RUN_ORIGIN} npx tsx scripts/eval.ts`,
     );
   }
   console.log("health: gate passed (counts present)");

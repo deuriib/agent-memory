@@ -39,7 +39,7 @@ import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
 import { deriveWriteImportance } from "./confidence.js";
 import { jaccard, mergeThreshold, mergedContent } from "./consolidate.js";
-import { contentHash, normalizeContent } from "./lifecycle.js";
+import { contentHash, filterExpired, normalizeContent } from "./lifecycle.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
@@ -560,7 +560,14 @@ export class HelixStore implements MemoryStore {
         project: input.project,
         k: 20,
       });
-      const survivor = pickSurvivor(input.content, candidates, threshold);
+      // RL-002: TTL-exact rows must never consolidate a LIVE write. Drop
+      // expired candidates (every SearchHit carries createdAt) BEFORE the
+      // jaccard loop — same filterExpired the read path uses — otherwise a
+      // hidden, TTL-expired near-dup could absorb (and keep growing into)
+      // content the user just saved. filterExpired re-reads the env per
+      // call: absent/invalid TTL → OFF → every candidate kept (no change).
+      const liveCandidates = filterExpired(candidates, Date.now());
+      const survivor = pickSurvivor(input.content, liveCandidates, threshold);
       if (survivor !== undefined) {
         return this.consolidateInto(input, survivor);
       }

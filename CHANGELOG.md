@@ -44,10 +44,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   `AGENT_MEMORY_MERGE_JACCARD` semantics, recall-boost tie-break order,
   `updateMemoryContent` in §2, tier-1 out of §4's do-not-build, §5 bar (86 /
   212 / 119 / probe4 / eval) (engineering, P1+P3.2)
-- `scripts/verify.ts` bar 152 → **212 passed**; `verify-lifecycle` 39 → **86
-  passed** (confidence + consolidation goldens) (engineering, P1)
+- `scripts/verify.ts` bar 152 → **214 passed**; `verify-lifecycle` 39 → **104
+  passed** (confidence, consolidation + gate-remediation goldens: decay-then-
+  boost order, eval metrics, fail-closed probe, TTL×merge, plugin no-default;
+  + MCP adapter pass-through in `verify`)
 - Version 0.4.0 → 0.5.0 across `package.json`, lockfile, plugin `VERSION`,
   MCP server identifier, and README badge (engineering, P1+P3.2)
+
+### Fixed
+
+- **Gate P1R-P32 remediation** (quality gate, 2026-09-23): hand-computed
+  eval-metric goldens (`eval/metrics.ts` + `verify-lifecycle` §H) so a wrong
+  R@/MRR/nDCG can no longer ship green; decay-THEN-boost order golden
+  (`tieBreakImportance`, §F-bis); induced probe-failure fail-closed test
+  (§I); MCP adapter importance pass-through via `InMemoryTransport` + plugin
+  no-default source check; TTL×merge guard (probe candidates run through
+  `filterExpired`); `verify-skills --structural` server-free mode + CI step;
+  probe4 log-line hardening (CWE-117); scorecard corpus-specific disclaimer +
+  actual-URL reproduce block; `RELEASE_NOTES.md` v0.5.0; CONTRACT §3 tier-1
+  declarations (concurrency exception, atomicity assumption, TTL×merge,
+  provenance, index dependency) (engineering, docs)
 
 ## [v0.4.0] — 2026-09-23
 

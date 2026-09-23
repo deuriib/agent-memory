@@ -16,13 +16,21 @@
  * target — 3111 may be the upstream agentmemory). Then GET /memory/livez,
  * then EVERY skill's route exercised in one flow under the dedicated
  * `verify-skills` project (other suites share this Helix instance), with
- * best-effort cleanup of every row created here. Authorization is attached
+ * best-effort cleanup of the 4 memory rows created here (Session nodes
+ * persist — run budget + declaration in docs/CONTRACT.md §5).
+ * Authorization is attached
  * automatically when AGENT_MEMORY_SECRET is set in this shell (same env as
  * the server) — the value is never printed.
  *
- * Output: PASS/FAIL lines, summary `N passed, M failed`,
+ * Output: PASS/FAIL lines, summary `N passed, M failed` + the mode line,
  * `VERIFY SKILLS PASS` / `VERIFY SKILLS FAIL`. Exit 1 on any failure, and
  * exit 1 with a clear abort message when the target is unreachable/not ours.
+ *
+ * Run modes:
+ *   (default)             PART 1 + PART 2 — structural + LIVE round-trip
+ *                         (119 checks; needs a running OUR-server target).
+ *   --structural          PART 1 ONLY — 73 checks, no server, no network,
+ *                         no writes: the CI-safe skills contract gate.
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
@@ -590,10 +598,17 @@ async function verifyRoundTrip(): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 async function main(): Promise<void> {
+  // --structural: PART 1 only (server-free) — used by CI; default runs both parts.
+  const structuralOnly = process.argv.includes("--structural");
   verifyStructural();
-  await verifyRoundTrip();
+  if (!structuralOnly) await verifyRoundTrip();
 
   console.log(`\n${passed} passed, ${failures.length} failed`);
+  console.log(
+    structuralOnly
+      ? "mode: structural (PART 1 only — no server, no network, no writes)"
+      : "mode: full (structural + live round-trip)",
+  );
   if (failures.length > 0) {
     console.error(`VERIFY SKILLS FAIL\n  - ${failures.join("\n  - ")}`);
     process.exit(1);

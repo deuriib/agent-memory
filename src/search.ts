@@ -147,17 +147,30 @@ function compareMemoryIdAsc(a: string, b: string): number {
  *   3. createdAt DESC (newest first).
  *   4. memoryId ASC — fully deterministic.
  */
+/**
+ * Tie-break score for one fused row (COND-QA-02 / CE-002), extracted
+ * VERBATIM from compareFusedAt so the ORDER of the two operations is
+ * unit-testable: DECAY FIRST (`stored · e^(−λ·ageDays)`, λ off → factor 1),
+ * THEN the recall boost `+0.2·n/(n+1)` (src/confidence.ts) — the reverse
+ * order would boost a stale value before decaying it. Pure: `nowMs` and
+ * `recallCount` arrive from the caller (the ledger is read OUTSIDE, by
+ * compareFusedAt), so same inputs → byte-identical output, no clock, no env
+ * read here (env is read inside decayedImportance per its own contract).
+ */
+export function tieBreakImportance(
+  storedImportance: number,
+  createdAt: string,
+  nowMs: number,
+  recallCount: number,
+): number {
+  return confidenceBoost(decayedImportance(storedImportance, createdAt, nowMs), recallCount);
+}
+
 function compareFusedAt(nowMs: number): (a: FusedResultRow, b: FusedResultRow) => number {
   return (a, b) => {
     if (b.score !== a.score) return b.score - a.score; // RRF score desc (ties only below)
-    const boostedB = confidenceBoost(
-      decayedImportance(b.importance, b.createdAt, nowMs),
-      recallCount(b.memoryId),
-    );
-    const boostedA = confidenceBoost(
-      decayedImportance(a.importance, a.createdAt, nowMs),
-      recallCount(a.memoryId),
-    );
+    const boostedB = tieBreakImportance(b.importance, b.createdAt, nowMs, recallCount(b.memoryId));
+    const boostedA = tieBreakImportance(a.importance, a.createdAt, nowMs, recallCount(a.memoryId));
     if (boostedB !== boostedA) return boostedB - boostedA; // boosted decayed importance desc
     const byDate = compareCreatedAtDesc(a.createdAt, b.createdAt); // newer first
     if (byDate !== 0) return byDate;
