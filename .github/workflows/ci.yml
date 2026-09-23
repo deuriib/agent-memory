@@ -23,6 +23,9 @@ jobs:
       # Local-only test HTTP server; needs no Helix instance, no network beyond localhost.
       # (npm run verify is deliberately NOT run here: it requires a live server + Helix.)
       - run: npx tsx scripts/verify-injection.ts
+      # P1/P2.1 gates: pure lifecycle math + 7-event hook E2E — both Helix-free.
+      - run: npx tsx scripts/verify-lifecycle.ts
+      - run: npx tsx scripts/verify-capture.ts
 
   secret-scan:
     runs-on: ubuntu-latest
