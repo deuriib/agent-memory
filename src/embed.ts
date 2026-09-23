@@ -47,7 +47,10 @@ function signFor(token: string): 1 | -1 {
   return ((second >>> 1) & 1) === 1 ? 1 : -1;
 }
 
-function tokenize(text: string): string[] {
+/** Tokenizer shape is contract-frozen; exported (additive) so the concept
+ * extractor (src/concepts.ts) reuses this ONE implementation instead of a
+ * drifting copy. */
+export function tokenize(text: string): string[] {
   const raw = text.toLowerCase().split(/[^a-z0-9]+/);
   const tokens: string[] = [];
   for (const token of raw) {

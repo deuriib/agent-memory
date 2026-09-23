@@ -347,7 +347,15 @@ async function main(): Promise<void> {
   const rD = shape("remember D: body shape", remD.body, rememberResultSchema);
   if (rD !== undefined) {
     check("remember D: auto-generated sessionId", UUID_RE.test(rD.sessionId), rD.sessionId);
-    check("remember D: default concepts []", rD.concepts.length === 0, JSON.stringify(rD.concepts));
+    // REQ-P1-3 / T-101: no caller concepts -> a deterministic derived list
+    // (non-empty, ≤8, every entry within the 1..200 concept bound).
+    check(
+      "remember D: derived default concepts non-empty ≤8",
+      rD.concepts.length > 0 &&
+        rD.concepts.length <= 8 &&
+        rD.concepts.every((c) => c.length >= 1 && c.length <= 200),
+      JSON.stringify(rD.concepts),
+    );
   }
 
   if (rA === undefined || rB === undefined || rC === undefined || rD === undefined) {
@@ -391,6 +399,66 @@ async function main(): Promise<void> {
     );
     const ours = new Set([rA.id, rB.id, rC.id, rD.id]);
     check("smart-search: hits are our memories", hy.results.some((row) => ours.has(row.memoryId)));
+  }
+
+  /* F2. graph-branch proof (REQ-P1-3): derived concepts reach the graph
+   * source. Isolated project: M1 with NO caller concepts (derivation) and an
+   * unrelated M2 (zero shared tokens). smart-search with M1's derived top
+   * concept must (a) run the graph source with NO `graph:` failure signal
+   * and (b) fuse M1 at rank 1 in all three sources -> score exactly 3/61
+   * (1/(60+1) × 3, ranks 1-based). On mismatch the FAIL line records the
+   * actual score + fused order — the assertion is never loosened. */
+  const gProject = `verify-g-${randomUUID().slice(0, 8)}`;
+  const remM1 = await call("POST", "/memory/remember", undefined, {
+    content: "quantum quantum entanglement experiment entangles photon pairs inside the clean lab room",
+    project: gProject,
+  });
+  check("graph-branch: M1 status 201", remM1.status === 201, `got ${remM1.status}; body=${brief(remM1.body)}`);
+  const rM1 = shape("graph-branch: M1 body shape", remM1.body, rememberResultSchema);
+
+  const remM2 = await call("POST", "/memory/remember", undefined, {
+    content: "tomato seedlings need south facing windowsill light and weekly watering",
+    project: gProject,
+  });
+  check("graph-branch: M2 status 201", remM2.status === 201, `got ${remM2.status}; body=${brief(remM2.body)}`);
+  shape("graph-branch: M2 body shape", remM2.body, rememberResultSchema);
+
+  if (rM1 === undefined) {
+    throw new Error("aborting: graph-branch M1 remember failed (see FAIL lines above)");
+  }
+  check(
+    "graph-branch: M1 derived concepts lead with 'quantum' (tf=2)",
+    rM1.concepts[0] === "quantum" && rM1.concepts.includes("quantum"),
+    JSON.stringify(rM1.concepts),
+  );
+
+  const gs = await call("POST", "/memory/smart-search", undefined, {
+    query: "quantum entanglement lab bench",
+    concepts: [rM1.concepts[0] ?? "quantum"],
+    project: gProject,
+    limit: 10,
+  });
+  check("graph-branch: smart-search status 200", gs.status === 200, `got ${gs.status}; body=${brief(gs.body)}`);
+  const gh = shape("graph-branch: hybrid envelope", gs.body, hybridEnvelopeSchema);
+  if (gh !== undefined) {
+    check(
+      "graph-branch: no `graph:` failure signal (graph source ran)",
+      !gh.signals.some((s) => s.startsWith("graph:")),
+      JSON.stringify(gh.signals),
+    );
+    const m1Row = gh.results.find((row) => row.memoryId === rM1.id);
+    const record = JSON.stringify({
+      expected: 3 / 61,
+      actual: m1Row?.score,
+      order: gh.results.map((row) => ({ memoryId: row.memoryId, score: row.score, source: row.source })),
+      signals: gh.signals,
+    });
+    check("graph-branch: M1 ranks first in fused results", gh.results[0]?.memoryId === rM1.id, record);
+    check(
+      "graph-branch: M1 fused score == 3/61 (rank 1 in vector+text+graph)",
+      m1Row !== undefined && Math.abs(m1Row.score - 3 / 61) <= 1e-9,
+      record,
+    );
   }
 
   /* G. sessions list. */

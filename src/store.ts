@@ -32,6 +32,7 @@ import {
   sessionMemories as sessionMemoriesQuery,
 } from "../db/queries.js";
 import { embed } from "./embed.js";
+import { extractConcepts } from "./concepts.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
@@ -395,7 +396,11 @@ export class HelixStore implements MemoryStore {
     }
     const memoryId = randomUUID();
     const createdAt = new Date().toISOString(); // RFC3339 for param.dateTime()
-    const concepts: Record<string, PropertyValueInput>[] = input.concepts.map((name) => ({ name }));
+    // REQ-P1-3: derive a default topic list ONLY when the caller passed none —
+    // explicit concepts win verbatim (contract §3 echo is preserved below).
+    const effectiveConcepts =
+      input.concepts.length > 0 ? [...input.concepts] : extractConcepts(input.content);
+    const concepts: Record<string, PropertyValueInput>[] = effectiveConcepts.map((name) => ({ name }));
 
     const response = await this.send(
       saveMemoryQuery().toQueryRequest(saveMemoryParams, {
@@ -421,7 +426,7 @@ export class HelixStore implements MemoryStore {
       id: memoryId,
       sessionId: input.sessionId,
       project: input.project,
-      concepts: [...input.concepts],
+      concepts: effectiveConcepts, // echo what was actually stored (derived or caller's)
     };
   }
 
