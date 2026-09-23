@@ -78,8 +78,14 @@ const AUTO_TIMEOUT_MS = 1_500;
 /** `tool.execute.before` observation origin — frozen format (contract §3). */
 const TOOL_START_ORIGIN = "hook:tool.execute.before";
 
-/** Our own tool namespace is never observed — no self-observation loop. */
+/** `tool.execute.after` failure observation origin (P2.2, frozen format). */
+const TOOL_FAIL_ORIGIN = "hook:tool.execute.after";
+
+/** Our own tool namespace is never observed — no self-observation loop (lowercase by construction; case-sensitive by design). */
 const OBSERVED_SKIP_PREFIX = "memory";
+
+/** Tool-name bound for the fire-and-forget observations (parity with hooks). */
+const MAX_TOOL_NAME = 80;
 
 /* Injection defaults (option > env > these). */
 const DEFAULT_INJECT = true;
@@ -589,16 +595,22 @@ export async function autoRecall(cfg: Config, sessionID: string, query: string):
  * (arguments, paths, code) is never read (privacy, Ley 172-13). Our own
  * `memory*` tools are skipped: observing an observation would write on
  * every observation — an unbounded self-observation loop.
+ *
+ * Gate P2-COMPLETE refuter S-01: the whole body (including the skip check
+ * and content build) runs inside try/catch and non-string tool names return
+ * early, so a malformed event can never throw out of the hook; the name is
+ * bounded to 80 chars (parity with hooks/capture.mjs).
  */
 export function captureToolStart(cfg: Config, toolName: string, sessionID: string): void {
-  if (toolName.startsWith(OBSERVED_SKIP_PREFIX)) return;
   try {
+    if (typeof toolName !== "string" || toolName.startsWith(OBSERVED_SKIP_PREFIX)) return;
+    const name = toolName.slice(0, MAX_TOOL_NAME);
     void call(
       cfg,
       "POST",
       "memory/remember",
       {
-        content: `tool started: ${toolName}`,
+        content: `tool started: ${name}`,
         project: cfg.project,
         sessionId: sessionID,
         origin: TOOL_START_ORIGIN,
@@ -608,6 +620,35 @@ export function captureToolStart(cfg: Config, toolName: string, sessionID: strin
   } catch (error) {
     // A throwing hook would abort the turn: record and move on.
     lastError = clip(`tool-start hook: ${String(error)}`, MAX_ERROR_CHARS);
+  }
+}
+
+/**
+ * P2.2 — record `tool failed: <name>` for one failed tool invocation.
+ * Same fail-soft posture as captureToolStart: detached POST with
+ * AUTO_TIMEOUT_MS, every rejection swallowed, sync throw caught. Content
+ * carries the tool NAME only — error output/arguments are never read
+ * (privacy, Ley 172-13). Our own `memory*` tools are skipped, mirroring
+ * the start path (observing a failed observation must not loop).
+ */
+export function captureToolFailure(cfg: Config, toolName: string, sessionID: string): void {
+  try {
+    if (typeof toolName !== "string" || toolName.startsWith(OBSERVED_SKIP_PREFIX)) return;
+    const name = toolName.slice(0, MAX_TOOL_NAME);
+    void call(
+      cfg,
+      "POST",
+      "memory/remember",
+      {
+        content: `tool failed: ${name}`,
+        project: cfg.project,
+        sessionId: sessionID,
+        origin: TOOL_FAIL_ORIGIN,
+      },
+      AUTO_TIMEOUT_MS,
+    ).catch(() => undefined);
+  } catch (error) {
+    lastError = clip(`tool-failure hook: ${String(error)}`, MAX_ERROR_CHARS);
   }
 }
 
@@ -931,9 +972,20 @@ export default Plugin.define({
     );
 
     /* ---- 4. Writes invalidate the cache so new memories surface next turn ---- */
+    /* ---- P2.2: non-completed tool runs also record a failure observation ---- */
     registrations.push(
       (await context.tool.hook("execute.after", (event) => {
-        if (event.status !== "completed") return;
+        if (event.status !== "completed") {
+          // Failed tool call produces an observation (P2.2) — fire-and-forget,
+          // memory* skipped, never throws (same posture as execute.before).
+          try {
+            const tool = typeof event.tool === "string" ? event.tool : "";
+            if (tool.length > 0) captureToolFailure(cfg, tool, String(event.sessionID));
+          } catch (error) {
+            lastError = clip(`tool-failure hook: ${String(error)}`, MAX_ERROR_CHARS);
+          }
+          return;
+        }
         if (event.tool !== "memory_save" && event.tool !== "memory_forget") return;
         recallCache.clear();
       })).dispose,
@@ -942,7 +994,14 @@ export default Plugin.define({
     /* ---- 5. Observe tool starts (fire-and-forget; our own memory* skipped) ---- */
     registrations.push(
       (await context.tool.hook("execute.before", (event) => {
-        captureToolStart(cfg, event.tool, String(event.sessionID));
+        // Gate P2-COMPLETE refuter: the hook itself never throws — a throwing
+        // hook would abort the turn (same posture as the after-path).
+        try {
+          const tool = typeof event.tool === "string" ? event.tool : "";
+          if (tool.length > 0) captureToolStart(cfg, tool, String(event.sessionID));
+        } catch (error) {
+          lastError = clip(`tool-start hook: ${String(error)}`, MAX_ERROR_CHARS);
+        }
       })).dispose,
     );
 

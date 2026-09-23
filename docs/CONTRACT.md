@@ -22,6 +22,19 @@ tie-break gains a recall boost AFTER decay (in-process recall ledger, P1.4),
 under `AGENT_MEMORY_MERGE_JACCARD` (P1.2), `updateMemoryContent()` joins §2,
 and §5 grows `probe4` + `verify-skills` + the eval harness scorecard.
 
+**v1.3 amendment (2026-09-23, P2-completion lane):** P2.2 file-edit marker —
+`PostToolUse` with an edit-like tool name stores `file edited via <tool>`
+instead of `tool used` (both capture hooks; `AGENT_MEMORY_CAPTURE_PATHS=
+basename` opt-in appends the sanitized basename only, default OFF, full paths
+never stored) + plugin `tool.execute.after` failure observation
+(`tool failed: <tool>`, `hook:tool.execute.after`, memory* skipped, §3
+`captureToolFailure`); P2.3 `scripts/import-transcript.ts` (script-only
+transcript import through the existing remember surface, prompts skipped by
+default, `--include-prompts` opt-in); P2.4 `src/summarize.ts` (deterministic,
+no-LLM session summary + lessons) + `scripts/summarize-session.ts` (saves
+summary + lessons as `/memory/lesson` rows under the same sessionId). No
+frozen route or MCP tool changes. §5 `verify-capture` grows §F (132 checks).
+
 ## 0. Verified facts (do not re-litigate)
 
 | Fact | Evidence |
@@ -368,13 +381,13 @@ Never prints memory content or the secret. Exit 0 always (a dead memory server m
 never block the coding agent). `AGENT_MEMORY_URL` defaults to `http://127.0.0.1:3111`
 (the REST service, matching `src/server.ts`).
 
-**Per-event content allowlist (v1.1, P2.1):** fixed strings only, except the two
+**Per-event content allowlist (v1.3, P2.1 + P2.2):** fixed strings only, except the two
 tool events which carry the tool NAME (≤80 chars) and nothing else —
 
 | Event | `content` stored |
 |---|---|
 | `SessionStart` | `agent session started` |
-| `PostToolUse` | `tool used: <tool>` |
+| `PostToolUse` | `tool used: <tool>` — or `file edited via <tool>` when the tool name matches edit/write/patch/apply/replace (P2.2, name only); `AGENT_MEMORY_CAPTURE_PATHS=basename` opt-in appends `: <basename>` (basename ≤80, no dirs; default OFF, full paths never stored) |
 | `Stop` | `agent session stopped` |
 | `PostToolUseFailure` | `tool failed: <tool>` |
 | `PreCompact` | `context compaction requested` |
@@ -397,19 +410,25 @@ repo keeps `3111` as its default for drop-in parity, but when upstream is runnin
 start ours elsewhere (`AGENT_MEMORY_PORT=3151`) and point clients at it
 (`AGENT_MEMORY_URL=http://127.0.0.1:3151`). Never kill the user's upstream instance.
 
-Hook privacy + project rules (verified): content is only ever one of the 7
-allowlisted strings above (`agent session started`, `tool used: <tool>`, …) — hook
-payloads, file paths, command output, and the user's prompt text are never captured.
+Hook privacy + project rules (verified): content is only ever one of the
+allowlisted shapes above (`agent session started`, `tool used: <tool>`,
+`file edited via <tool>[: <basename>]`, …) — hook payloads, full file paths,
+command output, and the user's prompt text are never captured by default
+(basename only under the explicit `AGENT_MEMORY_CAPTURE_PATHS=basename`
+opt-in).
 `project` derives from the workspace directory name, overridable via
 `AGENT_MEMORY_PROJECT`.
 
-**OpenCode plugin hooks (v1.1, P2.1):** 5 registrations — `prompt`, `context`,
-`compaction`, `tool.execute.after` (cache invalidation, pre-existing), plus NEW
-`tool.execute.before`: fire-and-forget observation `tool started: <tool>`
+**OpenCode plugin hooks (v1.3, P2.1 + P2.2):** 5 registrations — `prompt`, `context`,
+`compaction`, `tool.execute.after` (cache invalidation on completed
+memory_save/forget + P2.2 failure observation `tool failed: <tool>`
+`origin="hook:tool.execute.after"` on non-completed runs, memory* skipped),
+plus `tool.execute.before`: fire-and-forget observation `tool started: <tool>`
 (`origin="hook:tool.execute.before"`, `AUTO_TIMEOUT_MS` 1.5s detached, every
 rejection swallowed, sync throw caught so the hook can never abort the turn; own
 `memory*` tools skipped — no self-observation loop; `event.input` never read —
-tool NAME only). Exported as `captureToolStart(cfg, toolName, sessionID)` for
+tool NAME only). Exported as `captureToolStart(cfg, toolName, sessionID)` and
+`captureToolFailure(cfg, toolName, sessionID)` for
 `scripts/verify-capture.ts`.
 
 `src/demo.ts` — seeds 3 realistic sessions (JWT auth in `src/middleware/auth.ts`,
@@ -420,7 +439,9 @@ N+1 query fix, rate limiting) then runs keyword + semantic searches and prints h
 ~~Decay~~ (added v1.1 corte A: read-time decay + TTL + `purge.ts`),
 ~~tier-1 near-duplicate consolidation~~ (added v1.2: `AGENT_MEMORY_MERGE_JACCARD`
 merge — tiers 2–4 of upstream's consolidation, LLM auto-compress, viewer UI,
-Replay, JSONL import, 20 agent adapters, full 54-tool MCP surface remain out).
+Replay, 20 agent adapters, full 54-tool MCP surface remain out; P2.3 transcript
+import and P2.4 session summarization are IN as of v1.3, script-only with no new
+routes).
 
 ## 5. Verification bar
 
@@ -436,8 +457,9 @@ metric goldens (R@5/R@10/MRR/nDCG/aggregate — gate CE-001/COND-QA-01),
 **§I** fail-closed near-dupe probe (induced probe error → `remember` rejects,
 insert never runs) + TTL×expired-survivor guard + plugin no-default source
 checks — gate COND-QA-03 / RL-002 / COND-QA-02b).
-`scripts/verify-capture.ts` green (**115 checks** — 7 events × payload/exit-0/
-silence, privacy canary, negatives, dead server, plugin helper).
+`scripts/verify-capture.ts` green (**132 checks** — 7 events × payload/exit-0/
+silence, privacy canary, negatives, dead server, plugin helper, **§F P2.2**
+file-edit marker + basename opt-in + plugin failure helper).
 `scripts/verify.ts` end-to-end green (**214 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25

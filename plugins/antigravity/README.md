@@ -50,8 +50,7 @@ cp -r plugins/antigravity/* .agents/plugins/agent-memory/plugins/antigravity/
 
 ## Behavior
 
-- **PostToolUse** stores only `tool used: <toolName>` (`origin=hook:PostToolUse`).
-  Tool args and outputs are deliberately never captured.
+- **PostToolUse** stores `tool used: <toolName>` (`origin=hook:PostToolUse`), or `file edited via <toolName>` for edit-like tools (P2.2). Tool args and outputs are deliberately never captured (`AGENT_MEMORY_CAPTURE_PATHS=basename` opt-in appends the basename only).
 - **Stop** stores `agent session stopped` and prints
   `{"decision":"stop"}` so the execution loop ends normally.
 - **PreInvocation** reads the last user message from `transcriptPath`, runs

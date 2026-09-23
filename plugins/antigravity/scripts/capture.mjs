@@ -20,7 +20,12 @@
  *     stdout carries only the contract object, stderr stays empty.
  *   - Only a tiny, host-agnostic summary is stored (event + tool NAME).
  *     Tool args may contain file paths, commands, and user data — they are
- *     deliberately NOT captured.
+ *     deliberately NOT captured (P2.2 basename opt-in below is the SOLE
+ *     exception: AGENT_MEMORY_CAPTURE_PATHS=basename appends the sanitized
+ *     BASENAME only, never a full path or content; default OFF).
+ *   - P2.2 file-edit marker: PostToolUse whose tool name looks like an edit
+ *     (edit/write/patch/apply/replace, case-insensitive) stores
+ *     `file edited via <tool>` instead of `tool used: <tool>`.
  *   - AGENT_MEMORY_URL default: http://127.0.0.1:3111 (the REST service).
  */
 import { randomUUID } from "node:crypto";
@@ -64,10 +69,51 @@ function clean(value, max) {
 function observationFor(event, payload) {
   if (event === "Stop") return "agent session stopped";
   // PostToolUse: only the tool NAME — inputs/outputs may contain paths,
-  // code, or user data, none of which this hook is allowed to capture.
+  // code, or user data, none of which this hook is allowed to capture
+  // (P2.2 basename opt-in is the sole exception: basename only).
   const name = payload?.toolCall?.name;
   const tool = typeof name === "string" ? clean(name, 80) : "";
-  return tool.length > 0 ? `tool used: ${tool}` : null;
+  if (tool.length === 0) return null;
+  // Gate P2-COMPLETE refuter: path-bearing tool names fail closed (mirror of
+  // hooks/capture.mjs) — a hostile name can never store a full path.
+  if (tool.includes("/") || tool.includes("\\")) return null;
+  if (!isEditTool(tool)) return `tool used: ${tool}`;
+  const basename = basenameOptIn(payload);
+  return basename === null ? `file edited via ${tool}` : `file edited via ${tool}: ${basename}`;
+}
+
+/** P2.2 edit-tool heuristic (name only) — mirrors hooks/capture.mjs. */
+function isEditTool(tool) {
+  return /edit|write|patch|apply|replace/i.test(tool);
+}
+
+/**
+ * P2.2 basename opt-in: AGENT_MEMORY_CAPTURE_PATHS=basename appends the
+ * sanitized BASENAME of the edited file (no directories, ≤80 chars).
+ * Searches payload.toolCall args/input/arguments bags for
+ * file_path/filePath/path/filename/file (first non-empty string wins).
+ */
+function basenameOptIn(payload) {
+  if (process.env.AGENT_MEMORY_CAPTURE_PATHS !== "basename") return null;
+  const call = payload?.toolCall;
+  if (typeof call !== "object" || call === null) return null;
+  const bags = [call.args, call.input, call.arguments, call.tool_input];
+  const keys = ["file_path", "filePath", "path", "filename", "file"];
+  for (const bag of bags) {
+    if (typeof bag !== "object" || bag === null || Array.isArray(bag)) continue;
+    for (const key of keys) {
+      const raw = bag[key];
+      if (typeof raw !== "string" || raw.trim().length === 0) continue;
+      const cleaned = clean(raw, 256);
+      if (cleaned.length === 0) continue;
+      const segments = cleaned.split(/[\\/]+/).filter((s) => s.length > 0);
+      const last = segments[segments.length - 1] ?? "";
+      const base = clean(last, 80);
+      if (base.length === 0 || base === "." || base === "..") continue;
+      return base;
+    }
+  }
+  return null;
 }
 
 /** Tenant key: env override > first workspace dir name > "default". */

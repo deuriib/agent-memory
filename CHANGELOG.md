@@ -5,6 +5,37 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **P2 capture breadth** (P2.2–P2.4): `PostToolUse` with an edit-like tool
+  name stores `file edited via <tool>` (name only; `AGENT_MEMORY_CAPTURE_PATHS=
+  basename` opt-in appends the sanitized basename, default OFF; path-bearing
+  tool names fail closed); plugin `tool.execute.after` records
+  `tool failed: <tool>` (`hook:tool.execute.after`, memory* skipped);
+  Antigravity adapter mirrors the edit marker — `hooks/capture.mjs`,
+  `plugins/opencode/plugins/agent-memory.ts` (`captureToolFailure`),
+  `plugins/antigravity/scripts/capture.mjs` (engineering/security)
+- **Transcript import** (P2.3): script-only
+  `scripts/import-transcript.ts` (`--file/--project/--session-id/--dry-run/
+  --include-prompts`) through the existing `POST /memory/remember` surface —
+  Claude Code JSONL + generic `{content}` fallback, prompts skipped by
+  default, origins coerced into `import:*` (engineering/automation)
+- **Session summarization** (P2.4): deterministic no-LLM
+  `src/summarize.ts` (top concepts, origin counts, top-5 picks, top-3
+  lessons) + `scripts/summarize-session.ts` saving summary + lessons as
+  `/memory/lesson` rows under the same sessionId (engineering)
+- **Contract v1.3** (`docs/CONTRACT.md`): P2 allowlist + plugin after-origin +
+  script surface + §5 bar (`verify-capture` 137); no route/tool/schema
+  changes (engineering)
+
+### Fixed
+
+- Gate P2-COMPLETE remediation C1–C6 (10 reviewers, gate OPEN): generic-user
+  prompt-gate bypass, path-bearing tool-name storage, plugin non-string
+  throw + unguarded `execute.before`, generic origin minting `lesson`/
+  `hook:*`, entry-guard side effect on import, README staleness
+  (engineering, security, legal, automation)
+
 ## [v0.5.0] — 2026-09-23
 
 ### Added

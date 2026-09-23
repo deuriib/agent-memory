@@ -1,3 +1,98 @@
+# Release Notes: P2 capture breadth (unreleased, post-v0.5.0)
+
+**Date:** 2026-09-23
+**Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
+operations function per ship-release role binding — role assumption stated
+for this lane)
+**Specs Included:** P2 remainder (P2.2 file-edit/failure capture + P2.3
+transcript import + P2.4 session summarization) — `ROADMAP.md` §P2
+**Domains-Touched:** engineering, security, legal, automation/ops, data lens
+(finance / marketing / people / revenue: **N/A** — code+docs lane)
+**Ship Type:** deploy (local library/server release; no external deployment
+target; no breaking changes; no version bump — 0.5.0 lockstep intact)
+
+## Highlights
+
+- **File-edit + failure capture (P2.2)** — `PostToolUse` with an edit-like
+  tool name stores `file edited via <tool>` (name only); `PostToolUseFailure`
+  + plugin `tool.execute.after` store `tool failed: <tool>`; basename opt-in
+  (`AGENT_MEMORY_CAPTURE_PATHS=basename`) appends the sanitized basename
+  only; path-bearing tool names fail closed; Antigravity adapter mirrors.
+- **Transcript import (P2.3)** — script-only
+  (`npm run import-transcript -- --file … --dry-run`), Claude Code JSONL +
+  generic fallback, prompts skipped by default, origins coerced to `import:*`.
+- **Session summarization (P2.4)** — deterministic, no-LLM summary + lessons
+  saved as `/memory/lesson` rows under the same sessionId
+  (`npm run summarize-session -- --session-id …`).
+- **Gate-hardened before ship** — 10 independent reviews; the refuter falsified
+  two privacy claims (generic-user prompt bypass, path-bearing tool name) + one
+  robustness hole (plugin throw on non-string tool); all fixed + re-proven
+  (137/137 capture checks); gate **OPEN** with owned residuals.
+
+## Changes
+
+### Features
+
+- Edit-marker + failure observations across both capture hooks + plugin
+  (P2.2, engineering/security)
+- `scripts/import-transcript.ts` + `scripts/summarize-session.ts` +
+  `src/summarize.ts` (P2.3/P2.4, engineering/automation)
+- `docs/CONTRACT.md` v1.2 → v1.3 (P2 semantics, no route/tool changes)
+
+### Fixes
+
+- Gate remediation C1–C6: prompt-gate bypass, path-bearing tool names,
+  plugin non-string throw + unguarded before-hook, origin-namespace coercion,
+  entry-guard side effect on import, README staleness (engineering, security,
+  legal, automation)
+
+### Breaking Changes
+
+- **None — additive; no behavior removed or renamed.** Behavioral notes:
+  `PostToolUse` with edit-like tool names now stores `file edited via`
+  instead of `tool used` (same endpoint, dedup, retention either way);
+  no version bump (0.5.0 lockstep ×5 intact). Migration: N/A.
+
+## Known Issues
+
+- Residuals with owner + expiry in `GATE_REPORT.md`: G1 Antigravity coverage
+  gap, G2 import/summarize live-leg automation gap, F2 summarize re-run
+  appends, F6 CI gap, R-P2-01…04, L-P2-01…03, S-03 + standing RL-001 / F-01 /
+  DAT-001 (`ROADMAP.md` §1.3).
+
+## Contract
+
+`docs/CONTRACT.md` v1.2 → **v1.3**: P2.2 allowlist + plugin after-origin,
+P2.3/P2.4 script surface, §5 bar (`verify-capture` 137). Backward compatible:
+no route/tool/schema changes.
+
+## Verification
+
+`typecheck` 0 · `verify-capture` **137/137** · `verify-lifecycle` 104/104 ·
+`verify-env` 21/21 · `verify-injection` ALL PASS · import dry-runs + live
+import→search→summarize→sessionMemories (rows cleaned).
+
+## Quality gate
+
+10 independent reviewers → 6 pass / 4 conditional-with-findings; all ❌-grade
+holes fixed + re-proven → gate **OPEN**:
+`docs/specs/50_archive/P2-COMPLETE/GATE_REPORT.md`.
+
+## Rollback / Undo
+
+One release commit — `git revert` restores pre-P2 behavior; no schema, index,
+or migration change; `import:*`/`lesson` rows from the lane are inert data
+(clean via `forget`/`delete`). Test projects (`verify-p2*`) cleaned at
+verification. Owner: engineering. ETA: immediate.
+
+## PII checkpoint (Ley 172-13)
+
+Zero PII/secrets/tokens in this release or these notes — allowlisted evidence
+only (suite counts, paths, verdicts, owners by role); prompt canary asserted
+non-stored; hook observations name-only by default.
+
+---
+
 # Release Notes: v0.5.0
 
 **Date:** 2026-09-23

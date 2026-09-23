@@ -23,6 +23,8 @@
     "verify-lifecycle": "tsx scripts/verify-lifecycle.ts",
     "verify-capture": "tsx scripts/verify-capture.ts",
     "purge": "tsx scripts/purge.ts",
+    "import-transcript": "tsx scripts/import-transcript.ts",
+    "summarize-session": "tsx scripts/summarize-session.ts",
     "eval": "tsx scripts/eval.ts",
     "verify-skills": "tsx scripts/verify-skills.ts",
     "typecheck": "tsc --noEmit"

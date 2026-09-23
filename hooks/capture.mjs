@@ -17,6 +17,13 @@
  *     events (PostToolUse / PostToolUseFailure) which carry the tool NAME.
  *     `UserPromptSubmit` NEVER reads the prompt text (user PII — Ley
  *     172-13); `PreCompact` never reads its trigger/payload fields.
+ *   - P2.2 file-edit marker: PostToolUse whose tool name looks like an edit
+ *     (edit/write/patch/apply/replace, case-insensitive) stores
+ *     `file edited via <tool>` instead of `tool used: <tool>` — still the
+ *     tool NAME only, never paths or content, unless the explicit opt-in
+ *     AGENT_MEMORY_CAPTURE_PATHS=basename appends the sanitized BASENAME
+ *     (`file edited via <tool>: <basename>`, basename ≤80 chars, no dirs).
+ *     Full paths are never stored. Default OFF = fixed strings only.
  *   - Only a tiny, host-agnostic summary is stored (event + tool name);
  *     hook payloads can carry file paths and command output, which are
  *     deliberately NOT captured.
@@ -64,11 +71,62 @@ function observationFor(event, hook) {
   // sessionId still derive from the host payload, as for every event.
   if (event === "UserPromptSubmit") return "user prompt submitted";
   // Tool events: only the tool NAME — inputs/outputs may contain paths,
-  // code, or user data, none of which this hook is allowed to capture.
+  // code, or user data, none of which this hook is allowed to capture
+  // (P2.2 basename opt-in below is the SOLE exception, and it stores the
+  // basename only, never a full path or content).
   const tool = typeof hook.tool_name === "string" ? clean(hook.tool_name, 80) : "";
   if (tool.length === 0) return null; // no usable tool_name -> store nothing
+  // Gate P2-COMPLETE refuter: a tool NAME carrying path separators is not a
+  // tool name (host payload anomaly) — fail closed, store NOTHING, so a
+  // hostile `tool_name: "/etc/.../x"` can never land a full path in storage
+  // via the tool-name field ("full paths never stored" holds by default).
+  if (tool.includes("/") || tool.includes("\\")) return null;
   if (event === "PostToolUseFailure") return `tool failed: ${tool}`;
-  return event === "PostToolUse" ? `tool used: ${tool}` : null;
+  if (event !== "PostToolUse") return null;
+  // P2.2: file-edit marker — edit-like tool names produce an edit
+  // observation so "an edited file produces an observation" without ever
+  // storing paths/content by default.
+  if (!isEditTool(tool)) return `tool used: ${tool}`;
+  const basename = basenameOptIn(hook);
+  return basename === null ? `file edited via ${tool}` : `file edited via ${tool}: ${basename}`;
+}
+
+/**
+ * P2.2 edit-tool heuristic (name only, never payload).
+ * Matches edit/write/patch/apply/replace, case-insensitive — covers
+ * Edit, Write, NotebookEdit, ApplyPatch, StrReplace and host equivalents
+ * while leaving Read/Bash/Grep/Glob untouched.
+ */
+function isEditTool(tool) {
+  return /edit|write|patch|apply|replace/i.test(tool);
+}
+
+/**
+ * P2.2 basename opt-in: AGENT_MEMORY_CAPTURE_PATHS=basename appends the
+ * sanitized BASENAME of the edited file (no directories, ≤80 chars).
+ * Anything else (unset, empty, any other value) -> null = no path stored.
+ * Payload search is generic across hosts: tool_input/toolInput/input bags,
+ * keys file_path/filePath/path/filename/file (first non-empty string wins).
+ */
+function basenameOptIn(hook) {
+  if (process.env.AGENT_MEMORY_CAPTURE_PATHS !== "basename") return null;
+  const bags = [hook.tool_input, hook.toolInput, hook.input];
+  const keys = ["file_path", "filePath", "path", "filename", "file"];
+  for (const bag of bags) {
+    if (typeof bag !== "object" || bag === null || Array.isArray(bag)) continue;
+    for (const key of keys) {
+      const raw = bag[key];
+      if (typeof raw !== "string" || raw.trim().length === 0) continue;
+      const cleaned = clean(raw, 256);
+      if (cleaned.length === 0) continue;
+      const segments = cleaned.split(/[\\/]+/).filter((s) => s.length > 0);
+      const last = segments[segments.length - 1] ?? "";
+      const base = clean(last, 80);
+      if (base.length === 0 || base === "." || base === "..") continue;
+      return base;
+    }
+  }
+  return null;
 }
 
 function projectFor(hook) {

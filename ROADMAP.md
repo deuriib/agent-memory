@@ -103,9 +103,9 @@ passes, not when its tickets are "mostly" closed.
 | # | Item | Acceptance criterion |
 |---|---|---|
 | P2.1 | Expand hook coverage ✅ done (2026-09-23) | Add `PostToolUseFailure`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `tool.execute.before` — each of the 7 `capture.mjs` events + plugin `execute.before` records an observation on first occurrence (repeats dedup — first-wins, contract §3); `scripts/verify-capture.ts` 115 checks green (payload/origin/exit-0/silence/privacy canary) |
-| P2.2 | Capture file edits and failures | A failed tool call and an edited file both produce an observation |
-| P2.3 | Transcript import | Import a persisted session transcript and have it searchable afterwards |
-| P2.4 | Session summarization / lessons | A closed session yields a compact summary + mined lessons, retrievable by `session` |
+| P2.2 | Capture file edits and failures ✅ done (2026-09-23) | A failed tool call and an edited file both produce an observation — `PostToolUse` with an edit-like tool name stores `file edited via <tool>` (name only; `AGENT_MEMORY_CAPTURE_PATHS=basename` opt-in appends the sanitized basename, default OFF, full paths never stored); `PostToolUseFailure` + plugin `tool.execute.after` non-completed runs store `tool failed: <tool>` (`captureToolFailure`, memory* skipped); Antigravity adapter mirrors the edit marker; `verify-capture` §F 17 checks green (132 total) |
+| P2.3 | Transcript import ✅ done (2026-09-23) | Import a persisted session transcript and have it searchable afterwards — script-only `scripts/import-transcript.ts` (`--file/--project/--session-id/--dry-run/--include-prompts`) through the existing `POST /memory/remember` surface (no new route/tool); Claude Code JSONL + generic `{content}` fallback; prompts skipped by default (Ley 172-13); live import → `search` hits proven on project `verify-p2-live` |
+| P2.4 | Session summarization / lessons ✅ done (2026-09-23) | A closed session yields a compact summary + mined lessons, retrievable by `session` — deterministic `src/summarize.ts` (top concepts via `extractConcepts`, origin counts, time range, top-5 extractive picks, top-3 lessons; no LLM) + `scripts/summarize-session.ts` saving summary + lessons as `/memory/lesson` rows under the same sessionId; live summarize → `sessionMemories` contains summary + lessons proven |
 
 ### P3 — Surfaces
 

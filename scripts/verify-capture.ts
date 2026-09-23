@@ -1,5 +1,7 @@
 /**
  * REQ-P2-1 / T-104 — hook coverage breadth (7 events + negatives).
+ * REQ-P2-2 — file-edit + failure observations (edit marker, basename opt-in,
+ * plugin captureToolFailure).
  *
  *   npx tsx scripts/verify-capture.ts
  *
@@ -28,6 +30,12 @@
  *      `memory*` skip, and dead-backend fail-soft (no throw, no unhandled
  *      rejection).
  *   E. server DOWN — the hook still exits 0 in silence.
+ *   F. P2.2 — PostToolUse with an edit-like tool stores
+ *      `file edited via <tool>` (full paths never stored); Read keeps the
+ *      historical `tool used` shape; AGENT_MEMORY_CAPTURE_PATHS=basename
+ *      appends the sanitized basename only; plugin `captureToolFailure`
+ *      posts `tool failed: <name>` (`hook:tool.execute.after`, memory*
+ *      skipped).
  *
  * Ports: only an ephemeral listen(0) on 127.0.0.1 plus 127.0.0.1:1 (dead —
  * nothing ever binds tcpmux). NEVER 3111/3112/3113 (upstream agentmemory —
@@ -40,7 +48,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
-import { captureToolStart, config } from "../plugins/opencode/plugins/agent-memory";
+import {
+  captureToolFailure,
+  captureToolStart,
+  config,
+} from "../plugins/opencode/plugins/agent-memory";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const HOST = "127.0.0.1";
@@ -472,6 +484,139 @@ async function sectionD(): Promise<void> {
   check("dead backend: no unhandled rejection", unhandledRejections === 0, unhandledRejections);
 }
 
+async function sectionF(): Promise<void> {
+  section("F. P2.2 file-edit + failure observations (basename opt-in OFF by default)");
+
+  // Edit-like tool name stores the file-edited marker (no path by default),
+  // even when the payload carries a file path (privacy: paths ignored).
+  {
+    const before = recorded.length;
+    const run = await runHook(
+      ["PostToolUse"],
+      JSON.stringify({
+        tool_name: "Edit",
+        tool_input: { file_path: "/tmp/secret/proj/private.ts" },
+        cwd: ROOT,
+        session_id: SESSION,
+      }),
+      {},
+    );
+    const rec = recorded[before];
+    const bag = parseBody(rec?.body ?? "");
+    check("edit: exactly 1 request", recorded.length - before === 1, recorded.length - before);
+    check("edit: exit 0", run.code === 0, run.code);
+    check("edit: content 'file edited via Edit'", bag.content === "file edited via Edit", bag.content);
+    check("edit: full path absent from body", typeof rec?.body === "string" && !rec.body.includes("private.ts"));
+    check("edit: origin hook:PostToolUse", bag.origin === "hook:PostToolUse", bag.origin);
+  }
+
+  // Non-edit tools keep the historical shape (Read must not become an edit).
+  {
+    const before = recorded.length;
+    const run = await runHook(
+      ["PostToolUse"],
+      JSON.stringify({ tool_name: "Read", cwd: ROOT, session_id: SESSION }),
+      {},
+    );
+    const rec = recorded[before];
+    const bag = parseBody(rec?.body ?? "");
+    check("read: exactly 1 request", recorded.length - before === 1, recorded.length - before);
+    check("read: exit 0", run.code === 0, run.code);
+    check("read: content stays 'tool used: Read'", bag.content === "tool used: Read", bag.content);
+  }
+
+  // Basename opt-in appends the sanitized basename only (no directories).
+  {
+    const before = recorded.length;
+    const run = await runHook(
+      ["PostToolUse"],
+      JSON.stringify({
+        tool_name: "Write",
+        tool_input: { file_path: "/tmp/host-workspace/nested/notes.md" },
+        cwd: ROOT,
+        session_id: SESSION,
+      }),
+      { AGENT_MEMORY_CAPTURE_PATHS: "basename" },
+    );
+    const rec = recorded[before];
+    const bag = parseBody(rec?.body ?? "");
+    check("basename: exactly 1 request", recorded.length - before === 1, recorded.length - before);
+    check("basename: exit 0", run.code === 0, run.code);
+    check(
+      "basename: content 'file edited via Write: notes.md'",
+      bag.content === "file edited via Write: notes.md",
+      bag.content,
+    );
+    check("basename: directory absent from body", typeof rec?.body === "string" && !rec.body.includes("nested/"));
+  }
+
+  // Plugin failure helper: `tool failed: <name>`, frozen after-origin.
+  {
+    const location = {
+      directory: "/mnt/DATA/GitHub/agent-memory",
+      project: { canonical: "/mnt/DATA/GitHub/agent-memory" },
+    };
+    const pluginCfg = config({ options: { url: LIVE_URL, project: PROJECT }, location });
+    const before = recorded.length;
+    let threw: unknown = null;
+    try {
+      captureToolFailure(pluginCfg, "bash", PLUGIN_SESSION);
+    } catch (error) {
+      threw = error;
+    }
+    check("tool failure: helper never throws synchronously", threw === null, threw);
+    await waitFor(() => recorded.length === before + 1, 2_000);
+    const rec = recorded[before];
+    const bag = parseBody(rec?.body ?? "");
+    check("tool failure: exactly 1 request", recorded.length === before + 1, recorded.length - before);
+    check("tool failure: content 'tool failed: bash'", bag.content === "tool failed: bash", bag.content);
+    check(
+      "tool failure: origin hook:tool.execute.after",
+      bag.origin === "hook:tool.execute.after",
+      bag.origin,
+    );
+    const skipBefore = recorded.length;
+    try {
+      captureToolFailure(pluginCfg, "memory_save", PLUGIN_SESSION);
+    } catch (error) {
+      threw = error;
+    }
+    await sleep(150);
+    check(
+      "tool failure memory_save: 0 requests (self-observation skipped)",
+      recorded.length === skipBefore,
+      recorded.length - skipBefore,
+    );
+  }
+
+  // Gate P2-COMPLETE refuter regressions (fail-closed, never throw).
+  {
+    // A tool NAME carrying path separators is a host anomaly, not a tool:
+    // 0 stores, exit 0, silence — "full paths never stored" holds by default.
+    await expectNoStore(
+      "path-bearing tool_name",
+      ["PostToolUse"],
+      JSON.stringify({ tool_name: "/etc/secret/project/private.ts", cwd: ROOT, session_id: SESSION }),
+    );
+
+    const location = {
+      directory: "/mnt/DATA/GitHub/agent-memory",
+      project: { canonical: "/mnt/DATA/GitHub/agent-memory" },
+    };
+    const pluginCfg = config({ options: { url: LIVE_URL, project: PROJECT }, location });
+    // Non-string tool names never throw out of the start/failure helpers.
+    let threw: unknown = null;
+    try {
+      captureToolStart(pluginCfg, 42 as unknown as string, PLUGIN_SESSION);
+      captureToolFailure(pluginCfg, { evil: true } as unknown as string, PLUGIN_SESSION);
+    } catch (error) {
+      threw = error;
+    }
+    await sleep(150);
+    check("non-string tool: helpers never throw", threw === null, threw);
+  }
+}
+
 async function sectionE(): Promise<void> {
   section("E. memory server DOWN: exit 0 and silence");
 
@@ -494,6 +639,7 @@ try {
   await sectionB();
   await sectionC();
   await sectionD();
+  await sectionF();
   await sectionE();
 } finally {
   await closeServer();

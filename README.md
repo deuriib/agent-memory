@@ -364,12 +364,18 @@ Guarantees (verified):
   (`SessionStart` / `PostToolUse` / `Stop` / `PostToolUseFailure` /
   `PreCompact` / `SessionEnd` / `UserPromptSubmit`).
 - **Only an allowlisted, host-agnostic summary is stored**: `agent session
-  started`, `tool used: <tool-name>`, `tool failed: <tool-name>`, `agent
-  session stopped`, `context compaction requested`, `agent session ended`, or
-  `user prompt submitted`. Hook payloads, file paths, command output, and the
-  user's prompt text are deliberately NOT captured — a planted file path
+  started`, `tool used: <tool-name>` (or `file edited via <tool-name>` for
+  edit-like tools — name only, never paths or content), `tool failed:
+  <tool-name>`, `agent session stopped`, `context compaction requested`,
+  `agent session ended`, or `user prompt submitted`. Hook payloads, full file
+  paths, command output, and the user's prompt text are deliberately NOT
+  captured — a planted file path
   (`/tmp/secret-should-not-be-captured.txt`) and a prompt canary were both
-  confirmed **not** stored (privacy, Ley 172-13).
+  confirmed **not** stored (privacy, Ley 172-13). Tool names carrying path
+  separators are rejected fail-closed (stored as nothing). Opt-in widening
+  only: `AGENT_MEMORY_CAPTURE_PATHS=basename` appends the sanitized file
+  **basename** to edit observations — never a full path; keep it OFF when
+  basenames themselves may be sensitive (they can contain usernames).
 - Never prints memory content, the hook payload, or the secret.
 - `AGENT_MEMORY_URL` defaults to `http://127.0.0.1:3111` (the REST service, not
   the raw Helix port); `project` derives from the workspace directory name,
@@ -378,7 +384,35 @@ Guarantees (verified):
 
 The OpenCode plugin mirrors this with a 5th hook, `tool.execute.before` — a
 fire-and-forget `tool started: <tool-name>` observation (own `memory*` tools
-skipped; never awaited, so the tool hot path pays nothing).
+skipped; never awaited, so the tool hot path pays nothing) — plus a
+`tool.execute.after` failure observation (`tool failed: <tool-name>`) on
+non-completed runs.
+
+### Transcript import and session summarization (P2)
+
+Two opt-in CLIs, no new routes — both go through the existing
+`POST /memory/remember` / `/memory/lesson` surface:
+
+```bash
+npx tsx scripts/import-transcript.ts --file session.jsonl --project myproj --dry-run
+npx tsx scripts/import-transcript.ts --file session.jsonl --project myproj --session-id sess-1
+npx tsx scripts/summarize-session.ts --session-id sess-1 --project myproj --dry-run
+npx tsx scripts/summarize-session.ts --session-id sess-1 --project myproj
+```
+
+- **Import** accepts Claude Code JSONL or generic `{content}` lines under one
+  sessionId. User prompt text is **skipped by default** (counted as
+  `skipped_prompts`, never stored, never printed) — pass `--include-prompts`
+  only for transcripts you own and may persist (importing third-party
+  transcripts is the operator's responsibility under Ley 172-13). A
+  caller-supplied `origin` is coerced into the `import:*` namespace so a
+  crafted file cannot mint `lesson`/`hook:*` provenance.
+- **Summarize** builds a deterministic summary + up to 3 lessons (no LLM) and
+  saves them as `/memory/lesson` rows under the same sessionId, so a closed
+  session stays retrievable by session. Re-running appends again (each run
+  sees more memories) — use `--dry-run` first, or clean with
+  `POST /memory/forget`. Chain after a `SessionEnd` hook with
+  `AGENT_MEMORY_SUMMARIZE=1` for opt-in auto-wire.
 
 ## Authentication
 
@@ -487,11 +521,14 @@ Stated plainly — these are real, not hypothetical:
 
 5. **Out of v1** per [`docs/CONTRACT.md` §4](docs/CONTRACT.md): consolidation
    tiers 2–4 (upstream's full 4-tier model), LLM auto-compress, viewer UI,
-   session replay, JSONL import, multi-agent adapters (20 upstream), and the
+   session replay, multi-agent adapters (20 upstream), and the
    full 54-tool MCP surface.
    (Read-time decay + TTL + `purge.ts` shipped in v0.4.0 — "corte A";
    tier-1 near-duplicate consolidation, derived confidence and the eval
-   harness shipped in v0.5.0 — the remaining tiers stay out of scope.)
+   harness shipped in v0.5.0; P2 capture breadth, script-only transcript
+   import (`npm run import-transcript`) and deterministic session
+   summarization (`npm run summarize-session`) shipped post-v0.5.0
+   ([Unreleased] — the remaining tiers stay out of scope.)
 
 6. **`demo` appends on every run — it is not idempotent.** Each invocation
    seeds 3 more sessions into project `demo`, so re-running it produces
