@@ -37,6 +37,68 @@ target; additive API — one behavior change: omitted `importance` is derived)
   `verify-skills` structurally validates all 8 (server-free `--structural`
   mode, CI-wired) and live round-trips every frozen route (119 checks).
 
+## Changes
+
+### Features
+
+- Derived confidence — provenance-derived `importance` + recall-boost
+  tie-break (P1.4 / REQ-P1-4, engineering)
+- Tier-1 consolidation — near-dup merge into one survivor with in-place
+  index-fresh rewrite (P1.2 / REQ-P1-2, engineering)
+- Adapter-pluggable eval harness + in-repo corpus scorecard (P1.5 /
+  REQ-P1-5, automation/ops)
+- Eight invocable skills + structural/live skill gate (P3.2 / REQ-P3-2,
+  docs/automation)
+
+### Fixes
+
+- **Gate P1R-P32 remediation — 16/16 conditions closed:** hand-computed
+  eval-metric goldens (`verify-lifecycle` §H), decay-THEN-boost order golden
+  (§F-bis), induced probe-failure fail-closed test (§I), MCP adapter
+  pass-through test + plugin no-default source check, TTL×expired-survivor
+  guard on the merge probe, `probe4` log-line hardening (CWE-117),
+  corpus-specific scorecard disclaimer + actual-URL reproduce block,
+  `verify-skills --structural` server-free mode wired into CI, and the full
+  declaration set (concurrency exception, atomicity assumption, TTL×merge,
+  merge provenance, index dependency, session run budget, eval retention)
+  (engineering, docs, automation/ops — evidence: `50_archive/P1R-P32/GATE_REPORT.md`)
+
+### Domain Ships
+
+- Automation/ops: CI gains `verify-skills --structural` (73 checks, no
+  server) — `.github/workflows/ci.yml`
+- Data lens: retention/deletion declared for `agent-memory-eval` and
+  `verify-skills` sessions (CONTRACT §5) + Concept-orphan re-baselined
+  (`ROADMAP.md` §1.3)
+- Finance / Legal / Marketing / People / Revenue: N/A (code + docs lane,
+  no external surface touched)
+
+### Breaking Changes
+
+- **None breaking** — no route or MCP tool renames; `RememberResult
+  .consolidated` is additive; README/INSTALL/MIGRATION templates are
+  conditional on breaking changes → cited, not required (no `INSTALL.md` /
+  `MIGRATION.md` exists in this repo).
+- Behavior-change compat note (not breaking): an OMITTED `importance` is now
+  derived from provenance instead of defaulting to `0.5`. Callers wanting
+  the legacy value must send `importance: 0.5` explicitly; undo = send the
+  explicit value, **no data migration** (stored rows are never rewritten by
+  this change).
+
+## Known Issues
+
+- Six accepted residuals from gate P1R-P32, each with owner + expiry:
+  W-1 concurrent distinct-variant lost append (engineering, 2026-12-31 or
+  P4.3), W-2 merge mid-batch atomicity assumption (engineering, Helix
+  upgrade or 2026-12-31), W-3 Concept-orphan (engineering, 2026-12-31 or
+  v0.6.0), W-4 `verify-skills` Session residue (engineering, P4.1 or
+  2026-12-31), W-5 write-path probe coupling (engineering, 2026-12-31),
+  W-6 base-URL echo into logs/scorecard (ops, next eval touch) — full
+  three-block waivers in `docs/specs/50_archive/P1R-P32/GATE_REPORT.md` C3;
+  W-1…W-3 also tracked in `ROADMAP.md` §1.3. Workarounds: single-writer
+  local contract, `bootstrap` before first write, localhost-only
+  `AGENT_MEMORY_URL`.
+
 ## Contract
 
 `docs/CONTRACT.md` v1.1 → **v1.2**: derived-importance default replaces
@@ -59,7 +121,7 @@ additive response fields, no route/tool renames.
 fixed or waived with owner + expiry → gate **OPEN**:
 `docs/specs/40_workspace/quality-gate/P1R-P32/GATE_REPORT.md`.
 
-## Rollback
+## Rollback / Undo
 
 Six separable commits (`df39d7d`, `591c79c`, `39fec28`, `c69636d`,
 `2deda68` + gate remediation) — revert to `d17294b` restores v0.4.0
