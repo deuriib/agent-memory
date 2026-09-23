@@ -32,10 +32,13 @@ import {
   searchByText as searchByTextQuery,
   searchByVector as searchByVectorQuery,
   sessionMemories as sessionMemoriesQuery,
+  updateMemoryContent as updateMemoryContentQuery,
+  updateMemoryContentParams,
 } from "../db/queries.js";
 import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
 import { deriveWriteImportance } from "./confidence.js";
+import { jaccard, mergeThreshold, mergedContent } from "./consolidate.js";
 import { contentHash, normalizeContent } from "./lifecycle.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
@@ -121,6 +124,16 @@ export interface RememberResult {
   concepts: string[];
   /** REQ-P1-6: true when an identical (normalized) memory already existed. */
   deduped: boolean;
+  /**
+   * REQ-P1-2: true when the incoming text was merged into an EXISTING
+   * near-duplicate survivor (tier-1 consolidation) — `id` is then the
+   * SURVIVOR's memoryId. false on the exact-dedup hit and the plain insert
+   * paths. Consolidated responses echo the REQUEST's sessionId/concepts
+   * (contract §3 first-wins family, same as deduped); no Session node and no
+   * BELONGS_TO link is written on merge — sessions materialize on novel
+   * writes only.
+   */
+  consolidated: boolean;
 }
 
 /** Base memory row (session listings share it, without `score`). */
@@ -392,6 +405,45 @@ const SEARCH_ROW_NAMES = ["hits", "results", "rows", "memories"] as const;
 const SESSIONS_ROW_NAMES = ["sessions", "results", "rows"] as const;
 const MEMORIES_ROW_NAMES = ["memories", "hits", "results", "rows"] as const;
 
+/**
+ * REQ-P1-2: pick the tier-1 merge survivor from text-probe candidates
+ * (highest Jaccard >= threshold first; ties by importance DESC, then
+ * memoryId ASC with plain codepoint comparison — locale-free, fully
+ * deterministic). Rows without a memoryId are skipped fail-closed: a merge
+ * must never target a row whose id cannot be echoed or later forgotten.
+ */
+function pickSurvivor(
+  incomingContent: string,
+  candidates: readonly SearchHit[],
+  threshold: number,
+): SearchHit | undefined {
+  let best: SearchHit | undefined;
+  let bestJ = 0;
+  for (const hit of candidates) {
+    if (hit.memoryId === "") continue;
+    const j = jaccard(incomingContent, hit.content);
+    if (j < threshold) continue;
+    if (best === undefined || j > bestJ) {
+      best = hit;
+      bestJ = j;
+      continue;
+    }
+    if (j < bestJ) continue;
+    if (hit.importance !== best.importance) {
+      if (hit.importance > best.importance) {
+        best = hit;
+        bestJ = j;
+      }
+      continue;
+    }
+    if (hit.memoryId < best.memoryId) {
+      best = hit;
+      bestJ = j;
+    }
+  }
+  return best;
+}
+
 export class HelixStore implements MemoryStore {
   private readonly client: Client;
 
@@ -439,7 +491,7 @@ export class HelixStore implements MemoryStore {
     return this.withDedupLock(dedupKey, () => this.rememberLocked(input, dedupKey));
   }
 
-  /** Dedup pre-check + insert. Runs while holding the dedup key's lock. */
+  /** Dedup pre-check -> near-dup consolidation -> insert. Runs while holding the dedup key's lock. */
   private async rememberLocked(input: RememberInput, dedupKey: string): Promise<RememberResult> {
     // 1. Pre-check. Errors PROPAGATE (fail closed: a broken lookup must
     //    never let a possible duplicate through to the write) — and SHAPE
@@ -486,10 +538,35 @@ export class HelixStore implements MemoryStore {
         project: input.project,
         concepts: [...input.concepts], // caller's as given — [] stays [], never re-derived
         deduped: true,
+        consolidated: false, // exact dedup wins BEFORE consolidation is ever probed
       };
     }
 
-    // 2. Miss — embed and insert.
+    // 2. Near-duplicate consolidation (REQ-P1-2 tier-1, gate: probe4 verdict
+    //    A — proven live that setProperty refreshes the text + vector
+    //    indexes and unthrones the old content). Runs while STILL holding
+    //    the incoming dedup key's FIFO lock. mergeThreshold() re-reads the
+    //    env per call: absent -> 0.9, bad config -> undefined -> OFF
+    //    (fail-closed: a broken AGENT_MEMORY_MERGE_JACCARD never invents a
+    //    merge threshold). The text probe's errors PROPAGATE (same
+    //    fail-closed posture as the dedup pre-check above: a broken lookup
+    //    must never silently skip a merge). NOTE: the probe passes the
+    //    incoming content VERBATIM as `q` (spec) — very large contents
+    //    (up to 200k) make very large probe queries (documented residual).
+    const threshold = mergeThreshold();
+    if (threshold !== undefined) {
+      const candidates = await this.searchByText({
+        q: input.content,
+        project: input.project,
+        k: 20,
+      });
+      const survivor = pickSurvivor(input.content, candidates, threshold);
+      if (survivor !== undefined) {
+        return this.consolidateInto(input, survivor);
+      }
+    }
+
+    // 3. Miss — embed and insert.
     const embedding = embed(input.content);
     if (embedding.length !== EMBED_DIM) {
       throw new RangeError(`embed() produced ${embedding.length} dims, db/queries.ts declares ${EMBED_DIM}`);
@@ -534,6 +611,107 @@ export class HelixStore implements MemoryStore {
       project: input.project,
       concepts: effectiveConcepts, // echo what was actually stored (derived or caller's)
       deduped: false,
+      consolidated: false, // plain insert — no near-duplicate matched
+    };
+  }
+
+  /**
+   * REQ-P1-2 tier-1 merge: rewrite the SURVIVOR in place via
+   * updateMemoryContent (probe4 verdict A: setProperty refreshes text +
+   * vector indexes live on this instance). Runs under the incoming dedup
+   * key's FIFO lock; NO Session node and NO BELONGS_TO link is written
+   * (sessions materialize on novel writes only, contract §3), and the
+   * survivor's id / origin / importance / createdAt are untouched
+   * (dedup-first-wins semantics carry over to consolidation).
+   *
+   * Substring guard first (mergedContent): when the incoming's normalized
+   * text is already contained in the survivor's, nothing can grow — return
+   * the survivor WITHOUT a write (closes the re-merge loop). Otherwise the
+   * survivor's content only ever GROWS (survivor + "\n" + incoming, no text
+   * dropped), re-embedded and re-keyed:
+   *   - embedding: fresh embed(nextContent) so the vector index serves the
+   *     merged text (EMBED_DIM asserted, mirroring the insert path);
+   *   - dedupKey: contentHash(project, normalize(nextContent)) so a LATER
+   *     re-save of the concatenated text hits exact dedup (verify P);
+   *   - concepts: the incoming's EFFECTIVE list (explicit wins verbatim,
+   *     else derived from the incoming content — same rule as insert),
+   *     linked from the survivor node by conceptBody().
+   *
+   * The response echoes the REQUEST's sessionId/concepts (first-wins
+   * family). Fail-closed asserts mirror saveMemory/forget: missing returns,
+   * an empty anchor (survivor vanished mid-merge — probe3 proved the server
+   * enforces nothing app-side), or an empty 'updated' branch THROW rather
+   * than letting a silent no-op masquerade as a merge.
+   *
+   * Known limits (documented): the lock serializes only writes of the SAME
+   * incoming content — two CONCURRENT saves of different variants that pick
+   * the same survivor can lose one append (no cross-key lock exists; the
+   * plan scopes serialization to the existing per-key FIFO).
+   */
+  private async consolidateInto(input: RememberInput, survivor: SearchHit): Promise<RememberResult> {
+    const nextContent = mergedContent(survivor.content, input.content);
+    if (nextContent === survivor.content) {
+      // Substring guard hit: the survivor already holds BOTH texts.
+      return {
+        id: survivor.memoryId,
+        sessionId: input.sessionId, // echo the REQUEST (contract §3)
+        project: input.project,
+        concepts: [...input.concepts], // request as given — first-wins family
+        deduped: false, // this was a NEAR-dup merge, not an exact-dedup hit
+        consolidated: true,
+      };
+    }
+
+    const embedding = embed(nextContent);
+    if (embedding.length !== EMBED_DIM) {
+      throw new RangeError(`embed() produced ${embedding.length} dims, db/queries.ts declares ${EMBED_DIM}`);
+    }
+    // Effective concepts follow the insert rule (explicit wins, else derive
+    // from the INCOMING content); they are what gets LINKED onto the
+    // survivor, while the response echoes the request (see docstring).
+    const effectiveConcepts =
+      input.concepts.length > 0 ? [...input.concepts] : extractConcepts(input.content);
+    const concepts: Record<string, PropertyValueInput>[] = effectiveConcepts.map((name) => ({ name }));
+
+    const response = await this.send(
+      updateMemoryContentQuery().toQueryRequest(updateMemoryContentParams, {
+        memoryId: survivor.memoryId,
+        content: nextContent,
+        embedding,
+        dedupKey: contentHash(input.project, normalizeContent(nextContent)),
+        concepts,
+        project: input.project,
+      }),
+    );
+
+    // Probe4 calibrated the live shape: {memory: [anchored row],
+    // updated: [setProperty row]} on success; an empty anchor or an empty
+    // 'updated' branch means the merge did NOT happen — throw fail-closed
+    // (contract §2 posture; never report a merge that wrote nothing).
+    if (!isRecord(response) || !Object.hasOwn(response, "memory") || !Object.hasOwn(response, "updated")) {
+      throw new Error(
+        "updateMemoryContent response did not include the 'memory' and 'updated' returns (contract §2 fail-closed: a silent no-op must never masquerade as a merge)",
+      );
+    }
+    const anchor = response["memory"];
+    if (!Array.isArray(anchor) || anchor.length === 0) {
+      throw new Error(
+        "updateMemoryContent anchored no Memory row — survivor vanished mid-merge (contract §2 fail-closed)",
+      );
+    }
+    if (!indicatesPresence(response["updated"])) {
+      throw new Error(
+        "updateMemoryContent 'updated' branch was empty — setProperty did not run (contract §2 fail-closed)",
+      );
+    }
+
+    return {
+      id: survivor.memoryId, // the SURVIVOR's id — no new row was created
+      sessionId: input.sessionId, // echo the REQUEST (contract §3)
+      project: input.project,
+      concepts: [...input.concepts], // request as given — first-wins family
+      deduped: false,
+      consolidated: true,
     };
   }
 

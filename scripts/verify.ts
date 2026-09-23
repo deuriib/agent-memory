@@ -165,6 +165,8 @@ const rememberResultSchema = z.object({
   concepts: z.array(z.string()),
   // REQ-P1-6: additive; optional so pre-dedup lanes still shape-parse.
   deduped: z.boolean().optional(),
+  // REQ-P1-2: additive; optional so pre-consolidation lanes still shape-parse.
+  consolidated: z.boolean().optional(),
 });
 
 const healthEnvelopeSchema = z.object({
@@ -1166,6 +1168,215 @@ async function main(): Promise<void> {
   for (const row of [rOLes, rORest, rOHook, rOExp]) {
     await call("POST", "/memory/forget", undefined, { memoryId: row.id });
   }
+
+  /* P. REQ-P1-2 consolidation tier-1 E2E — three near-duplicate variants
+   * collapse into ONE survivor row (probe4 verdict A: setProperty refreshes
+   * text + vector indexes live). Isolated project; a DISTINCT sessionId per
+   * variant proves "no Session node / no BELONGS_TO on consolidation".
+   *
+   * Samples (golden construction, verify-lifecycle G pins the math):
+   *   v1 = 10-token base; v2 = v1 + " today" (j = 10/11 >= 0.9);
+   *   v3 = comma variant of v1 — same token SET (near-dup, j vs the
+   *   concatenated survivor = 10/11) but punctuation survives
+   *   normalization, so v3 is neither an exact dedup hit NOR a substring
+   *   of the survivor -> it exercises the CONCATENATION write itself. */
+  const pProject = `verify-consol-${randomUUID().slice(0, 8)}`;
+  const pv1 = "deploy staging checklist runs database migration then restarts api workers";
+  const pv2 = `${pv1} today`;
+  const pv3 = "deploy staging checklist runs database migration, then restarts api workers";
+  const pSid1 = `verify-consol-s1-${randomUUID().slice(0, 8)}`;
+  const pSid2 = `verify-consol-s2-${randomUUID().slice(0, 8)}`;
+  const pSid3 = `verify-consol-s3-${randomUUID().slice(0, 8)}`;
+  const pExpectedContent = `${pv1}\n${pv2}\n${pv3}`;
+
+  const pHealth0 = shape(
+    "consolidation: fresh project health envelope",
+    (await call("GET", "/memory/health", { project: pProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "consolidation: fresh project starts at 0 memories / 0 sessions",
+    pHealth0?.counts.memories === 0 && pHealth0?.counts.sessions === 0,
+    JSON.stringify(pHealth0?.counts),
+  );
+
+  // P1. v1 -> plain insert (nothing near it yet).
+  const pc1 = await call("POST", "/memory/remember", undefined, {
+    content: pv1,
+    project: pProject,
+    sessionId: pSid1,
+  });
+  check("consolidation: v1 status 201", pc1.status === 201, `got ${pc1.status}; body=${brief(pc1.body)}`);
+  const rp1 = shape("consolidation: v1 body", pc1.body, rememberResultSchema);
+  check(
+    "consolidation: v1 is a plain insert (deduped=false, consolidated=false)",
+    rp1 !== undefined && rp1.deduped === false && rp1.consolidated === false,
+    `deduped=${String(rp1?.deduped)} consolidated=${String(rp1?.consolidated)}`,
+  );
+
+  // P2. v2 (near-dup, j = 10/11) -> merged into v1's row.
+  const pc2 = await call("POST", "/memory/remember", undefined, {
+    content: pv2,
+    project: pProject,
+    sessionId: pSid2,
+  });
+  check("consolidation: v2 status 201", pc2.status === 201, `got ${pc2.status}; body=${brief(pc2.body)}`);
+  const rp2 = shape("consolidation: v2 body", pc2.body, rememberResultSchema);
+  check(
+    "consolidation: v2 -> consolidated=true, deduped=false, SAME id as v1",
+    rp1 !== undefined &&
+      rp2 !== undefined &&
+      rp2.consolidated === true &&
+      rp2.deduped === false &&
+      rp2.id === rp1.id,
+    `ids ${rp1?.id} vs ${rp2?.id}, consolidated=${String(rp2?.consolidated)}`,
+  );
+  check(
+    "consolidation: v2 response echoes REQUEST sessionId (first-wins family)",
+    rp2?.sessionId === pSid2,
+    rp2?.sessionId,
+  );
+
+  // P3. v3 (comma variant: near-dup of the survivor, NOT a substring) ->
+  // a second CONCATENATION write on the same survivor.
+  const pc3 = await call("POST", "/memory/remember", undefined, {
+    content: pv3,
+    project: pProject,
+    sessionId: pSid3,
+  });
+  check("consolidation: v3 status 201", pc3.status === 201, `got ${pc3.status}; body=${brief(pc3.body)}`);
+  const rp3 = shape("consolidation: v3 body", pc3.body, rememberResultSchema);
+  check(
+    "consolidation: v3 -> consolidated=true, SAME survivor id",
+    rp1 !== undefined && rp3 !== undefined && rp3.consolidated === true && rp3.id === rp1.id,
+    `ids ${rp1?.id} vs ${rp3?.id}, consolidated=${String(rp3?.consolidated)}`,
+  );
+
+  if (rp1 === undefined || rp2 === undefined || rp3 === undefined) {
+    throw new Error("aborting: a consolidation write step failed (see FAIL lines above)");
+  }
+
+  // P4. THREE saves -> exactly ONE row (+1 from baseline), ONE session
+  // (consolidation materializes NO Session node for pSid2/pSid3).
+  const pHealth1 = shape(
+    "consolidation: health envelope after 3 saves",
+    (await call("GET", "/memory/health", { project: pProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "consolidation: 3 saves -> healthCount memories = 1 (net +1)",
+    pHealth1?.counts.memories === 1,
+    `got ${pHealth1?.counts.memories}`,
+  );
+  check(
+    "consolidation: sessions stay 1 (no Session node on merge)",
+    pHealth1?.counts.sessions === 1,
+    `got ${pHealth1?.counts.sessions}`,
+  );
+
+  const pSessions = shape(
+    "consolidation: sessions envelope",
+    (await call("GET", "/memory/sessions", { project: pProject, limit: "50" })).body,
+    sessionsEnvelopeSchema,
+  );
+  const pSessionIds = new Set(pSessions?.sessions.map((row) => row.sessionId) ?? []);
+  check(
+    "consolidation: listSessions has pSid1 ONLY (pSid2/pSid3 never materialized)",
+    pSessionIds.size === 1 && pSessionIds.has(pSid1) && !pSessionIds.has(pSid2) && !pSessionIds.has(pSid3),
+    JSON.stringify([...pSessionIds]),
+  );
+
+  // P5. Survivor content is the full concatenation, and it stays listed
+  // under the ORIGINAL session (echoed session != membership on merge).
+  const pMem1 = shape(
+    "consolidation: sessionMemories(pSid1) envelope",
+    (
+      await call("GET", `/memory/sessions/${encodeURIComponent(pSid1)}/memories`, {
+        project: pProject,
+        limit: "50",
+      })
+    ).body,
+    memoriesEnvelopeSchema,
+  );
+  const pSurvivorRow = pMem1?.memories.find((row) => row.memoryId === rp1.id);
+  check(
+    "consolidation: survivor content === v1\\nv2\\nv3 (concatenation, no text dropped)",
+    pSurvivorRow !== undefined && pSurvivorRow.content === pExpectedContent,
+    `contentLen=${pSurvivorRow?.content.length} want=${pExpectedContent.length}`,
+  );
+  const pMem2 = shape(
+    "consolidation: sessionMemories(pSid2) envelope",
+    (
+      await call("GET", `/memory/sessions/${encodeURIComponent(pSid2)}/memories`, {
+        project: pProject,
+        limit: "50",
+      })
+    ).body,
+    memoriesEnvelopeSchema,
+  );
+  check(
+    "consolidation: sessionMemories(pSid2) EMPTY (echoed session ≠ membership, no BELONGS_TO on merge)",
+    pMem2 !== undefined && pMem2.memories.length === 0,
+    `got ${pMem2?.memories.length}`,
+  );
+
+  // P6. ALL six searches (3 variant texts x bm25 + hybrid) recall the
+  // survivor — the merged row is served by every variant's own words
+  // through BOTH indexes (text refreshed) and RRF fusion.
+  for (const [index, variant] of [pv1, pv2, pv3].entries()) {
+    const label = `P${index + 1}`;
+    const ps = await call("POST", "/memory/search", undefined, { query: variant, project: pProject, limit: 10 });
+    const pbm = shape(`consolidation: bm25(${label}) envelope`, ps.body, bm25EnvelopeSchema);
+    check(
+      `consolidation: bm25 search with ${label} text hits the survivor`,
+      pbm !== undefined && pbm.results.some((row) => row.memoryId === rp1.id),
+      pbm === undefined ? "no envelope" : `hits=${pbm.results.length}`,
+    );
+    const ph = await call("POST", "/memory/smart-search", undefined, {
+      query: variant,
+      project: pProject,
+      limit: 10,
+    });
+    const phy = shape(`consolidation: hybrid(${label}) envelope`, ph.body, hybridEnvelopeSchema);
+    check(
+      `consolidation: smart-search with ${label} text hits the survivor`,
+      phy !== undefined && phy.results.some((row) => row.memoryId === rp1.id),
+      phy === undefined ? "no envelope" : `hits=${phy.results.length}`,
+    );
+  }
+
+  // P7. Re-saving the EXACT concatenated text -> exact dedup wins (the
+  // survivor's rewritten dedupKey = hash of the merged content): same id,
+  // deduped=true, consolidated=false, still exactly 1 row.
+  const pc4 = await call("POST", "/memory/remember", undefined, {
+    content: pExpectedContent,
+    project: pProject,
+    sessionId: pSid1,
+  });
+  const rp4 = shape("consolidation: re-save body", pc4.body, rememberResultSchema);
+  check(
+    "consolidation: re-save of the merged text -> deduped=true, consolidated=false, SAME id",
+    pc4.status === 201 &&
+      rp4 !== undefined &&
+      rp4.deduped === true &&
+      rp4.consolidated === false &&
+      rp4.id === rp1.id,
+    `status=${pc4.status} deduped=${String(rp4?.deduped)} consolidated=${String(rp4?.consolidated)}`,
+  );
+  const pHealth2 = shape(
+    "consolidation: health envelope after re-save",
+    (await call("GET", "/memory/health", { project: pProject })).body,
+    healthEnvelopeSchema,
+  );
+  check(
+    "consolidation: re-save adds no row (still exactly 1)",
+    pHealth2?.counts.memories === 1,
+    `got ${pHealth2?.counts.memories}`,
+  );
+
+  // P8. Best-effort cleanup: forget the survivor.
+  const pfg = await call("POST", "/memory/forget", undefined, { memoryId: rp1.id });
+  check("consolidation: cleanup forget survivor -> 200", pfg.status === 200, `got ${pfg.status}`);
 
   /* M. Summary. */
   console.log(`\n${passed} passed, ${failures.length} failed`);

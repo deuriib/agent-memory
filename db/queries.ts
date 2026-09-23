@@ -513,3 +513,52 @@ export function listProjects(): ReadBatch {
     )
     .returning(["projects"]);
 }
+
+/* ------------------------------------------------------------------ *
+ * updateMemoryContent — REQ-P1-2 (ADDITIVE, contract §2 delta).
+ *
+ * Tier-1 consolidation's in-place survivor update: anchor the Memory by its
+ * unique memoryId, then setProperty content / embedding / dedupKey on it
+ * (Probe4 scripts/probe4.ts is the decision gate proving setProperty
+ * refreshes the text + vector indexes on the live instance — verdict A/B
+ * recorded in the lane report). No Session is written (merges follow dedup
+ * first-wins: sessions materialize on novel writes only) and no NEW index is
+ * needed (index #6/#7/#8 already cover the updated properties).
+ *
+ * conceptBody() is reused verbatim for the INCOMING's concept re-link: the
+ * anchor var above is named "memory" (exactly what conceptBody references),
+ * "name" comes from the forEach element and "project" is an outer param —
+ * both resolve the same way they do inside saveMemory (verified comment in
+ * conceptBody). `concepts` may be EMPTY (CONTRACT §0 probe A1).
+ *
+ * Returns ["updated", "memory"]: "memory" carries the anchored row (forget-
+ * style presence read), "updated" the setProperty branch result.
+ * ------------------------------------------------------------------ */
+
+export const updateMemoryContentParams = defineParams({
+  memoryId: param.string(),
+  content: param.string(),
+  embedding: param.array(param.f32()),
+  dedupKey: param.string(),
+  concepts: param.array(param.object()), // incoming's effective concepts — may be EMPTY
+  project: param.string(), // outer param for conceptBody's Concept creation (same as saveMemory)
+});
+
+export function updateMemoryContent(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "memory",
+      g().nWithLabel(LABELS.Memory).where(Predicate.eqParam("memoryId", "memoryId")),
+    )
+    .varAsIf(
+      "updated",
+      BatchCondition.varNotEmpty("memory"),
+      g()
+        .n(NodeRef.var("memory"))
+        .setProperty("content", PropertyInput.param("content"))
+        .setProperty("embedding", PropertyInput.param("embedding"))
+        .setProperty("dedupKey", PropertyInput.param("dedupKey")),
+    )
+    .forEachParam("concepts", conceptBody())
+    .returning(["updated", "memory"]);
+}

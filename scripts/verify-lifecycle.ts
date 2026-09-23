@@ -11,6 +11,7 @@
  */
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
 import { confidenceBoost, deriveWriteImportance, noteRecall, recallCount, resetRecalls } from "../src/confidence.js";
+import { isNearDuplicate, jaccard, mergeThreshold, mergedContent } from "../src/consolidate.js";
 import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
 import { oneLine } from "../src/logline.js";
 
@@ -515,6 +516,137 @@ function main(): void {
     }),
   );
   resetRecalls(); // leave the ledger empty for any section appended later
+
+  /* G. consolidation tier-1 (REQ-P1-2 / T-202) — pure goldens for
+   * jaccard / mergeThreshold (env saved+restored) / isNearDuplicate /
+   * mergedContent's substring guard. No Helix, no server. */
+
+  // Exact-construction samples: v1 has 10 tokens (tokenize drops nothing),
+  // v2 = v1 + one extra token (j = 10/11), v3 = comma variant of v1 (same
+  // token SET -> j(v1,v3) = 1, but a DIFFERENT dedupKey because
+  // normalizeContent keeps punctuation — the near-dup, not exact-dedup,
+  // path). 10/11 is asserted against the LITERAL 10/11 so the golden is the
+  // same IEEE-754 division the implementation performs (exact equality).
+  const V1 = "deploy staging checklist runs database migration then restarts api workers";
+  const V2 = `${V1} today`;
+  const V3 = "deploy staging checklist runs database migration, then restarts api workers";
+  const V1_TOKENS = 10;
+
+  check(
+    "consolidate: jaccard identical -> 1",
+    jaccard(V1, V1) === 1,
+    String(jaccard(V1, V1)),
+  );
+  check(
+    "consolidate: jaccard disjoint texts -> 0",
+    jaccard(V1, "gardening soil tomatoes watering schedule") === 0,
+    String(jaccard(V1, "gardening soil tomatoes watering schedule")),
+  );
+  check(
+    "consolidate: jaccard(V1, V2) == 10/11 exactly (one extra token)",
+    jaccard(V1, V2) === V1_TOKENS / (V1_TOKENS + 1),
+    String(jaccard(V1, V2)),
+  );
+  check(
+    "consolidate: jaccard(V1, V3) == 1 (punctuation ignored, token SETS equal)",
+    jaccard(V1, V3) === 1,
+    String(jaccard(V1, V3)),
+  );
+  check(
+    "consolidate: jaccard(V3, concatenated survivor V1\\nV2) == 10/11",
+    jaccard(V3, `${V1}\n${V2}`) === V1_TOKENS / (V1_TOKENS + 1),
+    String(jaccard(V3, `${V1}\n${V2}`)),
+  );
+  check(
+    "consolidate: jaccard empty vs empty -> 0 (never merge on emptiness)",
+    jaccard("", "") === 0,
+    String(jaccard("", "")),
+  );
+  check(
+    "consolidate: jaccard case-insensitive (shared tokenizer with embed)",
+    jaccard(V1, V1.toUpperCase()) === 1,
+    String(jaccard(V1, V1.toUpperCase())),
+  );
+
+  // mergeThreshold — env knob saved/restored like section C.
+  const savedMerge = process.env["AGENT_MEMORY_MERGE_JACCARD"];
+  const restoreMerge = (): void => {
+    if (savedMerge === undefined) delete process.env["AGENT_MEMORY_MERGE_JACCARD"];
+    else process.env["AGENT_MEMORY_MERGE_JACCARD"] = savedMerge;
+  };
+  try {
+    delete process.env["AGENT_MEMORY_MERGE_JACCARD"];
+    check("merge: AGENT_MEMORY_MERGE_JACCARD absent -> 0.9 (ON by default)", mergeThreshold() === 0.9, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "0.75";
+    check("merge: valid 0<v<1 -> v", mergeThreshold() === 0.75, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "0.5";
+    check("merge: 0.5 -> 0.5", mergeThreshold() === 0.5, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "1";
+    check("merge: v >= 1 -> undefined (OFF, fail-closed)", mergeThreshold() === undefined, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "0";
+    check("merge: v <= 0 -> undefined (OFF, fail-closed)", mergeThreshold() === undefined, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "-0.5";
+    check("merge: negative -> undefined (OFF, fail-closed)", mergeThreshold() === undefined, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "not-a-number";
+    check("merge: non-numeric -> undefined (OFF, fail-closed)", mergeThreshold() === undefined, String(mergeThreshold()));
+    process.env["AGENT_MEMORY_MERGE_JACCARD"] = "";
+    check("merge: empty string -> undefined (OFF, fail-closed)", mergeThreshold() === undefined, String(mergeThreshold()));
+
+    // Back to ABSENT for the default-knob checks below.
+    delete process.env["AGENT_MEMORY_MERGE_JACCARD"];
+
+    // isNearDuplicate at the boundary: at threshold -> true, just above -> false.
+    const t1011 = V1_TOKENS / (V1_TOKENS + 1);
+    check(
+      "consolidate: isNearDuplicate at EXACTLY threshold -> true",
+      isNearDuplicate(V1, V2, t1011) === true,
+      String(jaccard(V1, V2)),
+    );
+    check(
+      "consolidate: isNearDuplicate above threshold (0.91 > 10/11) -> false",
+      isNearDuplicate(V1, V2, 0.91) === false,
+      String(jaccard(V1, V2)),
+    );
+    check(
+      "consolidate: default 0.9 admits the V1/V2 pair (10/11 >= 0.9)",
+      mergeThreshold() === 0.9 && isNearDuplicate(V1, V2, mergeThreshold() ?? 0),
+      String(mergeThreshold()),
+    );
+    check(
+      "consolidate: default 0.9 REJECTS unrelated texts",
+      isNearDuplicate(V1, "gardening soil tomatoes watering schedule", 0.9) === false,
+    );
+
+    // mergedContent — concatenation + substring guard (closes the re-merge loop).
+    check(
+      "merge: concatenates survivor + \\n + incoming (no text dropped)",
+      mergedContent(V1, V2) === `${V1}\n${V2}`,
+      JSON.stringify(mergedContent(V1, V2).slice(0, 80)),
+    );
+    const mergedOnce = `${V1}\n${V2}`;
+    check(
+      "merge: substring guard — incoming already contained -> survivor UNCHANGED",
+      mergedContent(mergedOnce, V1) === mergedOnce,
+      JSON.stringify(mergedContent(mergedOnce, V1).slice(0, 120)),
+    );
+    check(
+      "merge: guard closes the re-merge loop (re-saving the merged text is a no-op)",
+      mergedContent(mergedOnce, mergedOnce) === mergedOnce,
+      JSON.stringify(mergedContent(mergedOnce, mergedOnce).slice(0, 120)),
+    );
+    check(
+      "merge: trailing whitespace of the survivor collapses before append",
+      mergedContent("deploy api  \n\n", "restart workers") === "deploy api\nrestart workers",
+      JSON.stringify(mergedContent("deploy api  \n\n", "restart workers")),
+    );
+    check(
+      "merge: case/whitespace-normalized containment also guards (punctuation kept)",
+      mergedContent("Deploy Staging   Today", "deploy staging") === "Deploy Staging   Today",
+      JSON.stringify(mergedContent("Deploy Staging   Today", "deploy staging")),
+    );
+  } finally {
+    restoreMerge();
+  }
 
   /* Summary (verify.ts format). */
   console.log(`\n${passed} passed, ${failures.length} failed`);
