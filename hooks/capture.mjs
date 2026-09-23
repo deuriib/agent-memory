@@ -4,7 +4,8 @@
  *
  * Plain Node ESM, ZERO dependencies. Reads the host's hook JSON on stdin,
  * takes the event name from argv[2] (supported: SessionStart, PostToolUse,
- * Stop), and POSTs ONE small observation to /memory/remember with
+ * Stop, PostToolUseFailure, PreCompact, SessionEnd, UserPromptSubmit), and
+ * POSTs ONE small observation to /memory/remember with
  * origin="hook:<event>".
  *
  * Hard rules:
@@ -12,6 +13,10 @@
  *     coding agent. No exceptions, no retries, no output.
  *   - NEVER prints anything at all: no memory content, no hook payload,
  *     no bearer secret (stdout/stderr stay empty by construction).
+ *   - Content allowlist per event: fixed strings only, except the two tool
+ *     events (PostToolUse / PostToolUseFailure) which carry the tool NAME.
+ *     `UserPromptSubmit` NEVER reads the prompt text (user PII — Ley
+ *     172-13); `PreCompact` never reads its trigger/payload fields.
  *   - Only a tiny, host-agnostic summary is stored (event + tool name);
  *     hook payloads can carry file paths and command output, which are
  *     deliberately NOT captured.
@@ -23,7 +28,15 @@
  */
 import { randomUUID } from "node:crypto";
 
-const SUPPORTED = new Set(["SessionStart", "PostToolUse", "Stop"]);
+const SUPPORTED = new Set([
+  "SessionStart",
+  "PostToolUse",
+  "Stop",
+  "PostToolUseFailure",
+  "PreCompact",
+  "SessionEnd",
+  "UserPromptSubmit",
+]);
 const MAX_HOOK_BYTES = 1_048_576;
 
 // Belt and braces: whatever happens, the agent's hook pipeline keeps flowing.
@@ -41,12 +54,21 @@ function clean(value, max) {
 }
 
 function observationFor(event, hook) {
+  // Fixed-string events: no payload field is ever read into content.
   if (event === "SessionStart") return "agent session started";
   if (event === "Stop") return "agent session stopped";
-  // PostToolUse: only the tool NAME — inputs/outputs may contain paths,
+  if (event === "PreCompact") return "context compaction requested";
+  if (event === "SessionEnd") return "agent session ended";
+  // The prompt text itself is PII (Ley 172-13): only this fixed string is
+  // stored — hook.prompt is deliberately never touched here. Project and
+  // sessionId still derive from the host payload, as for every event.
+  if (event === "UserPromptSubmit") return "user prompt submitted";
+  // Tool events: only the tool NAME — inputs/outputs may contain paths,
   // code, or user data, none of which this hook is allowed to capture.
   const tool = typeof hook.tool_name === "string" ? clean(hook.tool_name, 80) : "";
-  return tool.length > 0 ? `tool used: ${tool}` : null;
+  if (tool.length === 0) return null; // no usable tool_name -> store nothing
+  if (event === "PostToolUseFailure") return `tool failed: ${tool}`;
+  return event === "PostToolUse" ? `tool used: ${tool}` : null;
 }
 
 function projectFor(hook) {

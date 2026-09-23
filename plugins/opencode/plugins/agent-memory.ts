@@ -7,13 +7,15 @@
  *     `memory_forget` / `memory_health`) — a native mirror of the stdio MCP
  *     surface in `src/mcp.ts`, reaching the REST service in `src/server.ts`.
  *
- *  2. AUTOMATIC CONTEXT — three session hooks that enrich every model request
- *     with durable memories, without the agent having to ask:
+ *  2. AUTOMATIC CONTEXT — session and tool hooks that enrich every model
+ *     request with durable memories, without the agent having to ask:
  *
  *       prompt      → captures the newest user text as the recall query
  *       context     → auto-runs hybrid search and injects the marked block
  *       compaction  → re-seeds that block so recall survives compression
  *       tool.execute.after → invalidates the cache after save/forget
+ *       tool.execute.before → fire-and-forget "tool started" observation
+ *                             (tool NAME only; our own memory* skipped)
  *
  *     Injection is guarded by a single marker so it is IDEMPOTENT: if the
  *     block is already in `system`, we do not add a second one. One marker is
@@ -73,6 +75,12 @@ const TIMEOUT_MS = 2_000;
 
 /** Auto-recall runs on every model request — tighter than the tool cap. */
 const AUTO_TIMEOUT_MS = 1_500;
+
+/** `tool.execute.before` observation origin — frozen format (contract §3). */
+const TOOL_START_ORIGIN = "hook:tool.execute.before";
+
+/** Our own tool namespace is never observed — no self-observation loop. */
+const OBSERVED_SKIP_PREFIX = "memory";
 
 /* Injection defaults (option > env > these). */
 const DEFAULT_INJECT = true;
@@ -374,10 +382,11 @@ function fraction(value: unknown, min: number, max: number): number | undefined 
 /* ------------------------------------------------------------------ */
 /* Automatic recall: marker, cache, enrichment                         */
 /*                                                                       */
-/* MARKER / hasMarker / parseRecall / formatRecall / autoRecall / config   */
-/* and call are exported (beyond the default Plugin export) so that the    */
-/* idempotency guard, the block's size budget and the fail-soft recall     */
-/* path can be verified directly — OpenCode only consumes `export default`. */
+/* MARKER / hasMarker / parseRecall / formatRecall / autoRecall / config,  */
+/* call and captureToolStart are exported (beyond the default Plugin       */
+/* export) so that the idempotency guard, the block's size budget, the     */
+/* fail-soft recall path and the tool-start observation can be verified    */
+/* directly — OpenCode only consumes `export default`.                     */
 /* ----------------------------------------------------------------------- */
 /* ------------------------------------------------------------------ */
 
@@ -562,6 +571,45 @@ export async function autoRecall(cfg: Config, sessionID: string, query: string):
   recallCache.set(key, { block, at: now });
   evictOldest(recallCache, MAX_CACHE_ENTRIES);
   return block;
+}
+
+/* ------------------------------------------------------------------ */
+/* Tool-start observation (execute.before) — fire-and-forget           */
+/*                                                                       */
+/* captureToolStart is exported (like call/config/hasMarker) so that     */
+/* verify-capture can prove the content allowlist, the frozen origin and */
+/* the memory* skip rule without spinning up a whole Plugin.             */
+/* ----------------------------------------------------------------------- */
+
+/**
+ * Record `tool started: <name>` for one tool invocation. NEVER awaited by
+ * the hook: the POST runs detached with AUTO_TIMEOUT_MS (1.5s — the same
+ * bound auto-recall gets, vs the 2s tool cap; the hot path pays nothing),
+ * every rejection is swallowed, and a synchronous throw is caught so the
+ * hook cannot abort the turn. Content carries the tool NAME only — `input`
+ * (arguments, paths, code) is never read (privacy, Ley 172-13). Our own
+ * `memory*` tools are skipped: observing an observation would write on
+ * every observation — an unbounded self-observation loop.
+ */
+export function captureToolStart(cfg: Config, toolName: string, sessionID: string): void {
+  if (toolName.startsWith(OBSERVED_SKIP_PREFIX)) return;
+  try {
+    void call(
+      cfg,
+      "POST",
+      "memory/remember",
+      {
+        content: `tool started: ${toolName}`,
+        project: cfg.project,
+        sessionId: sessionID,
+        origin: TOOL_START_ORIGIN,
+      },
+      AUTO_TIMEOUT_MS,
+    ).catch(() => undefined); // detached: never awaited, never rejects upward
+  } catch (error) {
+    // A throwing hook would abort the turn: record and move on.
+    lastError = clip(`tool-start hook: ${String(error)}`, MAX_ERROR_CHARS);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -885,6 +933,13 @@ export default Plugin.define({
         if (event.status !== "completed") return;
         if (event.tool !== "memory_save" && event.tool !== "memory_forget") return;
         recallCache.clear();
+      })).dispose,
+    );
+
+    /* ---- 5. Observe tool starts (fire-and-forget; our own memory* skipped) ---- */
+    registrations.push(
+      (await context.tool.hook("execute.before", (event) => {
+        captureToolStart(cfg, event.tool, String(event.sessionID));
       })).dispose,
     );
 
