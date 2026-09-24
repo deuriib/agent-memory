@@ -46,6 +46,7 @@ import { extractConcepts } from "./concepts.js";
 import { deriveWriteImportance } from "./confidence.js";
 import { jaccard, mergeThreshold, mergedContent, missingConcepts } from "./consolidate.js";
 import { contentHash, filterExpired, normalizeContent } from "./lifecycle.js";
+import { oneLine } from "./logline.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
@@ -703,7 +704,11 @@ export class HelixStore implements MemoryStore {
    *
    * Substring guard first (mergedContent): when the incoming's normalized
    * text is already contained in the FRESH survivor's, nothing can grow —
-   * return the survivor WITHOUT a write (closes the re-merge loop).
+   * content / embedding / dedupKey stay byte-identical (the re-merge loop
+   * stays closed) BUT the guard no longer returns blind: it runs the
+   * concept-link verify + link-only heal (`ensureConceptLinks` — a
+   * `memoryConcepts` read, possibly a `linkMemoryConcepts` write) before
+   * returning the survivor.
    * Otherwise the survivor's content only ever GROWS (survivor + "\n" +
    * incoming, no text dropped), re-embedded and re-keyed:
    *   - embedding: fresh embed(nextContent) so the vector index serves the
@@ -965,6 +970,7 @@ export class HelixStore implements MemoryStore {
     const linked = await this.readLinkedConcepts(memoryId, project);
     let missing = missingConcepts(linked, expectedConcepts);
     if (missing.length === 0) return;
+    const healedCount = missing.length; // captured BEFORE the heal send — the log reports it only after the re-read confirms
     const response = await this.send(
       linkMemoryConceptsQuery().toQueryRequest(linkMemoryConceptsParams, {
         memoryId,
@@ -989,6 +995,13 @@ export class HelixStore implements MemoryStore {
         `REQ-F-01: concept-link invariant violated after heal — survivor ${memoryId} is still missing linked concept(s): ${missing.join(", ")} (fail-closed)`,
       );
     }
+    // Gate RL001-F01 / COND-RK-02: ONE allowlisted observability line per
+    // CONFIRMED heal — survivor id + healed-link COUNT only. Never content,
+    // never embedding, never concept names (security SEC-F02). `oneLine`
+    // collapses the rendered form to a single line (CWE-117); stderr —
+    // stdout is the MCP protocol channel (`src/mcp.ts`), and both streams
+    // are covered by the §3 process-log declaration.
+    console.error(oneLine(`heal survivor=${memoryId} links=${healedCount}`));
   }
 
   /**
@@ -1026,9 +1039,11 @@ export class HelixStore implements MemoryStore {
     };
     const before = await violations();
     if (before.length === 0) return;
-    if (before.includes("content") || before.includes("dedupKey")) {
+    const viaRetryWrite = before.includes("content") || before.includes("dedupKey");
+    if (viaRetryWrite) {
       await args.retryWrite();
     } else {
+      // Links-only branch: `ensureConceptLinks` emits its own heal line.
       await this.ensureConceptLinks(args.memoryId, args.project, args.expectedConcepts);
     }
     const after = await violations();
@@ -1036,6 +1051,19 @@ export class HelixStore implements MemoryStore {
       throw new Error(
         `REQ-F-01: post-write verify failed after one heal on survivor ${args.memoryId}: invariant(s) violated — ${after.join(", ")} (fail-closed)`,
       );
+    }
+    if (viaRetryWrite) {
+      // Gate RL001-F01 / COND-RK-02: ONE allowlisted line per CONFIRMED
+      // full-write heal — invariant FAMILY tokens only (content/dedupKey/
+      // links). The `concepts[...]` violation strings carry concept NAMES
+      // and deliberately stay OUT of the line (security SEC-F02); ids and
+      // tokens only, collapsed single-line via `oneLine` (CWE-117),
+      // stderr — stdout is the MCP protocol channel (`src/mcp.ts`).
+      const healed: string[] = [];
+      if (before.includes("content")) healed.push("content");
+      if (before.includes("dedupKey")) healed.push("dedupKey");
+      if (before.some((name) => name.startsWith("concepts"))) healed.push("links");
+      console.error(oneLine(`heal survivor=${args.memoryId} invariants=${healed.join(",")}`));
     }
   }
 

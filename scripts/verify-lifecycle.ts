@@ -1016,6 +1016,201 @@ async function main(): Promise<void> {
       i5Result.consolidated === true && i5Sends.length === 5,
       JSON.stringify({ consolidated: i5Result.consolidated, sends: i5Sends.length }),
     );
+
+    /* Gate RL001-F01 / COND-RK-02: the guard-path heal above now emits the
+     * one-line allowlisted heal record (stderr observability). The LOG is
+     * observability, NOT contract — so the assert here pins the RESPONSE
+     * shape only (consolidated + survivor-id echo unchanged), never stdout
+     * text (brittle). */
+    check(
+      "COND-RK-02: guard-path heal response shape unchanged by the heal log (consolidated=true, survivor id echoed)",
+      i5Result.consolidated === true && i5Result.id === "expired-hit",
+      JSON.stringify({ consolidated: i5Result.consolidated, idEchoed: i5Result.id === "expired-hit" }),
+    );
+
+    /* I-c. Gate RL001-F01 / COND-RF-03 (folds resilience COND-RS-03): the
+     * THREE contract-claimed fail-closed sub-paths that had zero asserting
+     * tests — each driven offline through the same `makeSeamStore`
+     * per-call canned replies (ZERO network, CI-safe, call-order trap).
+     * The canned strings below are synthetic fixtures — no content, no
+     * PII; details print counts/statuses only. */
+
+    /* (a) expired-while-WAITING (REQ-RL-001, src/store.ts mergeUnderSurvivorLock):
+     * the probe candidate is LIVE (it survives the pre-lock filterExpired),
+     * but the FRESH re-read under the survivor lock comes back EXPIRED ->
+     * `remember` falls through to the PLAIN INSERT (consolidated=false,
+     * insert SENT — a fresh write is never absorbed by a TTL-expired row).
+     * The I-b TTL-ON case above drops the candidate at PROBE time; this one
+     * exercises the under-lock re-check itself. */
+    process.env["AGENT_MEMORY_TTL_DAYS"] = "1"; // TTL 1 day
+    const waitingContent = "expired while waiting seam content november oscar papa";
+    const liveAtProbe: SearchHit = {
+      id: "w1",
+      memoryId: "waiting-hit",
+      content: waitingContent, // IDENTICAL to the incoming -> jaccard 1 >= 0.9 -> survivor picked
+      sessionId: "old-session",
+      origin: "rest",
+      importance: 0.5,
+      createdAt: new Date().toISOString(), // LIVE at probe time -> survives the pre-lock filterExpired
+      score: 4.2,
+    };
+    const i6Sends: unknown[] = [];
+    const i6 = makeSeamStore(
+      i6Sends,
+      () => Promise.resolve([liveAtProbe]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        {
+          // call 2: fresh getMemoryById re-read under the lock — EXPIRED row
+          memory: [
+            {
+              memoryId: "waiting-hit",
+              content: waitingContent,
+              createdAt: new Date(Date.now() - 10 * 86_400_000).toISOString(), // age 10d > TTL 1d
+            },
+          ],
+        },
+        // call 3: fabricated plain-insert success (default canned reply)
+      ],
+    );
+    const i6Result = await i6.remember({
+      content: waitingContent,
+      project: "verify-lifecycle",
+      sessionId: "i6",
+      origin: "test",
+      concepts: [],
+    });
+    check(
+      "COND-RF-03(a) expired-while-waiting: fresh re-read EXPIRED -> plain insert, never absorbs (consolidated=false, deduped=false, insert SENT, 3 sends)",
+      i6Result.consolidated === false &&
+        i6Result.deduped === false &&
+        i6Sends.length === 3,
+      JSON.stringify({
+        consolidated: i6Result.consolidated,
+        deduped: i6Result.deduped,
+        sends: i6Sends.length,
+      }),
+    );
+    delete process.env["AGENT_MEMORY_TTL_DAYS"]; // remaining cases run TTL OFF
+
+    /* (b) fresh-read MISS (REQ-RL-001, src/store.ts getFreshSurvivor): the
+     * survivor vanished between probe and lock -> the under-lock re-read
+     * returns `{memory: []}` -> `remember` REJECTS fail-closed NAMING the
+     * vanished survivor, and the insert is NEVER sent (2 sends total). */
+    const vanishedContent = "vanished survivor seam content quebec romeo sierra tango";
+    const vanishedHit: SearchHit = {
+      id: "v1",
+      memoryId: "vanished-hit",
+      content: vanishedContent, // identical -> survivor picked off the probe
+      sessionId: "old-session",
+      origin: "rest",
+      importance: 0.5,
+      createdAt: new Date().toISOString(),
+      score: 4.1,
+    };
+    const i7Sends: unknown[] = [];
+    const i7 = makeSeamStore(
+      i7Sends,
+      () => Promise.resolve([vanishedHit]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        { memory: [] }, // call 2: fresh re-read — ROW GONE
+      ],
+    );
+    let i7Err: unknown;
+    try {
+      await i7.remember({
+        content: vanishedContent,
+        project: "verify-lifecycle",
+        sessionId: "i7",
+        origin: "test",
+        concepts: [],
+      });
+    } catch (err) {
+      i7Err = err;
+    }
+    check(
+      "COND-RF-03(b) fresh-read miss: survivor vanished -> remember REJECTS fail-closed (named REQ-RL-001 throw), insert NEVER sent (2 sends)",
+      i7Err instanceof Error &&
+        i7Err.message.includes("REQ-RL-001: survivor") &&
+        i7Err.message.includes("vanished between probe and merge lock") &&
+        i7Sends.length === 2,
+      `${i7Err instanceof Error ? i7Err.message : String(i7Err)} (sends=${i7Sends.length})`,
+    );
+
+    /* (c) post-heal STILL-VIOLATED (REQ-F-01, src/store.ts verifyMergedState):
+     * the merge write lands, round 1 of the post-write verify reports
+     * content drift + missing links, the ONE heal (`retryWrite` — the full
+     * updateMemoryContent re-send) runs, round 2 sees content/dedupKey
+     * restored but the concepts STILL missing -> the named-invariant throw
+     * fires (fail-closed). 8 canned calls: pre-check, fresh re-read, write,
+     * verify read ×2, retryWrite, verify read ×2. `cIncoming` is the token
+     * REVERSE of `cBase` (jaccard 1.0 >= 0.9, yet NOT a normalized
+     * substring -> the substring guard cannot swallow the merge). */
+    const cBase = "seam post heal survivor content alpha bravo charlie delta echo";
+    const cIncoming = "echo delta charlie bravo alpha content heal post seam";
+    const cConcepts = ["cseamalpha", "cseambravo"]; // explicit request concepts = the merge's EFFECTIVE list
+    const cProject = "verify-lifecycle";
+    const cNextContent = mergedContent(cBase, cIncoming); // base + "\n" + incoming (guard cannot hit)
+    const cNextDedup = contentHash(cProject, normalizeContent(cNextContent));
+    const cMergedRow = {
+      memoryId: "seam-merge-hit",
+      content: cNextContent,
+      createdAt: new Date().toISOString(),
+      dedupKey: cNextDedup, // round 2: content + dedupKey BOTH restored
+    };
+    const cUpdateOk = {
+      memory: [{ memoryId: "seam-merge-hit" }], // anchor present
+      updated: [{ memoryId: "seam-merge-hit" }], // setProperty branch non-empty
+    };
+    const i8Sends: unknown[] = [];
+    const i8 = makeSeamStore(
+      i8Sends,
+      () =>
+        Promise.resolve([
+          {
+            id: "m1",
+            memoryId: "seam-merge-hit",
+            content: cBase,
+            sessionId: "old-session",
+            origin: "rest",
+            importance: 0.5,
+            createdAt: new Date().toISOString(),
+            score: 4.0,
+          },
+        ]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        { memory: [{ memoryId: "seam-merge-hit", content: cBase, createdAt: new Date().toISOString() }] }, // call 2: fresh re-read
+        cUpdateOk, // call 3: the merge write (updateMemoryContent)
+        // call 4: verify round 1 — content still the PRE-merge snapshot (drift) …
+        { memory: [{ memoryId: "seam-merge-hit", content: cBase, createdAt: new Date().toISOString() }] },
+        { names: [] }, // call 5: … and NOTHING linked yet -> violations = content + concepts[…]
+        cUpdateOk, // call 6: the ONE heal — retryWrite re-sends the identical write
+        { memory: [cMergedRow] }, // call 7: verify round 2 — content + dedupKey now match …
+        { names: [] }, // call 8: … but the concepts are STILL missing -> named throw
+      ],
+    );
+    let i8Err: unknown;
+    try {
+      await i8.remember({
+        content: cIncoming,
+        project: cProject,
+        sessionId: "i8",
+        origin: "test",
+        concepts: cConcepts,
+      });
+    } catch (err) {
+      i8Err = err;
+    }
+    check(
+      "COND-RF-03(c) post-heal still-violated: one retryWrite heal, re-verify still misses concepts -> named REQ-F-01 invariant throw (fail-closed, 8 sends)",
+      i8Err instanceof Error &&
+        i8Err.message.includes("REQ-F-01: post-write verify failed after one heal") &&
+        i8Err.message.includes("concepts[") &&
+        i8Sends.length === 8,
+      `${i8Err instanceof Error ? i8Err.message : String(i8Err)} (sends=${i8Sends.length})`,
+    );
   } finally {
     restoreI();
   }

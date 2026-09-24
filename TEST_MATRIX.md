@@ -1,7 +1,7 @@
 # Test / Evidence Matrix: REQ-RL-001 + REQ-F-01 (residual closure lane)
 
 **Agent:** vasquez (Engineering Owner R1, execute-spec lane)
-**Date:** 2026-09-23
+**Date:** 2026-09-23 (gate RL001-F01 remediation pass: 2026-09-24)
 **Domains-Touched:** engineering (R1)
 
 Prior lane evidence preserved in git history (this file is the lane singleton,
@@ -60,3 +60,36 @@ updated in place per execute-spec).
   - `PASS f-01: cleanup forget survivor -> 200`
 - Adjacent suites (no-regression on the shared store): `verify-capture` **137 checks, 0 failed**; `verify-env` **21 passed, 0 failed**; `verify-skills --structural` **73 passed, 0 failed**; `verify-injection` **ALL PASS** (exit 0).
 - Incident note (harness, not product): the first commit-2 `verify` attempt returned `internal_error` on `health`/`remember` because the Helix dev CONTAINER was inside a restart window (`helix status` uptime reset to <1s; SDK `fetch failed … Cannot reach Helix at http://localhost:6969/v2/query`). Re-run green once the container was back; no code change came from this. One test-fixture root cause was found and fixed in-lane (Phase-1 single hypothesis): the §I canned reply at call 5 fed `names` as a STRING array while `memoryConcepts` returns RECORDS `{name}` (`PropertyProjection.new("name")`) and `readLinkedConcepts` drops non-record rows via `toRecords` — so the re-read saw zero linked names and failed closed with all 7 missing. Fixture corrected to `i5ExpectedConcepts.map((name) => ({ name }))`; product code unchanged (fail-closed behavior was correct).
+
+## Gate-remediation bar (gate RL001-F01, lane 2026-09-24)
+
+Full verification bar after the RL001-F01 condition-clearance changes (one run, in order, each command pasted with its own counts). The run-budget declaration in `scripts/verify.ts` §10 now counts **+17 Session nodes per `verify` run** (lazy `_SESSION_STALE_MS` cursor heal: one new node per pre-stale session on the first run after 2h of activity — `docs/CONTRACT.md` §5); totals below are post-heal steady-state.
+
+| # | Command | Result |
+| - | ------- | ------ |
+| 1 | `npm run typecheck` | exit 0 (0 errors) |
+| 2 | `npx tsx scripts/bootstrap.ts` | exit 0 — `OK (8 indexes ensured)` + READY (still 8 indexes) |
+| 3 | `npm run verify-lifecycle` | **117 passed, 0 failed** (2026-09-23 baseline 113; +4 = RF-03 seams a/b/c + RK-02 response-shape assert) |
+| 4 | `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` | **243 passed, 0 failed** (:3151; §P f-01 covers RF-04) |
+| 5 | `npm run verify-env` | **21 passed, 0 failed** |
+| 6 | `npm run verify-skills -- --structural` | **73 passed, 0 failed** |
+| 7 | `npm run verify-capture` | **137 passed, 0 failed** (incidental, not part of the gate bar) |
+| 8 | Session-node run budget (RK-01 evidence) | `helix query dev -e '… nWithLabel("Session").count() …'`: 490 → **507 (+17/run, bounded)** |
+
+COND → test/evidence → artifact:
+
+| COND | Test / evidence | Artifact |
+| ---- | --------------- | -------- |
+| RD-01 | `verify-lifecycle` §M write-path doc contract (`WITHOUT a write`, `receive-and-wait`, `vanishes`, `heal`, `req_id`) | `src/store.ts:809-821` |
+| RF-01 | Re-scope to CONTRACT §3 tier-1 **(b)** — doc-level, no code | `docs/CONTRACT.md` §3 |
+| RF-02 | §P f-01: one-time-hash secret hash proven never → embedding path (243 bar, 1 call) | `scripts/verify.ts` §P f-01 |
+| RF-03 | `verify-lifecycle` §I-c seam cases — (a) expired-while-waiting → **insert sent** (3 sends), (b) fresh-read miss → reject, `links` stale after heal → **8 sends** (merge-path `verifyMergedState` retryWrite variant = the exact cited location), (c) post-heal still-violated → named throw (8 sends); plus RK-02 response-shape assert in §I | `scripts/verify-lifecycle.ts` §I-c |
+| RF-04 | Typecheck (0) + §P f-01 live embed pass after DB-API param-order pin | `db/queries.ts:111` |
+| RS-02 | Doc declaration of the AU-002 send envelope (NO queue cap / waiter deadline / circuit breaker) | `docs/CONTRACT.md` §3 |
+| RK-01 | §10 `run budget` declares +17/run session-node lazy heal; `verify` 243 green post-declaration; count 490→507 bounded (evidence #8); §3b crash-window carve-out sentence | `scripts/verify.ts` §10, `docs/CONTRACT.md` §5, §3 |
+| RK-02 | Two heal log sites + §I message-stability assert + `heal survivor=expired-hit links=7` observed on a live run (stderr) | `src/store.ts:1048, 1166` |
+| RK-03 | `README` §G line count → 117; structural `verify-skills` gate-line pass (73 bar) | `README.md:607` |
+| QA-05 | This section — per-command counts, single consolidated bar | `TEST_MATRIX.md` |
+| QA-06 | ROADMAP verification row counts → 243 / 117 / 137 | `ROADMAP.md:44` |
+
+Deviations from the packet's literal wording, resolved toward the gate reports' verbatim clear criteria (truth + "confirm totals first" over stale literals): lifecycle **117** (packet predates the +4 checks RF-03/RK-02 mandate); RK-02 log on **stderr** (store may not write stdout — `src/mcp.ts:381`; both streams are the §3 governance log); RK-01 "zero NO rows remain" required the §5 run-budget addition + §3b carve-out; RF-01 via re-scope option (b); RS-02 keeps the AU-002 numbers as criterion (c) alternative; archived docs (`docs/specs/50_archive/**`, `RELEASE_NOTES`) and reviewer-owned gate reports keep their historical counts.

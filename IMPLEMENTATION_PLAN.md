@@ -76,6 +76,39 @@ in place with evidence before each commit.
   `OK (8 indexes ensured)` · verify-lifecycle **104 passed, 0 failed** ·
   verify **227 passed, 0 failed**. Details pasted in TEST_MATRIX.md.
 
+### Commit 1 — gate RL001-F01 condition clearance, code+tests (2026-09-24)
+
+- Packet: `SPEC:docs/specs/40_workspace/quality-gate/RL001-F01/quality-assurance.md#consolidated-COND-list`
+  / `HARD:subagents+no-push+no-helix-restart+smallest-diff-that-clears` /
+  `GATE:RL001-F01-CONDITIONAL-11-clearable-now-AU-01-at-push` / `DOMAINS:R1`.
+- COND → change → test (code+tests half of the two-commit plan):
+  - **COND-RD-01**: `src/store.ts` merge docstring's unqualified `WITHOUT a write`
+    now names the invariants that survive (`dedupKey`, `concept links`,
+    `embedded=1` text-hash — last two heal without rewriting `content`; doc
+    contract asserted by `verify-lifecycle` §M).
+  - **COND-RF-03**: `verify-lifecycle` §I-c adds the three heal-seam cases at the
+    cited location — (a) expired-while-waiting → insert sent (3 sends),
+    (b) fresh-read miss → `links` stale after heal → merge-path
+    `verifyMergedState` retryWrite variant (8 sends), (c) post-heal still-violated
+    → named `REQ-F-01 … invariant(s) violated` throw (8 sends) — +3 checks;
+    §I also asserts the RK-02 envelope shape (`resolved/rejected/timeout`, no raw
+    msg) +1 check.
+  - **COND-RF-04**: `db/queries.ts` `linkMemoryConceptsParams` order pinned
+    `memoryId, project, concepts` with a pin comment (behavior-neutral: named
+    params at `toQueryRequest`; typecheck 0 + §P f-01 live embed green).
+  - **COND-RK-02**: two heal log lines in `src/store.ts` (post-confirmed-read
+    `ensureConceptLinks`, post-confirmed-retryWrite `verifyMergedState`) —
+    `heal survivor=<id> links=<n>` / `heal survivor=<id> invariants=…`; observed
+    live (`heal survivor=expired-hit links=7`). On stderr: store must not write
+    stdout (`src/mcp.ts:381`); both streams are the §3 governance log.
+- Bar (this tree, server :3151, Helix dev untouched): typecheck exit 0 ·
+  bootstrap `OK (8 indexes ensured)` · verify-lifecycle **117 passed, 0 failed**
+  (113 + RF-03/RK-02 +4) · verify **243 passed, 0 failed** · verify-env 21/0 ·
+  verify-skills --structural 73/0 · verify-capture 137/0 · session nodes
+  490 → 507 (+17/run, RK-01 §10 evidence). Full per-command table in
+  TEST_MATRIX.md § Gate-remediation bar. Docs half (RD-01 rest, RF-01, RF-02,
+  RS-02, RK-01, RK-03, QA-05, QA-06) lands in this lane's commit 2.
+
 ## Quality Gates
 
 - [ ] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0

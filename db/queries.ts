@@ -608,10 +608,15 @@ export function memoryConcepts(): ReadBatch {
  * caught by the VERIFY, never trusted from this response.
  * ------------------------------------------------------------------ */
 
+// Param order matches the frozen contract §2 surface verbatim
+// (`docs/CONTRACT.md`: memoryId, project, concepts). `defineParams` values
+// attach BY NAME at `toQueryRequest`, so the order is non-semantic at
+// runtime — it is pinned here only so the code and §2 cannot drift (gate
+// RL001-F01 / COND-RF-04).
 export const linkMemoryConceptsParams = defineParams({
   memoryId: param.string(),
-  concepts: param.array(param.object()), // missing names only — may be EMPTY
   project: param.string(), // outer param for conceptBody's Concept creation (same as saveMemory)
+  concepts: param.array(param.object()), // missing names only — may be EMPTY
 });
 
 export function linkMemoryConcepts(): WriteBatch {
