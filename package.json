@@ -11,6 +11,9 @@
   "files": [
     "./plugins/opencode/plugins/agent-memory.ts"
   ],
+  "bin": {
+    "agent-memory": "./bin/agent-memory.mjs"
+  },
   "engines": {
     "node": ">=20.0.0"
   },
@@ -27,6 +30,7 @@
     "summarize-session": "tsx scripts/summarize-session.ts",
     "eval": "tsx scripts/eval.ts",
     "verify-skills": "tsx scripts/verify-skills.ts",
+    "verify-ops": "tsx scripts/verify-ops.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
