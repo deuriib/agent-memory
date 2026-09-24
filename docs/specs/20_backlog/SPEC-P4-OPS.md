@@ -49,21 +49,38 @@ Functional:
   the "NEVER kill" hint (`src/server.ts:514-522`), exit 1 — the occupant is never signaled.
 - **REQ-P4-OPS-03 (stop → AC-03):** `stop --slot N` sends SIGTERM (server drains via
   `src/server.ts:544-549`), escalates to SIGKILL after a grace period, to **tracked PIDs only** from
-  the state file, then runs `helix stop <instance>`; removes the state file. Idempotent: no state
+  the state file, re-verifying the PID's command line immediately before **BOTH SIGTERM and
+  SIGKILL — each signal individually (security C10 / S-010)**; a mismatch skips that signal
+  (allowlisted `stale-pid` note, exit 1 fail-closed). Then it runs `helix stop <instance>`;
+  removes the state file. Idempotent: no state
   file → "not running", exit 0. Exit 1 only if one of our own processes refuses to die.
   Foreign holders of quartet ports are reported, never touched.
 - **REQ-P4-OPS-04 (status → AC-04):** read-only per-slot report: derived quartet (§4.2), REST probe
   (`/memory/livez`, `/memory/health`), Helix `/healthz` TCP/HTTP probe, tracked PIDs, data-dir path
-  + existence, `bearer: armed|unset` boolean. Exit 0 = healthy, 1 = degraded (REST or Helix down),
-  2 = usage error.
+  + existence, `bearer: armed|unset` boolean. `status` reads `AGENT_MEMORY_SECRET` **presence
+  only** (boolean `bearer: armed|unset`) — the same posture as doctor's C4 — never its value,
+  and never attaches an `Authorization` header; a `401` from `/memory/health` means the guard is
+  armed (service up), not degraded (escalation E-3 / S-014). Exit 0 = healthy, 1 = degraded
+  (REST or Helix down), 2 = usage error.
 - **REQ-P4-OPS-05 (doctor → AC-05):** superset diagnostics for slot N running the closed check
-  list **C1–C5** on every invocation (`SPEC-P4-OPS-RUNBOOK` REQ-OPS-RUN-01 / §4a — canonical):
+  list **C1–C5** on every invocation (`SPEC-P4-OPS-RUNBOOK` REQ-OPS-RUN-01 / §4a — canonical).
+  **Execution order is C1 → C3 → C2 → C4 → C5** (check IDs unchanged; security C1 / S-001):
+  port-ownership verification (C3) runs **before** the authenticated rest-health probe (C2).
+  The fixed verdict precedence `5 > 4 > 3 > 1 > 0` is unchanged — precedence selects the
+  final verdict, not check execution order.
   **C1** `helix-healthz` — read-only HTTP probe of the slot's `HELIX_URL` health endpoint;
-  **C2** `rest-health` — presence-conditional `GET /memory/livez` (bearer-exempt) plus
-  `GET /memory/health` with `Bearer <AGENT_MEMORY_SECRET>` read from the operator's env (401 →
+  **C3** `ports` — occupancy of the slot's quartet **and** of upstream `3111/3112/3113`, plus
+  ownership verification of any REST listener: state file present with `pids.rest` alive **and**
+  its cmdline re-verified against our `src/server.ts` launch → slot-owned (same identity check
+  `stop` performs, security C3); no state file + foreign/none holder → classified
+  `upstream-holds-port`; a foreign PID fails with the "NEVER kill" hint (`src/server.ts:514-522`);
+  **C2** `rest-health` — presence-conditional and gated on C3: **only if the listener is verified
+  slot-owned** may it send `GET /memory/livez` (bearer-exempt) plus `GET /memory/health` with
+  `Bearer <AGENT_MEMORY_SECRET>` read from the operator's env (401 →
   `secret-missing`, 500 → `helix-down`, no listener + free port → `INFO not-running`, foreign
-  holder → via C3); **C3** `ports` — occupancy of the slot's quartet **and** of upstream
-  `3111/3112/3113`, foreign PID fails with the "NEVER kill" hint (`src/server.ts:514-522`);
+  or unverified holder → verdict `upstream-holds-port` via C3 **without ever transmitting the
+  secret**) — **the bearer is transmitted only to a slot-owned listener; foreign listeners
+  receive no request from doctor**;
   **C4** `secret-presence` — bearer secret **presence** flag only, never the value (style of
   `src/server.ts:538-541`); **C5** `storage-data-dir` — `helix.toml` `storage = "disk"` vs
   `HELIX_DATA_DIR` set (table-scoped parse). Output: one `PASS|FAIL|INFO <check-id> — <detail>`
@@ -87,14 +104,21 @@ Functional:
 - **REQ-P4-OPS-08 (migration → AC-08; precondition P, see §6):** `doctor --migrate` is **dry-run by
   default**: it prints a plan (source MinIO volume label, target dir, row/item counts, checksums)
   with zero writes. A real migration requires `doctor --migrate --apply --yes` and must, in order:
-  (1) create a verified backup of the source (archive + checksum) under `--backup-dir`,
+  (1) create a verified backup of the source (archive + checksum) under `--backup-dir` —
+  archive file mode `0600`, parent dir `0700` (umask-independent), a **declared PII store** per
+  REQ-09's Ley 172-13 declaration, backup content never printed/logged —
   (2) migrate, (3) verify counts, (4) on ANY error abort leaving the source intact (fail closed).
   The old MinIO volume is **never destroyed** by any subcommand — no `helix prune`, no
   `helix delete`, no `docker volume rm` (`dot_agents/skills/helix-cli/EXAMPLES.md:19` — prune
   deletes persisted data). Output carries counts + allowlisted paths only — never memory content.
 - **REQ-P4-OPS-09 (docs closure → AC-09):** README gains an ops section (slot derivation table,
-  data-dir default, backup + recovery procedure, never-kill rule); `TEST_MATRIX.md` gains KR1–KR3
-  rows pointing at evidence.
+  data-dir default, backup + recovery procedure, never-kill rule) including the **Ley 172-13
+  declaration of the migration backup archive as a PII store** (orchestrator-sanctioned addition
+  to this README row — no CONTRACT.md change): **purpose** (disaster recovery of memory data),
+  **storage location** (`~`-collapsed path only), **TTL/expiry** (deleted after successful
+  migration verification + operator confirmation — both documented), **deletion procedure**
+  (documented command), and that **no backup content is ever printed or logged**;
+  `TEST_MATRIX.md` gains KR1–KR3 rows pointing at evidence.
 
 Non-functional:
 
@@ -189,7 +213,7 @@ Non-functional:
 |---|---|---|---|---|
 | `agent-memory start` | `--slot N` (default 1), `--data-dir PATH` | `AGENT_MEMORY_DATA_DIR`, `AGENT_MEMORY_HOST`, `AGENT_MEMORY_SECRET` (passthrough, never printed) | spawn `helix start` instance + `npx tsx src/server.ts` with §4.3 env; write state file; wait for readiness | 0 started · 1 refused/failed · 2 usage |
 | `agent-memory stop` | `--slot N`, `--data-dir PATH` | `AGENT_MEMORY_DATA_DIR` | SIGTERM→SIGKILL tracked PIDs only; `helix stop <instance>`; remove state file | 0 stopped/idempotent · 1 own-process failed to die · 2 usage |
-| `agent-memory status` | `--slot N` | `AGENT_MEMORY_DATA_DIR` | none (read-only probes) | 0 healthy · 1 degraded/down · 2 usage |
+| `agent-memory status` | `--slot N` | `AGENT_MEMORY_DATA_DIR`, `AGENT_MEMORY_SECRET` (presence only → boolean `bearer: armed\|unset`; value never read) | none (read-only probes; no `Authorization` header ever attached — 401 = armed, not degraded) | 0 healthy · 1 degraded/down · 2 usage |
 | `agent-memory doctor` | `--slot N`, `--data-dir PATH`, `--migrate`, `--apply`, `--yes`, `--backup-dir PATH` | `AGENT_MEMORY_DATA_DIR`, `AGENT_MEMORY_SECRET` (presence only) | checks only; `--migrate` = dry-run plan; `--migrate --apply --yes` = backup → migrate → verify | 0 healthy · 1 doctor-check-failed · 2 usage · 3 upstream-holds-port · 4 helix-down · 5 secret-missing (fixed precedence 5>4>3>1>0; one terminal `VERDICT: <name>` line) |
 
 Shared: `--help` on any subcommand → usage, exit 0. `--apply` without `--migrate`, or `--migrate

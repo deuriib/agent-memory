@@ -44,27 +44,38 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
 
 ### Block A — `doctor` semantics as verification (KR1)
 
-- **REQ-OPS-RUN-01 (exact check list):** `doctor [INSTANCE|--slot N]` runs ALL of the
+- **REQ-OPS-RUN-01 (exact check list):** `doctor --slot N` runs ALL of the
   following checks every invocation, prints one `PASS|FAIL|INFO <check-id> — <flag-only detail>`
-  line per check, then exactly one terminal `VERDICT: <name>` line. Checks, in order:
+  line per check, then exactly one terminal `VERDICT: <name>` line. Checks, **in execution order
+  `C1 → C3 → C2 → C4 → C5`** (check IDs unchanged; flag surface is R1-owned — no `INSTANCE`
+  positional, per SPEC-P4-OPS §4.1): C3's port-ownership verification runs **before** C2's
+  authenticated probe (security C1 / S-001), and the fixed verdict precedence `5>4>3>1>0`
+  (REQ-02) is unaffected — precedence chooses the final verdict, not execution order:
   - **C1 `helix-healthz`** — HTTP probe of the slot's `HELIX_URL` health endpoint
     (read-only; 6969 convention: probe read-only, never write — `scripts/verify-env.ts:31`).
     200 → PASS; refused/timeout/non-200 → FAIL (contributes `helix-down`).
+  - **C3 `ports`** — for each port in the slot's quartet (quartet derivation belongs to
+    SPEC-P4-OPS; this runbook only consumes it): free → PASS; bound by the slot-owned PID
+    recorded at `start` **and verified slot-owned — state file `pids.rest` alive AND its
+    current command line re-verified against our `src/server.ts` launch (the same identity
+    check `stop` performs, security C3)** → PASS `owned`; no state file + foreign/none
+    holder → classified `upstream-holds-port`; bound by any other PID → FAIL (contributes
+    `upstream-holds-port`) and the line MUST carry the static hint containing
+    `NEVER kill` and `3111/3112/3113` plus the `AGENT_MEMORY_PORT=3151` reroute example —
+    exact wording class already asserted at `scripts/verify-env.ts:391-399` and
+    `README.md:491-492`.
   - **C2 `rest-health`** — presence-conditional probe of the slot REST port (see Assumption
-    A2): if a listener is detected, `GET /memory/livez` (expect 200, bearer-exempt) and
+    A2), executed **only after** C3 has classified the listener. If and only if C3 verifies
+    the listener as slot-owned: `GET /memory/livez` (expect 200, bearer-exempt) and
     `GET /memory/health` with `Bearer <AGENT_MEMORY_SECRET>` read from the operator's env
     (expect 200). 401 → FAIL (contributes `secret-missing` — our bearer does not arm the
     slot's guard); 500 → FAIL (contributes `helix-down` — server up, Helix unreachable
     through it; same distinction already encoded at `scripts/verify-env.ts:306-310`).
     No listener + port free → `INFO rest: not-running (start the slot)` (does not flip the
-    verdict — pre-flight mode). No listener + port held by a foreign PID → FAIL via C3.
-  - **C3 `ports`** — for each port in the slot's quartet (quartet derivation belongs to
-    SPEC-P4-OPS; this runbook only consumes it): free → PASS; bound by the slot-owned PID
-    recorded at `start` → PASS `owned`; bound by any other PID → FAIL (contributes
-    `upstream-holds-port`) and the line MUST carry the static hint containing
-    `NEVER kill` and `3111/3112/3113` plus the `AGENT_MEMORY_PORT=3151` reroute example —
-    exact wording class already asserted at `scripts/verify-env.ts:391-399` and
-    `README.md:491-492`.
+    verdict — pre-flight mode). Listener NOT slot-owned (foreign PID, or no state file +
+    foreign/none) → verdict `upstream-holds-port` via C3 **without ever transmitting the
+    secret** — **the bearer is transmitted only to a slot-owned listener; foreign listeners
+    receive no request from doctor**.
   - **C4 `secret-presence`** — slot `AGENT_MEMORY_SECRET` non-empty → PASS with flag
     `secret: present`; empty → FAIL with flag `secret: missing` (contributes
     `secret-missing`). The VALUE is never read into any output path (flag only —
@@ -98,24 +109,32 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
 
 ### Block B — Migration runbook P4.4 (`doctor --migrate`) (KR3)
 
-- **REQ-OPS-RUN-05 (dry-run first):** `doctor --migrate` REQUIRES `--dry-run` on the first
-  meaningful invocation: `doctor --migrate --dry-run` performs zero writes — it prints the
-  plan (source: MinIO-era dev data location; target: resolved `AGENT_MEMORY_DATA_DIR` that
-  is passed as `HELIX_DATA_DIR`; backup destination; file/byte counts) and exits 0. A real
-  (non-dry-run) `--migrate` run MUST refuse to proceed if a dry-run for the same
-  source/target pair has not succeeded in that invocation chain (re-run dry-run inline,
-  then proceed) — dry-run is a step of the procedure, not an optional flag.
+- **REQ-OPS-RUN-05 (dry-run first):** `doctor --slot N --migrate` is dry-run **by default**
+  and performs zero writes — it prints the plan (source: MinIO-era dev data location; target:
+  resolved `AGENT_MEMORY_DATA_DIR` that is passed as `HELIX_DATA_DIR`; backup destination;
+  file/byte counts) and exits 0. There is **no `--dry-run` flag** (flag surface is R1-owned:
+  SPEC-P4-OPS §4.1 defines `--migrate`, `--apply`, `--yes`, `--backup-dir`; unknown flags fail
+  closed with exit 2), and `doctor --slot N --migrate --apply --yes` is the **only write path**.
+  A real (`--apply --yes`) `--migrate` run MUST refuse to proceed if a dry-run for the same
+  source/target pair has not succeeded in that invocation chain (re-run the default dry-run
+  inline, then proceed) — dry-run is a step of the procedure, not an optional flag.
 - **REQ-OPS-RUN-06 (mandatory backup, pre-flight):** Pre-flight before any copy:
   (a) `doctor` environment checks (C1/C4) PASS for the target instance; (b) the slot server
   is NOT running (stop our own slot-owned server first — never anything else); (c) target
   data-dir is empty or absent; (d) a full backup of the source is taken to
-  `<target>.backup-<UTC-timestamp>` and verified non-empty. No verified backup → abort,
-  no copy (brief §3.4 "backup obligatorio").
+  `<target>.backup-<UTC-timestamp>` with file mode `0600` and parent dir `0700`
+  (umask-independent) and verified non-empty — the archive is a **declared PII store** under
+  Ley 172-13 (declaration lives in the README ops section, REQ-15). No verified backup →
+  abort, no copy (brief §3.4 "backup obligatorio").
 - **REQ-OPS-RUN-07 (copy + verify + volume retained):** Copy MinIO-era data → target
   `HELIX_DATA_DIR`, then verify with the round-trip: `remember` canary → restart the target
   instance (`helix restart <instance>`) → `search` returns the canary. The old MinIO-era
   volume is RETAINED and untouched (evidenced by `docker volume ls` / `helix status`
-  before+after; brief §3.4 "el volumen MinIO viejo nunca se destruye").
+  before+after; brief §3.4 "el volumen MinIO viejo nunca se destruye"). **Backup retention
+  (Ley 172-13 TTL, security C2/S-002):** the backup archive is deleted after this verification
+  succeeds **and** the operator confirms, using the documented deletion command in the README
+  ops section (REQ-15); backup content is never printed or logged (path printed `~`-collapsed
+  only).
 - **REQ-OPS-RUN-08 (fail-closed abort, zero data loss):** Any failure at any step →
   print `MIGRATE ABORT: <step> — <flag-only reason>`, exit non-zero, leave source + backup
   byte-identical and untouched, leave no half-written target in a state a subsequent start
@@ -155,7 +174,8 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
     any `helix.toml` delta limited to the additive `[local.<name>]` table written by
     `helix add local` (config, not source — brief §2 "cero edición de código fuente").
   - **KR3:** data-dir survival — save → `helix restart <instance>` → `search` finds it;
-    migration evidence — recorded `--dry-run` output artifact, backup path existence +
+    migration evidence — recorded default dry-run output artifact (`doctor --slot N --migrate`),
+    backup path existence +
     non-zero size, copy→verify log, old MinIO volume still listed; README runbook section
     (data path, backup, recovery) cited by section heading + line anchor.
   - **Stop guard proof (Block D):** before/after process snapshots + foreign-listener
@@ -186,7 +206,9 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
   targets, nothing else: **(a)** the slot-owned REST server — the PID recorded in the
   slot's PID file at `start`, SIGTERM only after re-verifying that PID's current command
   line still matches our `src/server.ts` launch (PID-reuse guard), escalating to SIGKILL
-  after a bounded timeout; **(b)** the slot's Helix instance — only the instance name the
+  after a bounded timeout **with the same cmdline re-verification immediately before SIGKILL
+  too — each signal individually re-verified (security C10/S-010); mismatch → skip the
+  signal, allowlisted `stale-pid` note, exit 1 fail-closed**; **(b)** the slot's Helix instance — only the instance name the
   slot is bound to (slot 1 → existing `[local.dev]`; slot N ≥ 2 → `[local.slotN]` created
   by `helix add local --name slotN`; names come from `helix.toml` `[local.*]` tables —
   `helix.toml:9-14`, brief §3.3), invoked as `helix stop <that-name>` with the name printed
@@ -206,6 +228,12 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
   backup procedure, recovery procedure (`helix status` first — symptom-free dark-stack
   warning already at `README.md:501-507`), migration steps (linking this runbook), and the
   NEVER-kill-upstream rule with the reroute example (`README.md:471-492` wording class).
+  It MUST also carry the **Ley 172-13 data declaration for the migration backup archive**
+  (declared PII store, security C2/S-002; orchestrator-sanctioned README row addition, no
+  CONTRACT.md change): **purpose** (disaster recovery of memory data), **storage location**
+  (`~`-collapsed path only), **TTL/expiry** (deleted after successful migration verification
+  + operator confirmation — both documented), **deletion procedure** (documented command),
+  and that **no backup content is ever printed or logged**.
   Evidence = section heading + line anchor in the TEST_MATRIX P4 section.
 
 ## 3. Acceptance Criteria
@@ -221,7 +249,8 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
   `~`), and `doctor` on a held port emits `NEVER kill` + `3111/3112/3113` + the reroute
   example. Evidence: verify-ops output or scripted grep pasted in TEST_MATRIX.
   (REQ-03, REQ-04 → KR1 + Ley 172-13 HARD)
-- [ ] **AC-OPS-RUN-04:** `doctor --migrate --dry-run` artifact recorded; source listing and
+- [ ] **AC-OPS-RUN-04:** `doctor --slot N --migrate` (dry-run default; no `--dry-run` flag)
+  artifact recorded; source listing and
   byte counts identical before/after the dry-run (zero writes proven). (REQ-05 → KR3)
 - [ ] **AC-OPS-RUN-05:** Migration log shows pre-flight → dry-run → backup (path exists,
   size > 0) → copy → verify in that order; the backup timestamp precedes the first copy
@@ -272,7 +301,9 @@ Type | Status | Commit` table plus per-command count bars (`TEST_MATRIX.md:10-13
 
 Output shape: one line per check (`PASS|FAIL|INFO <check-id> — <detail>`), then exactly one
 `VERDICT: <name>` line; process exit code equals the verdict table. All checks run before
-the verdict is chosen.
+the verdict is chosen. Check **execution** order is `C1 → C3 → C2 → C4 → C5` (C3's
+slot-ownership verification gates C2's authenticated probe — REQ-01, security C1/S-001); the
+fixed precedence table above is unaffected — it selects the final verdict, not execution order.
 
 ### 4b. Doctor output allowlist (REQ-03)
 
@@ -292,13 +323,17 @@ memory content (brief §5, Ley 172-13).
 ### 4c. Migration procedure contract (REQ-05..08)
 
 ```text
-doctor --migrate --dry-run   → plan (source/target/backup/counts), ZERO writes, exit 0
-doctor --migrate             → 1 pre-flight (doctor C1/C4 PASS, our slot server stopped, target empty)
-                               2 dry-run (re-run inline, must pass)
-                               3 backup source → <target>.backup-<UTC-ts> (verify non-empty; NO backup → ABORT)
-                               4 copy MinIO-era data → HELIX_DATA_DIR target
-                               5 verify: remember canary → helix restart <instance> → search finds canary
-                               6 report: old MinIO volume retained (untouched), verdict line
+doctor --slot N --migrate              → plan (source/target/backup/counts), ZERO writes
+                                          (dry-run IS the default; no --dry-run flag), exit 0
+doctor --slot N --migrate --apply --yes → 1 pre-flight (doctor C1/C4 PASS, our slot server stopped, target empty)
+                                          2 dry-run (re-run inline, must pass)
+                                          3 backup source → <target>.backup-<UTC-ts>
+                                            (file 0600 / parent dir 0700; verify non-empty; NO backup → ABORT)
+                                          4 copy MinIO-era data → HELIX_DATA_DIR target
+                                          5 verify: remember canary → helix restart <instance> → search finds canary
+                                          6 report: old MinIO volume retained (untouched), verdict line
+                                          7 backup TTL (Ley 172-13): delete archive after
+                                            verification + operator confirmation (documented command, README)
 Any failure → MIGRATE ABORT: <step>, exit non-zero, source+backup byte-identical,
 no adoptable partial target. Upstream instance/ports never written or stopped.
 ```
@@ -306,9 +341,9 @@ no adoptable partial target. Upstream instance/ports never written or stopped.
 ### 4d. Stop ownership contract (REQ-13, REQ-14)
 
 ```text
-stop [--slot N | INSTANCE]
+stop --slot N
   a. resolve binding: slot → [local.<name>] in helix.toml (slot1→dev; slotN≥2→slotN); print instance name
-  b. REST server: PID from slot PID file → verify PID cmdline matches our server → SIGTERM → bounded wait → SIGKILL (ours only)
+  b. REST server: PID from slot PID file → verify PID cmdline matches our server → SIGTERM → bounded wait → re-verify PID cmdline again → SIGKILL (ours only; EACH signal individually re-verified — security C10/S-010)
   c. Helix: `helix stop <name>` (named instance only, never bare/never foreign)
   d. never: pkill | fuser | killall | port-pattern kill | docker kill/rm foreign | signal to any PID on 3111/3112/3113
 ```
@@ -356,7 +391,7 @@ CI unless Helix-free.
 | REQ-OPS-RUN-02 | AC-01, AC-02 | PROPOSED_CHANGES.md — verdict table + precedence in `doctor` | TEST_MATRIX — exit codes 0/3/4/5 pasted |
 | REQ-OPS-RUN-03 | AC-03 | PROPOSED_CHANGES.md — allowlist renderer for doctor output | `verify-ops`/scripted grep — 0 secret hits, `~`-collapsed paths |
 | REQ-OPS-RUN-04 | AC-03 | PROPOSED_CHANGES.md — C3 report-only path (no signal reachable) | doctor on held port — exit 3, hint text, listener still alive |
-| REQ-OPS-RUN-05 | AC-04 | PROPOSED_CHANGES.md — `--migrate --dry-run` plan mode | dry-run artifact + source byte-count before/after |
+| REQ-OPS-RUN-05 | AC-04 | PROPOSED_CHANGES.md — `--migrate` default dry-run plan mode (`--apply --yes` = only write path) | dry-run artifact + source byte-count before/after |
 | REQ-OPS-RUN-06 | AC-05 | PROPOSED_CHANGES.md — backup step gate | migration log order + backup path/size |
 | REQ-OPS-RUN-07 | AC-05, AC-06 | PROPOSED_CHANGES.md — copy + canary round-trip + volume retain | save→restart→search output; `docker volume ls` before/after |
 | REQ-OPS-RUN-08 | AC-07 | PROPOSED_CHANGES.md — abort/rollback handling | induced-failure run — `MIGRATE ABORT`, unchanged source |
