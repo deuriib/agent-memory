@@ -1,4 +1,4 @@
-# agent-memory — v1.5 Frozen Contract
+# agent-memory — v1.6 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
@@ -75,6 +75,14 @@ heal-response envelope assert). Code evidence: `01224cc` (REQ-RL-001) +
 log (this amendment's docs half carries the RF-01 re-scope, RS-02 envelope,
 RK-01/RK-02 declarations and the §5 count updates).
 
+**v1.6 amendment (2026-09-24, F-01-EMB closure lane):** §2 `getMemoryById`
+now projects `embedding` (internal verify only, never returned by search
+routes); §3 tier-1 (b) CLOSED scope now covers content+dedupKey+embedding+
+concept links (4 invariants), named residual F-01-EMB CLOSED 2026-09-24 with
+evidence verify-lifecycle seams + probe4 f32 proof; heal observability family
+tokens now include embedding. No new query/index/send; lock envelope unchanged.
+§5 counts updated.
+
 ## 0. Verified facts (do not re-litigate)
 
 | Fact | Evidence |
@@ -93,7 +101,7 @@ RK-01/RK-02 declarations and the §5 count updates).
 | A node **missing** the indexed property is accepted (legacy `dedupKey`-less rows are harmless; no backfill blocker) | probe3 a3-2 |
 | `Predicate.ltParam` on a `dateTime` property: strict older-than, project-scoped, `$id Asc` deterministic (server does not sort DateTime keys) | probe3 (e) |
 | `Predicate.ltParam`/range filters do **not** require a range index — they run as residual predicates after the equality anchor on `project` | probe3 (e) |
-| `setProperty` on indexed properties (`content`/`embedding`/`dedupKey`) refreshes BOTH the text and vector indexes in place — a tier-1 merge is immediately retrievable as merged content | probe4 VERDICT A (12 passed, live dev instance) |
+| `setProperty` on indexed properties (`content`/`embedding`/`dedupKey`) refreshes BOTH the text and vector indexes in place — a tier-1 merge is immediately retrievable as merged content | probe4 VERDICT A (13 passed, live dev instance) |
 
 Never restart or stop the dev instance. It runs with `storage = "disk"` (key in
 `helix.toml`, set by P0.4).
@@ -139,7 +147,7 @@ findMemoryByDedupKey(): ReadBatch     // v1.1, §3: params: dedupKey (string) ->
 listExpired():     ReadBatch          // v1.1, §3: params: project (string), cutoff (dateTime), limit (i64)
 listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> RAW Session rows {project} (dedup is the CALLER's job — purge.ts Set)
 updateMemoryContent(): WriteBatch     // v1.2, §3: params: memoryId (string), content (string), embedding (array f32), dedupKey (string), concepts (array object), project (string) — anchors by memoryId, setProperty content/embedding/dedupKey under varNotEmpty, re-links `concepts` from the "memory" var via conceptBody(), returns ["updated","memory"]
-getMemoryById(): ReadBatch            // v1.5, §3: params: memoryId (string), project (string) — unique-equality anchor on memoryId + project where-filter (fail-closed double check), projects memoryRowProjection + dedupKey, returns ["memory"]
+getMemoryById(): ReadBatch            // v1.5/v1.6, §3: params: memoryId (string), project (string) — unique-equality anchor on memoryId + project where-filter (fail-closed double check), projects memoryRowProjection + dedupKey + embedding (internal verify only; never returned), returns ["memory"]
 memoryConcepts(): ReadBatch           // v1.5, §3: params: memoryId (string), project (string) — anchor Memory by memoryId+project, out("HAS_CONCEPT") → dedup → project Concept name, returns ["names"]
 linkMemoryConcepts(): WriteBatch      // v1.5, §3: params: memoryId (string), project (string), concepts (array object) — link-only heal: anchor + conceptBody() per element (Concept upsert + HAS_CONCEPT); NEVER writes content/embedding/dedupKey; returns ["memory"]; the real gate is the caller's re-read via memoryConcepts
 ```
@@ -318,9 +326,11 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   post-write verify runs UNDER the survivor lock (no same-process writer
   can interleave between write and verify): the re-read asserts `content`
   === the merged content, `dedupKey` === `contentHash(project,
-  normalize(content))`, and every effective concept linked
+  normalize(content))`, `embedding` ≈ the expected f32-round-tripped
+  `embed(merged content)` (v1.6, element-wise 1e-6 — `embeddingsEqual`),
+  and every effective concept linked
   (`missingConcepts`, exact-name set difference). A violation → ONE heal
-  (content/dedupKey drift → full `updateMemoryContent` retry; links-only
+  (content/dedupKey/embedding drift → full `updateMemoryContent` retry; links-only
   → `linkMemoryConcepts` link-only), then re-verify; still wrong → throw
   NAMING the violated invariant (fail closed). The substring-guard path
   no longer returns blind: it runs the same concept-link verify + heal
@@ -329,13 +339,11 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   semantics unchanged. The write remains ONE Helix `writeBatch` whose
   commit is DETECTED-and-healed app-side, not engine-guaranteed
   (re-verify on Helix upgrade). **CLOSED scope (gate RL001-F01 /
-  COND-RF-01):** CLOSED covers exactly `content` + `dedupKey` + concept
-  links — the batch's `embedding` write is NOT part of the verify, so a
-  mid-batch partial commit that lands those three but drops the embedding
-  refresh passes every invariant while the vector index keeps serving the
-  pre-merge embedding. **Named residual** (owner: engineering; expiry
-  **≤ 2026-12-31 or next Helix engine upgrade**, whichever first; ledger
-  row `F-01-EMB` in `ROADMAP.md` §1.3); (c) **TTL×MERGE** — probe candidates run
+  COND-RF-01):** CLOSED covers exactly `content` + `dedupKey` +
+  `embedding` + concept links — embedding invariant added in v1.6,
+  residual F-01-EMB CLOSED 2026-09-24 (evidence: `scripts/verify-lifecycle.ts`
+  §I heal seams + `scripts/probe4.ts` f32 round-trip proof; ledger row
+  `F-01-EMB` in `ROADMAP.md` §1.3); (c) **TTL×MERGE** — probe candidates run
   through `filterExpired` first, so a TTL-expired survivor can never absorb
   a fresh write (TTL unset → no-op); (d) **PROVENANCE** — WHICH rows merged
   is not durably recorded (first-wins family; every variant's text survives
@@ -365,7 +373,7 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   2026-09-24):** every CONFIRMED heal emits ONE allowlisted single-line log
   entry on **stderr** — `heal survivor=<memoryId> links=<n>` (link-only heal,
   emitted after the confirming re-read) or `heal survivor=<memoryId>
-  invariants=content,dedupKey|links` (full-write heal, emitted after the
+  invariants=content,dedupKey,embedding|links` (full-write heal, emitted after the
   confirming re-verify) — memoryId + count/family tokens ONLY: never content,
   never embedding, never concept names (SEC-F02), collapsed to one line
   (`oneLine`, CWE-117); **stderr because stdout is the MCP protocol channel**
@@ -591,7 +599,7 @@ routes).
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**117 passed** — pure: dedupKey/hash golden,
+`scripts/verify-lifecycle.ts` green (**123 passed** — pure: dedupKey/hash golden,
 decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
 render guard, **§F derived confidence** (deriveWriteImportance goldens,
 confidenceBoost monotonic/clamp, recall ledger), **§F-bis** the decay-THEN-boost
@@ -609,8 +617,17 @@ RL001-F01, +4: expired-while-waiting → plain insert, 3 sends; fresh-read miss
 → stale links → merge-path `verifyMergedState` retryWrite variant, 8 sends;
 post-heal still-violated → named `REQ-F-01 … invariant(s) violated` throw,
 8 sends; heal response envelope `resolved/rejected/timeout`, no raw message)
++ **§I-d F-01-EMB embedding-seam trio** (v1.6, +6: fixture precondition —
+jaccard ≥ 0.9 AND vector drift > 1e-6, because the bag-of-words embedder makes
+a token-reversal provably vector-identical, so the incoming adds ONE new
+token; d1 stale embedding only → ONE retryWrite heal → re-verify green,
+8 sends + stderr `invariants=embedding` family token; d2 still-stale after
+that one heal → named `REQ-F-01 … embedding` throw, 8 sends, NO heal line
+(an unconfirmed heal is never logged); d3 f32-round-tripped vector green with
+NO heal, 5 sends — the false-positive guard for `embeddingsEqual`)
 + plugin no-default source checks — gate COND-QA-03 /
-RL-002 / COND-QA-02b / RL001-F01 COND-RF-03 + COND-RK-02).
+RL-002 / COND-QA-02b / RL001-F01 COND-RF-03 + COND-RK-02 / SPEC-F01-EMB
+AC-02).
 `scripts/verify-capture.ts` green (**137 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helpers, **§F P2.2**
 file-edit marker + basename opt-in (default OFF) + path-bearing tool-name
@@ -656,9 +673,11 @@ cleaned per run (4/4); the +4 `Session` nodes per run persist (3 random sids +
 deletion path exists: **run budget = 25 runs** (≈100 Session nodes) before the
 operator resets the `verify-skills` project or the dev instance — accepted
 residual, owner engineering, re-review at P4.1 (gate P1R-P32 / COND-DAT-002).
-`scripts/probe4.ts` GREEN (**12 passed** — live proof that
+`scripts/probe4.ts` GREEN (**13 passed** — live proof that
 `updateMemoryContent`'s `setProperty` refreshes BOTH text and vector indexes:
-verdict A).
+verdict A; +1 v1.6 sub-check: the COMMITTED embedding re-read via
+`getMemoryById` sits within 1e-6 of `Math.fround(embed(NEW))` — the f32
+round-trip `embeddingsEqual` relies on).
 `scripts/eval.ts` (**EVAL PASS**) seeds the in-repo corpus (`eval/corpus.ts`,
 40 docs / 15 queries, project `agent-memory-eval`) and writes our own numbers
 (R@5 / R@10 / MRR@10 / nDCG@10, bm25 + hybrid) to

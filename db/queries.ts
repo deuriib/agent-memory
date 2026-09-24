@@ -99,6 +99,9 @@ export const healthCountParams = defineParams({
 /* ------------------------------------------------------------------ *
  * Projections reused by the read routes (CONTRACT §2: never expose
  * `embedding`; project $score / $distance before leaving the hit stream).
+ * Sanctioned internal exception: `getMemoryById` projects `embedding` so
+ * the consolidation post-write verify (REQ-F-01) can compare it in-process
+ * — that row never leaves the store/verify path.
  * ------------------------------------------------------------------ */
 
 const memoryRowProjection: PropertyProjection[] = [
@@ -526,9 +529,12 @@ export function listProjects(): ReadBatch {
  * `project` in the row for a caller-side assert: here the query itself
  * refuses to return a row outside the caller's project).
  *
- * Projects memoryRowProjection + `dedupKey` (never `embedding`): content +
+ * Projects memoryRowProjection + `dedupKey` + `embedding`: content +
  * dedupKey are exactly what the post-write verify (REQ-F-01) checks, and
- * createdAt feeds the lock-wait TTL re-check. No new index (existing #1).
+ * createdAt feeds the lock-wait TTL re-check. `embedding` is projected for
+ * the INTERNAL verify only (sanctioned exception to CONTRACT §2's "never
+ * expose embedding") — the row is consumed by verifyMergedState under the
+ * survivor lock and never returned to a caller. No new index (existing #1).
  * Probe4/post-write reads verified the shape live before ship.
  * ------------------------------------------------------------------ */
 
@@ -550,7 +556,11 @@ export function getMemoryById(): ReadBatch {
           ]),
         )
         .limit(1)
-        .project([...memoryRowProjection, PropertyProjection.new("dedupKey")]),
+        .project([
+          ...memoryRowProjection,
+          PropertyProjection.new("dedupKey"),
+          PropertyProjection.new("embedding"),
+        ]),
     )
     .returning(["memory"]);
 }

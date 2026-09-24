@@ -633,7 +633,7 @@ All run clean:
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`117 passed` →
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`123 passed` →
   `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
   half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
   concept extraction determinism + bounds, `oneLine` CWE-117 render guard
@@ -648,7 +648,10 @@ All run clean:
   and §I fail-closed near-dupe probe + TTL×expired-survivor guard +
   guard-path heal seam (5 sends, NO insert) + §I-c heal-seam trio
   (expired-while-waiting → plain insert, fresh-read miss → stale links →
-  merge-path retryWrite, post-heal still-violated → named throw) + plugin
+  merge-path retryWrite, post-heal still-violated → named throw) + §I-d
+  F-01-EMB embedding seams (stale embedding heals in 8 sends with the
+  `invariants=embedding` stderr token, still-stale → named throw, f32
+  round-trip green with NO heal) + plugin
   no-default source checks. No Helix, no server — CI-runnable.
 - `npm run verify-capture` (`scripts/verify-capture.ts`) — **`137 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr
@@ -668,9 +671,11 @@ All run clean:
 - `npx tsx scripts/probe3.ts` — **`OVERALL: GREEN`**: live-instance proof for
   dedup lookup round-trip, application-side (non-)uniqueness, and `ltParam`
   strict older-than on `dateTime` (feeds `purge.ts`).
-- `npx tsx scripts/probe4.ts` — **`12 passed`**: live proof that
+- `npx tsx scripts/probe4.ts` — **`13 passed`**: live proof that
   `updateMemoryContent`'s `setProperty` refreshes BOTH the text and vector
-  indexes (verdict A — the tier-1 merge ships in-place, survivor id stable).
+  indexes (verdict A — the tier-1 merge ships in-place, survivor id stable),
+  plus the f32 round-trip of the committed embedding (`getMemoryById` re-read,
+  max diff ≤ 1e-6).
 - `npm run verify-skills` (`scripts/verify-skills.ts`) — **`119 checks` →
   `VERIFY SKILLS PASS`**: 73 structural checks across the 8
   `skills/*/SKILL.md` (frontmatter, name == dir, contract route + MCP tool

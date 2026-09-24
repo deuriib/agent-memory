@@ -51,6 +51,49 @@ import { oneLine } from "./logline.js";
 const QUERY_TIMEOUT_MS = 15_000;
 
 /* ------------------------------------------------------------------ */
+/* REQ-F-01 embedding verify helpers (internal — never surfaced)       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Element-wise embedding equality for the post-write verify. The stored
+ * vector round-trips through f32, so each expected element is compared
+ * against `Math.fround(expected[i])` with a 1e-6 tolerance. Invalid shape
+ * (non-array, wrong dims, non-finite element) is a mismatch — the caller
+ * reports a violated invariant (fail-closed), never a silent pass.
+ *
+ * Plan Q1: a dot-product fallback is DIAGNOSTIC only and deliberately NOT
+ * a pass path — any element beyond tolerance returns false.
+ */
+function embeddingsEqual(actual: readonly number[] | undefined, expected: readonly number[]): boolean {
+  if (!Array.isArray(actual) || actual.length !== EMBED_DIM) return false;
+  if (actual.length !== expected.length) return false;
+  for (const value of actual) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  }
+  for (const value of expected) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+  }
+  // Diagnostic-only (kept for debugging, never a pass condition):
+  //   dot = Σ actual[i]*expected[i]  →  report when 1 - cos < 1 - 1e-6.
+  for (let i = 0; i < expected.length; i++) {
+    const a = actual[i] as number;
+    const e = Math.fround(expected[i] as number);
+    if (Math.abs(a - e) > 1e-6) return false;
+  }
+  return true;
+}
+
+/** `readString` analogue for the verify-only embedding vector. */
+function readEmbeddingVector(row: Record<string, unknown>): readonly number[] | undefined {
+  const value = row["embedding"];
+  if (!Array.isArray(value) || value.length !== EMBED_DIM) return undefined;
+  for (const element of value) {
+    if (typeof element !== "number" || !Number.isFinite(element)) return undefined;
+  }
+  return value;
+}
+
+/* ------------------------------------------------------------------ */
 /* Param schemas — frozen names/types from contract §2                 */
 /* ------------------------------------------------------------------ */
 
@@ -169,6 +212,13 @@ interface FreshSurvivorRow {
   createdAt: string;
   /** REQ-F-01: absent on legacy rows reads as "" — see getFreshSurvivor. */
   dedupKey: string;
+  /**
+   * REQ-F-01: committed embedding, read via the sanctioned getMemoryById
+   * internal projection so the post-write verify can compare it. Missing /
+   * malformed reads as undefined and the embedding invariant treats that as
+   * a VIOLATION (fail-closed) — not a silent pass.
+   */
+  embedding?: readonly number[] | undefined;
 }
 
 export interface SearchHit extends MemoryRow {
@@ -810,6 +860,7 @@ export class HelixStore implements MemoryStore {
       expectedContent: nextContent,
       expectedDedupKey: nextDedup,
       expectedConcepts: effectiveConcepts,
+      expectedEmbedding: embedding,
       retryWrite: () => this.sendMergedUpdate(mergedWrite),
     });
 
@@ -879,6 +930,10 @@ export class HelixStore implements MemoryStore {
       // post-write dedupKey invariant compares it, and that path WRITES the
       // key first, so a committed row always carries it).
       dedupKey: readString(row, ["dedupKey", "dedup_key"], ""),
+      // REQ-F-01: verify-only embedding (sanctioned getMemoryById internal
+      // projection). Missing/malformed reads as undefined and the embedding
+      // invariant reports a VIOLATION — not a silent pass.
+      embedding: readEmbeddingVector(row),
     };
   }
 
@@ -1007,17 +1062,20 @@ export class HelixStore implements MemoryStore {
   /**
    * REQ-F-01 post-write verify + ONE heal (contract §3 tier-1 (b)): the
    * merged state is re-read FRESH (still under the survivor lock) and
-   * three invariants are asserted:
+   * four invariants are asserted:
    *   (a) `content` === the merged content we asked to write;
    *   (b) `dedupKey` === contentHash(project, normalize(content)) — the
    *       exact key passed to the write;
-   *   (c) every EFFECTIVE concept of this merge is linked from the survivor.
-   * On any violation: ONE heal — content-state wrong → `retryWrite` (the
-   * full updateMemoryContent re-sent: content + key + links together);
-   * links-only wrong → the link-only heal via `ensureConceptLinks` — then
-   * re-verify; still wrong → throw NAMING the violated invariant(s),
-   * fail-closed. A survivor that vanished between write and verify
-   * propagates getFreshSurvivor's own fail-closed error.
+   *   (c) every EFFECTIVE concept of this merge is linked from the survivor;
+   *   (d) `embedding` === the f32-round-tripped vector we embedded
+   *       (embeddingsEqual — element-wise, fail-closed on malformed).
+   * On any violation: ONE heal — content-state wrong (content / dedupKey /
+   * embedding) → `retryWrite` (the full updateMemoryContent re-sent:
+   * content + key + links together); links-only wrong → the link-only heal
+   * via `ensureConceptLinks` — then re-verify; still wrong → throw NAMING
+   * the violated invariant(s), fail-closed. A survivor that vanished
+   * between write and verify propagates getFreshSurvivor's own fail-closed
+   * error.
    */
   private async verifyMergedState(args: {
     memoryId: string;
@@ -1025,6 +1083,7 @@ export class HelixStore implements MemoryStore {
     expectedContent: string;
     expectedDedupKey: string;
     expectedConcepts: readonly string[];
+    expectedEmbedding: readonly number[];
     retryWrite: () => Promise<void>;
   }): Promise<void> {
     const violations = async (): Promise<string[]> => {
@@ -1033,13 +1092,15 @@ export class HelixStore implements MemoryStore {
       const names: string[] = [];
       if (fresh.content !== args.expectedContent) names.push("content");
       if (fresh.dedupKey !== args.expectedDedupKey) names.push("dedupKey");
+      if (!embeddingsEqual(fresh.embedding, args.expectedEmbedding)) names.push("embedding");
       const missing = missingConcepts(linked, args.expectedConcepts);
       if (missing.length > 0) names.push(`concepts[${missing.join(",")}]`);
       return names;
     };
     const before = await violations();
     if (before.length === 0) return;
-    const viaRetryWrite = before.includes("content") || before.includes("dedupKey");
+    const viaRetryWrite =
+      before.includes("content") || before.includes("dedupKey") || before.includes("embedding");
     if (viaRetryWrite) {
       await args.retryWrite();
     } else {
@@ -1055,13 +1116,14 @@ export class HelixStore implements MemoryStore {
     if (viaRetryWrite) {
       // Gate RL001-F01 / COND-RK-02: ONE allowlisted line per CONFIRMED
       // full-write heal — invariant FAMILY tokens only (content/dedupKey/
-      // links). The `concepts[...]` violation strings carry concept NAMES
+      // embedding/links). The `concepts[...]` violation strings carry concept NAMES
       // and deliberately stay OUT of the line (security SEC-F02); ids and
       // tokens only, collapsed single-line via `oneLine` (CWE-117),
       // stderr — stdout is the MCP protocol channel (`src/mcp.ts`).
       const healed: string[] = [];
       if (before.includes("content")) healed.push("content");
       if (before.includes("dedupKey")) healed.push("dedupKey");
+      if (before.includes("embedding")) healed.push("embedding");
       if (before.some((name) => name.startsWith("concepts"))) healed.push("links");
       console.error(oneLine(`heal survivor=${args.memoryId} invariants=${healed.join(",")}`));
     }

@@ -16,6 +16,10 @@ import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concept
 import { confidenceBoost, deriveWriteImportance, noteRecall, recallCount, resetRecalls } from "../src/confidence.js";
 import { isNearDuplicate, jaccard, mergeThreshold, mergedContent, missingConcepts } from "../src/consolidate.js";
 import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
+/* §I-d (F-01-EMB): the canned verify rows carry real vectors from the SAME
+ * deterministic embedder the store uses, so the embedding invariant compares
+ * like-for-like (f32 round-trip included). */
+import { embed } from "../src/embed.js";
 import { oneLine } from "../src/logline.js";
 /* COND-QA-01: the §H goldens score with the SAME module the eval harness
  * uses (extracted VERBATIM from scripts/eval.ts — pure, zero imports). */
@@ -1153,11 +1157,21 @@ async function main(): Promise<void> {
     const cProject = "verify-lifecycle";
     const cNextContent = mergedContent(cBase, cIncoming); // base + "\n" + incoming (guard cannot hit)
     const cNextDedup = contentHash(cProject, normalizeContent(cNextContent));
+    // F-01-EMB: the verify now reads the projected embedding too, so both
+    // canned verify rows carry real vectors (f32 round-tripped). NOTE (bag-of-
+    // words embedder): (c)'s reverse-token fixture keeps the token MULTISET
+    // — every tf doubles uniformly and L2 normalization cancels the scale —
+    // so embed(cBase) === embed(cNextContent) and the embedding invariant
+    // does NOT fire here; the throw this case pins stays concept-only. The
+    // discriminating seam for the embedding invariant is §I-d below.
+    const cStaleEmb = embed(cBase).map((value) => Math.fround(value));
+    const cFreshEmb = embed(cNextContent).map((value) => Math.fround(value));
     const cMergedRow = {
       memoryId: "seam-merge-hit",
       content: cNextContent,
       createdAt: new Date().toISOString(),
       dedupKey: cNextDedup, // round 2: content + dedupKey BOTH restored
+      embedding: cFreshEmb, // round 2: embedding restored too (v1.6 4-invariant scope)
     };
     const cUpdateOk = {
       memory: [{ memoryId: "seam-merge-hit" }], // anchor present
@@ -1184,10 +1198,21 @@ async function main(): Promise<void> {
         { memory: [{ memoryId: "seam-merge-hit", content: cBase, createdAt: new Date().toISOString() }] }, // call 2: fresh re-read
         cUpdateOk, // call 3: the merge write (updateMemoryContent)
         // call 4: verify round 1 — content still the PRE-merge snapshot (drift) …
-        { memory: [{ memoryId: "seam-merge-hit", content: cBase, createdAt: new Date().toISOString() }] },
+        // (embedding present but NOT a violation here: reverse-token fixture,
+        // identical bag-of-words vector — see the fixture note above)
+        {
+          memory: [
+            {
+              memoryId: "seam-merge-hit",
+              content: cBase,
+              createdAt: new Date().toISOString(),
+              embedding: cStaleEmb,
+            },
+          ],
+        },
         { names: [] }, // call 5: … and NOTHING linked yet -> violations = content + concepts[…]
         cUpdateOk, // call 6: the ONE heal — retryWrite re-sends the identical write
-        { memory: [cMergedRow] }, // call 7: verify round 2 — content + dedupKey now match …
+        { memory: [cMergedRow] }, // call 7: verify round 2 — content + dedupKey + embedding now match …
         { names: [] }, // call 8: … but the concepts are STILL missing -> named throw
       ],
     );
@@ -1210,6 +1235,225 @@ async function main(): Promise<void> {
         i8Err.message.includes("concepts[") &&
         i8Sends.length === 8,
       `${i8Err instanceof Error ? i8Err.message : String(i8Err)} (sends=${i8Sends.length})`,
+    );
+
+    /* (d) F-01-EMB embedding invariant (SPEC-F01-EMB REQ-F-01-EMB-04/05):
+     * the SAME merge flow as (c), canned per call, driving ONLY the fourth
+     * invariant. FIXTURE NOTE (the precondition below proves it numerically):
+     * `embed` is BAG-OF-WORDS, so a pure token-REVERSAL like (c)'s keeps the
+     * token multiset — every tf doubles uniformly, L2 normalization cancels
+     * the scale factor, and the vector comes out IDENTICAL (drift 0, no
+     * violation to heal). `dIncoming` therefore adds ONE token (`lima`) the
+     * survivor lacks: jaccard = 12/13 = 0.923 >= 0.9 still qualifies as a
+     * near-dup, it is NOT a normalized substring of the survivor (the guard
+     * cannot swallow the merge), and the merged vector genuinely differs from
+     * the stored one. Three cases, all offline (ZERO network, CI-safe):
+     *   d1 stale embedding ONLY -> ONE retryWrite heal -> re-verify green
+     *      (8 sends) + the stderr `invariants=embedding` family token;
+     *   d2 STILL stale after that one heal -> named REQ-F-01 throw (8 sends,
+     *      and NO heal line — an unconfirmed heal is never logged);
+     *   d3 f32-round-tripped correct vector -> verify green with NO heal
+     *      (5 sends) — the false-positive guard for embeddingsEqual's
+     *      Math.fround + 1e-6 tolerance.
+     * Canned vectors come from src/embed.ts (deterministic, in-memory);
+     * only counts/tokens are ever printed — no content, no embedding
+     * VALUES, no PII (probe3/SEC-F02 logging discipline). */
+
+    /** Capture the store's STDERR around one offline call — the allowlisted
+     *  `heal survivor=…` record goes to stderr (contract §3 COND-RK-02;
+     *  stdout is the MCP channel). Returns the body's value OR its error
+     *  plus every captured stderr line. */
+    const captureStderr = async <T>(
+      body: () => Promise<T>,
+    ): Promise<{ value: T | undefined; error: unknown; lines: string[] }> => {
+      const lines: string[] = [];
+      const original = console.error;
+      console.error = (...args: unknown[]): void => {
+        lines.push(args.map((arg) => (arg instanceof Error ? arg.message : String(arg))).join(" "));
+      };
+      try {
+        const value = await body();
+        return { value, error: undefined, lines };
+      } catch (err) {
+        return { value: undefined, error: err, lines };
+      } finally {
+        console.error = original;
+      }
+    };
+
+    const dBase = "seam embedding survivor delta foxtrot golf hotel india juliet kilo romeo sierra";
+    const dIncoming =
+      "sierra romeo kilo juliet india hotel golf foxtrot delta survivor embedding seam lima"; // +1 NEW token -> jaccard 12/13 = 0.923, not a substring, merged vector CHANGES
+    const dProject = "verify-lifecycle";
+    const dConcepts = ["dseamalpha", "dseambravo"]; // explicit request concepts = the merge's EFFECTIVE list
+    const dNextContent = mergedContent(dBase, dIncoming); // base + "\n" + incoming (guard cannot hit)
+    const dNextDedup = contentHash(dProject, normalizeContent(dNextContent));
+    const dStaleEmb = embed(dBase).map((value) => Math.fround(value)); // PRE-merge vector the partial commit left behind
+    const dFreshEmb = embed(dNextContent).map((value) => Math.fround(value)); // f32-round-tripped EXPECTED vector
+    const dMaxDrift = dStaleEmb.reduce(
+      (max, value, index) => Math.max(max, Math.abs(value - (dFreshEmb[index] ?? 0))),
+      0,
+    );
+    check(
+      "F-01-EMB precondition: fixture qualifies (jaccard >= 0.9, drifts > 1e-6 — a genuine mismatch, not an epsilon artifact)",
+      jaccard(dBase, dIncoming) >= 0.9 &&
+        dStaleEmb.length === dFreshEmb.length &&
+        dMaxDrift > 1e-6,
+      `jaccard=${jaccard(dBase, dIncoming).toFixed(4)} dims=${dStaleEmb.length}/${dFreshEmb.length} maxDrift=${dMaxDrift}`,
+    );
+
+    const dProbeHit = (memoryId: string): SearchHit => ({
+      id: memoryId,
+      memoryId,
+      content: dBase, // IDENTICAL to the fresh survivor's -> jaccard(base, incoming) = 12/13 = 0.923 >= 0.9 -> survivor picked
+      sessionId: "old-session",
+      origin: "rest",
+      importance: 0.5,
+      createdAt: new Date().toISOString(),
+      score: 4.0,
+    });
+    const dSurvivorRow = (memoryId: string): Record<string, unknown> => ({
+      memoryId,
+      content: dBase, // call 2 re-read: the row as it is NOW (pre-merge)
+      createdAt: new Date().toISOString(),
+    });
+    const dVerifyRow = (memoryId: string, embedding: readonly number[]): Record<string, unknown> => ({
+      memoryId,
+      content: dNextContent, // the merge write landed
+      dedupKey: dNextDedup, // … with the right key
+      createdAt: new Date().toISOString(),
+      embedding: [...embedding], // the VECTOR under test (stale or f32-fresh)
+    });
+    const dUpdateOk = (memoryId: string): Record<string, unknown> => ({
+      memory: [{ memoryId }], // anchor present
+      updated: [{ memoryId }], // setProperty branch non-empty
+    });
+    const dLinked = { names: dConcepts.map((name) => ({ name })) };
+
+    /* d1: embedding STALE, content/dedupKey/links green -> violations =
+     * ["embedding"] ONLY -> viaRetryWrite -> the ONE heal (retryWrite) ->
+     * re-verify green. 8 canned calls, mirroring (c). */
+    const d1Sends: unknown[] = [];
+    const d1 = makeSeamStore(
+      d1Sends,
+      () => Promise.resolve([dProbeHit("seam-emb-d1")]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        { memory: [dSurvivorRow("seam-emb-d1")] }, // call 2: fresh re-read under the survivor lock
+        dUpdateOk("seam-emb-d1"), // call 3: the merge write (updateMemoryContent)
+        { memory: [dVerifyRow("seam-emb-d1", dStaleEmb)] }, // call 4: verify round 1 — content + dedupKey landed, embedding STALE
+        dLinked, // call 5: … and every concept linked -> violations = ["embedding"] alone
+        dUpdateOk("seam-emb-d1"), // call 6: the ONE heal — an embedding violation routes to retryWrite
+        { memory: [dVerifyRow("seam-emb-d1", dFreshEmb)] }, // call 7: verify round 2 — embedding now matches (f32) …
+        dLinked, // call 8: … links still green -> confirmed heal, no throw
+      ],
+    );
+    const d1Run = await captureStderr(() =>
+      d1.remember({
+        content: dIncoming,
+        project: dProject,
+        sessionId: "d1",
+        origin: "test",
+        concepts: dConcepts,
+      }),
+    );
+    check(
+      "F-01-EMB(d1) stale embedding heals: violations=[embedding] only -> ONE retryWrite heal -> re-verify green (consolidated=true, 8 sends, NO insert)",
+      d1Run.error === undefined &&
+        d1Run.value !== undefined &&
+        d1Run.value.consolidated === true &&
+        d1Sends.length === 8,
+      JSON.stringify({
+        consolidated: d1Run.value?.consolidated ?? null,
+        error: d1Run.error === undefined ? null : String(d1Run.error),
+        sends: d1Sends.length,
+      }),
+    );
+    check(
+      "F-01-EMB(d1) heal observability: stderr line is exactly `heal survivor=seam-emb-d1 invariants=embedding` (family token only)",
+      d1Run.lines.includes("heal survivor=seam-emb-d1 invariants=embedding"),
+      JSON.stringify({ lines: d1Run.lines }),
+    );
+
+    /* d2: the heal does NOT fix the embedding (persistent partial commit) ->
+     * re-verify still reports `embedding` -> named REQ-F-01 throw,
+     * fail-closed, and NO heal line (the log fires only on a CONFIRMED
+     * heal — COND-RK-02). */
+    const d2Sends: unknown[] = [];
+    const d2 = makeSeamStore(
+      d2Sends,
+      () => Promise.resolve([dProbeHit("seam-emb-d2")]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        { memory: [dSurvivorRow("seam-emb-d2")] }, // call 2: fresh re-read
+        dUpdateOk("seam-emb-d2"), // call 3: the merge write
+        { memory: [dVerifyRow("seam-emb-d2", dStaleEmb)] }, // call 4: verify round 1 — STALE
+        dLinked, // call 5: links green -> violations = ["embedding"]
+        dUpdateOk("seam-emb-d2"), // call 6: the ONE heal — retryWrite
+        { memory: [dVerifyRow("seam-emb-d2", dStaleEmb)] }, // call 7: verify round 2 — STILL stale
+        dLinked, // call 8: links green -> the throw names embedding ALONE
+      ],
+    );
+    const d2Run = await captureStderr(() =>
+      d2.remember({
+        content: dIncoming,
+        project: dProject,
+        sessionId: "d2",
+        origin: "test",
+        concepts: dConcepts,
+      }),
+    );
+    check(
+      "F-01-EMB(d2) still-stale after one heal: named REQ-F-01 throw naming `embedding` (fail-closed, 8 sends)",
+      d2Run.value === undefined &&
+        d2Run.error instanceof Error &&
+        d2Run.error.message.includes("REQ-F-01: post-write verify failed after one heal") &&
+        d2Run.error.message.includes("invariant(s) violated — embedding") &&
+        d2Sends.length === 8,
+      `${d2Run.error instanceof Error ? d2Run.error.message : String(d2Run.error)} (sends=${d2Sends.length})`,
+    );
+    check(
+      "F-01-EMB(d2) unconfirmed heal is never logged (no `heal survivor=` line on the throw path)",
+      !d2Run.lines.some((line) => line.startsWith("heal survivor=")),
+      JSON.stringify({ lines: d2Run.lines }),
+    );
+
+    /* d3: the EXPECTED vector, f32-round-tripped — must PASS the verify with
+     * NO heal (5 sends) and no heal line: embeddingsEqual's Math.fround +
+     * 1e-6 tolerance is not a false-positive machine. */
+    const d3Sends: unknown[] = [];
+    const d3 = makeSeamStore(
+      d3Sends,
+      () => Promise.resolve([dProbeHit("seam-emb-d3")]),
+      [
+        { memory: null }, // call 1: dedup pre-check — MISS
+        { memory: [dSurvivorRow("seam-emb-d3")] }, // call 2: fresh re-read
+        dUpdateOk("seam-emb-d3"), // call 3: the merge write
+        { memory: [dVerifyRow("seam-emb-d3", dFreshEmb)] }, // call 4: verify round 1 — content + dedupKey + embedding ALL green
+        dLinked, // call 5: links green -> NOTHING violated -> return, no heal
+      ],
+    );
+    const d3Run = await captureStderr(() =>
+      d3.remember({
+        content: dIncoming,
+        project: dProject,
+        sessionId: "d3",
+        origin: "test",
+        concepts: dConcepts,
+      }),
+    );
+    check(
+      "F-01-EMB(d3) f32 round-trip green: correct embedding passes verify with NO heal (consolidated=true, 5 sends, no heal line)",
+      d3Run.error === undefined &&
+        d3Run.value !== undefined &&
+        d3Run.value.consolidated === true &&
+        d3Sends.length === 5 &&
+        !d3Run.lines.some((line) => line.startsWith("heal survivor=")),
+      JSON.stringify({
+        consolidated: d3Run.value?.consolidated ?? null,
+        sends: d3Sends.length,
+        healLines: d3Run.lines.filter((line) => line.startsWith("heal survivor=")).length,
+      }),
     );
   } finally {
     restoreI();

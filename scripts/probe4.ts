@@ -34,6 +34,11 @@
  *     setProperty path".
  *   - dedupKey round-trip via findMemoryByDedupKey: informational here
  *     (E2E-covered by verify.ts section P's re-save assertion).
+ *   - f32 round-trip of the COMMITTED embedding (F-01-EMB): a direct
+ *     getMemoryById re-read compares the stored vector element-wise against
+ *     Math.fround(embed(NEW)) at 1e-6 — the exact tolerance
+ *     `embeddingsEqual` uses in the tier-1 post-write verify — printing ONLY
+ *     the max diff (never a vector value, probe3 logging discipline).
  *
  * If the FULL batch errors, it is retried CONTENT-ONLY (same setProperty
  * path, no conceptBody forEach) — isolating the concept re-link as the
@@ -66,6 +71,8 @@ import {
   findMemoryByDedupKeyParams,
   forgetMemory,
   forgetMemoryParams,
+  getMemoryById,
+  getMemoryByIdParams,
   graphSearch,
   graphSearchParams,
   saveMemory,
@@ -449,6 +456,48 @@ async function main(): Promise<void> {
         );
       } catch (err) {
         check("sub: dedupKey(NEW) round-trips to X (informational)", false, describeError(err));
+      }
+
+      /* ---- Sub-check: f32 round-trip of the committed embedding (F-01-EMB).
+       * getMemoryById is the sanctioned verify-only reader of `embedding`
+       * (contract §2/§3): the stored vector MUST sit within 1e-6 of
+       * Math.fround(embed(NEW)) element-wise — the same comparison the
+       * tier-1 post-write verify runs in-process. Prints the MAX DIFF only. */
+      try {
+        const byId = await client
+          .query<unknown>(
+            getMemoryById().toQueryRequest(getMemoryByIdParams, {
+              memoryId: MEMORY_ID,
+              project: PROJECT,
+            }),
+          )
+          .send();
+        const idRow = findRow(byId, MEMORY_ID);
+        const stored = idRow === undefined ? undefined : idRow["embedding"];
+        let maxDiff = Number.NaN;
+        if (Array.isArray(stored) && stored.length === E2.length) {
+          maxDiff = stored.reduce<number>((max, value, index) => {
+            if (typeof value !== "number" || !Number.isFinite(value)) return Number.POSITIVE_INFINITY;
+            return Math.max(max, Math.abs(value - Math.fround(E2[index] ?? Number.NaN)));
+          }, 0);
+        }
+        check(
+          "sub: f32 round-trip — stored embedding vs Math.fround(embed(NEW)) max diff <= 1e-6 (informational)",
+          idRow !== undefined && Number.isFinite(maxDiff) && maxDiff <= 1e-6,
+          `present=${idRow !== undefined} dims=${Array.isArray(stored) ? stored.length : "-"} maxDiff=${maxDiff}`,
+        );
+        // Diff ONLY (probe3 logging discipline: never an embedding VALUE).
+        console.log(
+          `f32: stored embedding vs Math.fround(embed(NEW)) maxDiff=${maxDiff} dims=${
+            Array.isArray(stored) ? stored.length : "-"
+          }`,
+        );
+      } catch (err) {
+        check(
+          "sub: f32 round-trip — stored embedding vs Math.fround(embed(NEW)) max diff <= 1e-6 (informational)",
+          false,
+          describeError(err),
+        );
       }
 
       /* ---- Sub-check: concept re-link (own verdict, authorized fallback) */
