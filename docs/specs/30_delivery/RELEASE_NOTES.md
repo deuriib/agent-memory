@@ -1,3 +1,39 @@
+# Release Notes: v0.7.1
+
+**Date:** 2026-09-24
+**Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
+operations function per ship-release role binding — role assumption stated
+for this lane)
+**Specs Included:** F-01-EMB embedding invariant closure (4th invariant in `verifyMergedState`) — `ROADMAP.md` §1.3 `F-01-EMB` **CLOSED** 2026-09-24
+**Domains-Touched:** engineering, security, automation/ops, data lens
+**Ship Type:** deploy (patch, no API/index/route change; version 0.7.0 → 0.7.1 across 6 carriers + tag v0.7.1)
+
+## Highlights
+
+- **F-01-EMB closed — no more silently stale vector.** `verifyMergedState` now asserts `embedding === Math.fround(embed(nextContent))` ±1e-6; drift → ONE `retryWrite` heal → re-verify → named throw. `getMemoryById` projection + `embeddingsEqual` pure helper; no new query/index/send. Proven offline (§I-d d1 8 sends heal token `embedding`, d2 throw) + live (`probe4` `maxDiff=0 dims=384` VERDICT A, `verify` `f-01:` heal).
+
+## Contract
+
+`docs/CONTRACT.md` v1.5 → **v1.6**: `getMemoryById` projects `embedding` (internal verify only, never returned), `verifyMergedState` lists 4 invariants, heal family adds `embedding`, `F-01-EMB` CLOSED. Backward compatible: no route/tool/schema changes. Migration: N/A.
+
+## Known Issues
+
+- Accepted Low hygiene: shape-drift (missing key) has no dedicated seam (code fail-closed, arch C2 names it — next lane) + `TEST_MATRIX.md` not yet extended (trace in spec §7). Owner R1, expiry 2026-12-31 or Helix upgrade.
+
+## Verification
+
+typecheck 0 · `verify-lifecycle` **123/123** (§I-d) · `probe4` **13/13** VERDICT A `maxDiff=0` · `verify` **243/243** (3151) · bootstrap 8 · CI **36044780528 success** on `f772e45`.
+
+## Quality gate
+
+Reliability PASS, security PASS, automation CONDITIONAL→cleared by CI, readability PASS, QA CONDITIONAL (2 Low) → gate **OPEN** with documented residuals.
+
+## Rollback / Undo
+
+Commit `f772e45` (+ this `chore(release-0.7.1)`), tagged **v0.7.1** — reverse-order revert restores 0.7.0; no migration, no index change. Owner: engineering. ETA: immediate.
+
+---
+
 # Release Notes: v0.7.0
 
 **Date:** 2026-09-24

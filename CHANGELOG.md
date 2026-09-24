@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.7.1] — 2026-09-24
+
+### Added
+
+- **F-01-EMB closure — embedding invariant in tier-1 post-write verify** (`docs/CONTRACT.md` v1.6, `ROADMAP.md` §1.3 `F-01-EMB` **CLOSED** 2026-09-24): `getMemoryById` now projects `embedding` (internal verify only, never returned by search routes, existing index #1, bootstrap stays 8); `FreshSurvivorRow` carries `embedding`, `readEmbeddingVector` fails closed on missing/malformed; `embeddingsEqual` element-wise `Math.fround` ±1e-6; `verifyMergedState` 4th invariant `embedding` routes to `retryWrite` (full `updateMemoryContent` re-send) → re-verify → named `REQ-F-01 … embedding` throw; heal line `invariants=…,embedding` token-only (`oneLine`, stderr) — evidence `verify-lifecycle` **123** (§I-d d1 8 sends heal, d2 throw, d3 f32 green) + `probe4` **13** `maxDiff=0 dims=384` VERDICT A + `verify` **243** + `typecheck` clean + CI **36044780528** success on `f772e45` (engineering, security, automation/ops)
+
+### Changed
+
+- Version 0.7.0 → 0.7.1 across 6 carriers: `package.json`, `package-lock.json` root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`, README badge (engineering, release)
+
 ## [v0.7.0] — 2026-09-24
 
 ### Added
