@@ -598,6 +598,190 @@ Stated plainly — these are real, not hypothetical:
     score = control + 1/61 proves the healed link, survivor content
     byte-identical; §G goldens; §I 5-send NO-insert seam). REQ-F-01.
 
+## Operations — P4 control plane (slots, data dir, CLI)
+
+Operator surface for the local control plane. Existing **Known limitations**
+port-conflict (limitation #1, 3111/3112/3113) and durability/recovery (limitation
+#2, `storage = "disk"`, host-reboot non-auto-start) sections above remain the
+canonical warnings — this section adds the slot, data-dir, and CLI contract.
+
+### Slot derivation (REQ-P4-OPS-06, §4.2)
+
+Derived exclusively through env/flags — `AGENT_MEMORY_PORT`, `helix add local
+--port`, `HELIX_URL`, `AGENT_MEMORY_URL` — zero edits to `src/**` or `db/**`;
+`helix add local` appending `[local.slotN]` to `helix.toml` is config registration,
+not a source edit. Slot 1 reuses `[local.dev]`; N≥2 creates `slotN`.
+
+| Slot | REST `R(N)=3111+3(N-1)` | Helix `H(N)=6969+(N-1)` | Reserved `R+1` | Reserved `R+2` | instance name |
+|------|--------------------------|--------------------------|----------------|----------------|---------------|
+| 1 | `3111` (default parity, untouched) | `6969` | `3112` | `3113` | `dev` |
+| 2 | `3114` | `6970` | `3115` | `3116` | `slot2` |
+| 3 | `3117` | `6971` | `3118` | `3119` | `slot3` |
+| N | `3111+3(N-1)` | `6969+(N-1)` | `R(N)+1` | `R(N)+2` | `slotN` (N≥2) |
+
+Invariants: `N` integer ≥1 else exit 2; N≥2 quartet never intersects
+`{3111,3112,3113,6969}`; `3151` is never derived (it is the documented manual
+reroute); reserved ports reserve address space only — never bound, never
+signaled; reserved occupancy is reported read-only as `reserved`.
+
+### CLI usage — `bin/agent-memory` (REQ-P4-OPS-01..05)
+
+Zero new dependencies (Node ≥20 ESM, `node:` builtins only). Binary registered
+as `"bin": {"agent-memory": "./bin/agent-memory.mjs"}` in `package.json`.
+
+```bash
+bin/agent-memory start  --slot N [--data-dir PATH]   # spawn helix instance + REST server
+bin/agent-memory stop   --slot N [--data-dir PATH]   # SIGTERM→SIGKILL tracked PIDs + helix stop <instance>
+bin/agent-memory status --slot N                     # read-only probes
+bin/agent-memory doctor --slot N [--data-dir PATH] [--migrate [--apply --yes] [--backup-dir PATH]]
+bin/agent-memory --help                              # any subcommand --help → usage, exit 0
+```
+
+`--slot` defaults to `1`. Unknown subcommand/flag or invalid `--slot` → usage
+on stderr, exit 2 (fail-closed, `src/server.ts:479-481` style). `--apply` without
+`--migrate`, or `--migrate --apply` without `--yes`, → exit 2.
+
+Exit codes:
+
+| Subcommand | 0 | 1 | 2 | 3 | 4 | 5 |
+|------------|---|---|---|---|---|---|
+| `start` | started + ready (`/healthz` + `/memory/livez` within 30 s) | refused/failed (quartet occupied by foreign holder, port check, readiness timeout) | usage | — | — | — |
+| `stop` | stopped / idempotent (no state file → not running) | own process refused to die / stale-pid mismatch | usage | — | — | — |
+| `status` | healthy (REST + Helix reachable) | degraded / down | usage | — | — | — |
+| `doctor` | `healthy` | `doctor-check-failed` (C5 storage/data-dir or internal) | usage | `upstream-holds-port` | `helix-down` | `secret-missing` |
+
+`doctor` prints one `PASS|FAIL|INFO <check-id> — <detail>` line per C1–C5
+(execution order `C1 → C3 → C2 → C4 → C5`; C3 ownership verification gates C2's
+authenticated probe) then exactly one terminal `VERDICT: <name>` line.
+Fixed verdict precedence `5 > 4 > 3 > 1 > 0` (`secret-missing` > `helix-down` >
+`upstream-holds-port` > `doctor-check-failed` > `healthy`) — precedence chooses
+the final verdict, not execution order.
+
+Migration flags:
+
+```bash
+bin/agent-memory doctor --slot N --migrate              # dry-run default — plan only (source/target/backup/counts/checksums), zero writes, exit 0
+bin/agent-memory doctor --slot N --migrate --apply --yes  # only write path — backup → copy → verify (after dry-run inline)
+```
+
+Dry-run leaves source and target byte-identical (checksums before/after) and
+prints counts + allowlisted paths only. `--migrate` currently fails closed with
+`MIGRATE ABORT: unsupported-runtime` (see Data dir / A3 below) — no write path
+is reachable until the orchestrator decides on framing 3b.
+
+### Data dir & state layout (REQ-P4-OPS-07, NFR-D)
+
+Precedence: `--data-dir PATH` > env `AGENT_MEMORY_DATA_DIR` > default
+`~/.local/share/agent-memory/<slot>/` (slot `1` → `…/1/`, slot `2` → `…/2/`,
+etc.). Passed as `HELIX_DATA_DIR` to Helix; created if missing; `start` fails
+closed with an actionable permission error if the dir is not writable (Helix
+image uid `65532` — bind mounts must allow that uid; risk R3).
+
+CLI state lives in a sibling `state/` dir — **never inside `HELIX_DATA_DIR`**
+(Helix owns that directory exclusively):
+
+```
+~/.local/share/agent-memory/<slot>/   ← HELIX_DATA_DIR (Helix data, when forwarded)
+~/.local/share/agent-memory/state/slot-<N>.json  ← CLI state file (slot, pids {rest, helix}, instance, dataDir, startedAt, cliVersion)
+```
+
+State dir is created `0700` (umask-independent); state file is `0600`; neither
+ever contains a secret, memory content, or PII. `stop` validates the stored
+`helixInstance` against `helix.toml` `[local.*]` and re-verifies the tracked
+`pids.rest` cmdline against our `src/server.ts` launch immediately before **each**
+signal (SIGTERM and SIGKILL individually) — stale/mismatch → skip signal,
+allowlisted `stale-pid` note, exit 1.
+
+> **A3 probe — FAIL (deferred scope, framing 3b pending orchestrator).** Probe
+> `IMPLEMENTATION_PLAN.md` Step 0 verified on Helix CLI **3.3.0**: binary has 0
+> occurrences of `HELIX_DATA_DIR`, `helix start --help` has no `--data-dir` flag,
+> `docker inspect helix-agent-memory-dev` shows no `HELIX_DATA_DIR` env and no
+> generic env passthrough, and the helix-cli skill documents `HELIX_DATA_DIR`
+> as direct-Docker mode only. **`helix 3.3.0 does not forward `HELIX_DATA_DIR`**
+> into the container. Consequence (reversible, per brief §7): `HELIX_DATA_DIR`
+> is never set by the CLI; `--data-dir` currently controls only the *state path*
+> (where `state/slot-N.json` is written); persistence remains via `helix.toml`
+> `storage = "disk"` on the MinIO volume (`helix-agent-memory-dev-minio-data`);
+> the MinIO volume is retained and never destroyed; `--migrate` prints
+> `MIGRATE ABORT: unsupported-runtime` and performs zero writes. Framing 3b
+> (data-dir for new instances only, no dev migration) is pending orchestrator
+> decision — no data is moved by this CLI version.
+
+`storage = "disk"` in `helix.toml` (not any CLI flag) decides persistence; this
+repo's `helix.toml` already sets it, so a plain `helix start dev` keeps data
+across restarts. The CLI never passes `--persist` (it would rewrite tracked
+`helix.toml`).
+
+### Backup, recovery & output hygiene (REQ-P4-OPS-08, NFR-B/F, Ley 172-13)
+
+**Backup declaration (Ley 172-13 PII store — when migration is enabled):**
+
+| Field | Value |
+|-------|-------|
+| **Purpose** | Disaster recovery of memory data (MinIO-era → `HELIX_DATA_DIR` migration) |
+| **Storage location** | `<target>.backup-<UTC-timestamp>` under the resolved `--backup-dir` (path printed `~`-collapsed only, e.g. `~/…/slot2.backup-20260924T120000Z` — never an absolute home path) |
+| **TTL / expiry** | Deleted after successful migration verification **and** operator confirmation — both documented; backup content is never printed or logged (path + counts only) |
+| **Deletion procedure** | `rm -rf <backup-path>` (documented command) after verification + confirmation; the old MinIO volume itself is **never destroyed** by any subcommand — no `helix prune`, no `helix delete`, no `docker volume rm` |
+| **Content handling** | Archive file mode `0600`, parent dir `0700` (umask-independent); backup is verified non-empty before any copy; on any failure the procedure prints `MIGRATE ABORT: <step> — <flag-only reason>` and leaves source + backup byte-identical with no adoptable half-written target |
+
+While A3 is FAILED, no backup is created by `--migrate` (it aborts before any
+write) — the declaration above documents the contract for when the runtime
+supports it.
+
+**Recovery (current MinIO mode):** Data survives `helix restart <instance>` and
+a full `stop`/`start` cycle while `storage = "disk"` is set. After a host reboot
+the container does not auto-start — run `helix start dev` (or
+`bin/agent-memory start --slot N`). If recall suddenly returns nothing, check
+`helix status` first — captures keep exiting `0` silently and auto-recall is
+simply skipped when Helix is down (symptom-free dark stack). `status` and
+`doctor` are read-only diagnostics for this — `doctor` never kills or displaces
+a foreign process.
+
+**Output hygiene (Ley 172-13, NFR-B/F):** `status`/`doctor`/`--migrate` output is
+allowlist-rendered only — ports, `instance` name, PIDs, presence/state flags,
+HTTP status codes, `~`-collapsed paths, `VERDICT` token, and the static never-kill
+hint. `status` reads `AGENT_MEMORY_SECRET` presence only (`bearer: armed|unset`)
+and never attaches an `Authorization` header (401 = armed, not degraded); `doctor`
+C2 transmits the bearer **only** to a slot-owned listener verified via state file
++ cmdline re-verification (foreign listeners receive zero requests, zero
+`Authorization` headers). No subcommand ever prints a secret value, env value,
+memory content, prompt text, or raw PII; the state file never contains them.
+Migration reports carry counts + allowlisted paths only.
+
+### Never-kill upstream rule (NFR-A — verbatim)
+
+> **If upstream holds `3111/3112/3113` NEVER kill it — use the `3151` reroute
+> hint.**
+
+`start` pre-flights the entire quartet: any port held by a process we do not own
+→ refuse, report the occupant, print `NEVER kill 3111/3112/3113` plus the
+exact reroute hint `AGENT_MEMORY_PORT=3151` / `AGENT_MEMORY_URL=http://127.0.0.1:3151`
+(the server's `EADDRINUSE` hint at `src/server.ts:514-522`; contract wording
+class asserted at `scripts/verify-env.ts:391-393`), exit 1 — the foreign PID is
+never signaled. `stop` signals **only** the tracked `pids.rest` (re-verified) and
+runs `helix stop <own-instance>` (named instance only); it never runs `pkill`,
+`fuser`, `killall`, port-pattern kill, bare `helix stop`, `helix prune`,
+`helix delete`, `docker rm|kill|volume rm`, or any signal to a PID on `3111/3112/3113`.
+`doctor`/`status` never signal. Port `3151` itself is a manual reroute example only
+and is never derived for any slot.
+
+If `3111` is occupied, run ours on `3151` and point every HTTP client at it:
+
+```bash
+AGENT_MEMORY_PORT=3151 npm run dev
+AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify
+```
+
+(The MCP server is stdio and needs no reroute — it talks to Helix via `HELIX_URL`.)
+
+### Port-parity default (NFR-C)
+
+Defaults are untouched: bare `npm run dev` still listens on `3111`
+(`src/server.ts:478`), `HELIX_URL` default stays `http://localhost:6969`
+(`src/store.ts:524`), hooks/plugin clients still default to
+`http://127.0.0.1:3111`. Slots are derivation, not a default change — bare
+`status` on slot 1 reports `3111/6969`.
+
 ## Verification
 
 All run clean:
