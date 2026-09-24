@@ -6,7 +6,7 @@
 **Spec:** `ROADMAP.md#1.3` RL-001/F-01 + `docs/CONTRACT.md#v1.5`
 **Execution:** subagents, max 2 parallel lanes (INV-006); sequential where dependent
 
-## Verdict: ⚠️ CONDITIONAL → clears to OPEN on COND-AU-01 (first CI run green at push)
+## Verdict: ✅ OPEN (COND-AU-01 cleared 2026-09-24 — CI run 36022455544 success on the pushed head)
 
 Zero Critical/High across all nine reviews. No ❌. No waivers sought or granted
 (C3 not triggered — every condition is cleared by evidence, none waived).
@@ -44,7 +44,7 @@ COND-RS-03→RF-03; no contradictions).
 | COND-RK-01 | residual-ledger completeness | ✅ cleared | CONTRACT carve-outs + `ROADMAP.md:71-73` |
 | COND-RK-02 | operator visibility for heals | ✅ cleared (log + runbook) | `src/store.ts:1004,1066` `heal survivor=<id> links=<n>` on stderr; runbook `docs/CONTRACT.md:365-381` |
 | COND-RK-03 | rollback doc (reverse-order full revert) | ✅ cleared | `IMPLEMENTATION_PLAN.md:39-77`; probes 1/0/0 at `fb8e661` |
-| COND-AU-01 | first CI run green on pushed head | ⏳ clears at push | this push |
+| COND-AU-01 | first CI run green on pushed head | ✅ cleared 2026-09-24 | CI run 36022455544 success on `df62b9c` |
 | COND-QA-05 | README verification counts | ✅ cleared | `README.md:607,631` 243/117 |
 | COND-QA-06 | plan gates ticked + commit-2 evidence | ✅ cleared | `IMPLEMENTATION_PLAN.md:141-180` |
 
