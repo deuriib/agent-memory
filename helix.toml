@@ -9,4 +9,10 @@ image = "ghcr.io/helixdb/helixdb"
 tag = "v0.0.6"
 storage = "disk"
 
+[local.slot2]
+port = 6970
+image = "ghcr.io/helixdb/helixdb"
+tag = "v0.0.6"
+storage = "disk"
+
 [enterprise]

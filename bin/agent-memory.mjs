@@ -835,6 +835,33 @@ async function cmdStart(flags) {
         return 1;
       }
       out(`helix: registered [local.${binding.name}] on port ${ports.helix}`);
+      // Ensure storage=disk (C5) — `helix add local` does not set it.
+      try {
+        const raw = readFileSync(HELIX_TOML, "utf8");
+        const slotHeader = `[local.${binding.name}]`;
+        if (raw.includes(slotHeader) && !raw.includes(`${slotHeader}`) /* placeholder to keep raw in scope */) {
+          /* no-op — real check below */
+        }
+        // Re-read and patch if missing storage under this table.
+        let text = readFileSync(HELIX_TOML, "utf8");
+        const lines = text.split("\n");
+        let idx = -1;
+        for (let i = 0; i < lines.length; i++) if (lines[i].trim() === slotHeader) idx = i;
+        if (idx !== -1) {
+          let hasStorage = false;
+          for (let j = idx + 1; j < lines.length; j++) {
+            if (lines[j].trim().startsWith("[")) break;
+            if (/^\s*storage\s*=/.test(lines[j])) { hasStorage = true; break; }
+          }
+          if (!hasStorage) {
+            lines.splice(idx + 1, 0, 'storage = "disk"');
+            writeFileSync(HELIX_TOML, lines.join("\n"), "utf8");
+            out(`helix: patched [local.${binding.name}] storage="disk" (C5)`);
+          }
+        }
+      } catch {
+        // Fail open — helix will run in memory mode; doctor C5 will report it.
+      }
     }
     const started = runHelix(["start", binding.name]);
     if (!started.found) {
