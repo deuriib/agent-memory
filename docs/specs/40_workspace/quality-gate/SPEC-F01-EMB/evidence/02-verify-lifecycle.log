@@ -1,0 +1,131 @@
+
+> agent-memory@0.7.0 verify-lifecycle
+> tsx scripts/verify-lifecycle.ts
+
+PASS  extractConcepts: deterministic (3 calls, identical output)
+PASS  extractConcepts: ≤8 concepts from 24 distinct tokens
+PASS  extractConcepts: pure-stopword input yields no stopwords
+PASS  extractConcepts: stopwords excluded from mixed input
+PASS  extractConcepts: no token shorter than 3 chars
+PASS  extractConcepts: every concept within 1..200 chars
+PASS  extractConcepts: empty string -> []
+PASS  extractConcepts: punctuation-only -> []
+PASS  extractConcepts: tf DESC (dog(3) before cat(2) before bird(1))
+PASS  extractConcepts: tie-break lex ASC (alpha < mike < zeta)
+PASS  normalizeContent: golden '  Hello   World \n\t Today  ' -> 'hello world today'
+PASS  normalizeContent: punctuation preserved (only case/whitespace change)
+PASS  contentHash: golden vector (proj-a, 'hello world today')
+PASS  dedup: same project + same content -> SAME key
+PASS  dedup: same content, DIFFERENT project -> DIFFERENT key
+PASS  dedup: case/whitespace variant -> SAME key (normalization upstream)
+PASS  dedup: different content -> DIFFERENT key
+PASS  dedup: golden key for proj-b differs from proj-a (project in hash)
+PASS  dedup: golden key for different content matches vector
+PASS  decay: λ absent -> factor 1
+PASS  decay: λ invalid -> factor 1
+PASS  decay: λ=0 -> factor 1
+PASS  decay: λ<0 -> factor 1
+PASS  decay: λ=ln2/7 at 7d -> exactly 0.5 ±1e-12
+PASS  decay: monotonic (age 0 > 3 > 30)
+PASS  decay: clamp high (future createdAt) -> 1
+PASS  decay: clamp low (negative importance) -> 0
+PASS  decay: unparseable createdAt -> factor 1
+PASS  ttl: age>30 dropped, age==30 + unparseable kept
+PASS  ttl: OFF (absent) keeps all
+PASS  ttl: OFF (0) keeps all
+PASS  ttl: OFF (negative) keeps all
+PASS  ttl: OFF (invalid) keeps all
+PASS  ttl: input array untouched (pure)
+PASS  oneLine: \n / \r / \r\n / tab / multi-space runs collapse to single spaces
+PASS  oneLine: collapsed output contains no \n or \r
+PASS  oneLine: idempotent (oneLine(oneLine(x)) === oneLine(x))
+PASS  oneLine: names/digits/ISO-timestamps/booleans byte-identical
+PASS  oneLine: number and boolean inputs accepted
+PASS  confidence: lesson base (0 concepts) -> 0.75
+PASS  confidence: hook origin base -> 0.55
+PASS  confidence: the 'hook:' PREFIX is required ('hook'/'hooked' -> base 0.5)
+PASS  confidence: rest/mcp/empty origin base -> 0.5
+PASS  confidence: concept bonus max (+0.025*8) on base 0.5 -> 0.7 ±1e-12
+PASS  confidence: concept count capped at 8 (99 concepts == 8 concepts)
+PASS  confidence: concept ordering — 0 concepts < 3 concepts
+PASS  confidence: negative conceptCount clamps to the 0-concept base
+PASS  confidence: clamp01 never exceeds 1 (lesson + 8 = 0.95 <= 1)
+PASS  confidence: deterministic (3 identical derive calls, all bases)
+PASS  boost: n=0 is the identity
+PASS  boost: n=1 adds exactly 0.2*1/2 = 0.1 (±1e-15)
+PASS  boost: strictly monotonic — n=0 < 1 < 5 < 50
+PASS  boost: asymptote — n=1e6 adds < +0.2 + 1e-9 (and > +0.19)
+PASS  boost: clamp01 — importance 0.95 at n=1e6 stays <= 1
+PASS  boost: negative recallCount treated as 0 (identity)
+PASS  ledger: unknown id -> 0
+PASS  ledger: noteRecall x3 -> recallCount 3
+PASS  ledger: empty memoryId ignored (stays 0)
+PASS  ledger: resetRecalls clears every id
+PASS  ledger: 10k distinct keys held (cap-0 and cap-9999 both count 1)
+PASS  ledger: EXISTING key at the cap increments WITHOUT clearing
+PASS  ledger: NEW key at the 10k cap clears the map (bounded, best-effort)
+PASS  tieBreak: decay FIRST then boost — hand 0.6·e^(−λ·10) + 0.2·3/4 = 0.45 ±1e-9
+PASS  tieBreak: wrong order decay(boost(stored)) differs by > 1e-9 (0.375 vs 0.45)
+PASS  consolidate: jaccard identical -> 1
+PASS  consolidate: jaccard disjoint texts -> 0
+PASS  consolidate: jaccard(V1, V2) == 10/11 exactly (one extra token)
+PASS  consolidate: jaccard(V1, V3) == 1 (punctuation ignored, token SETS equal)
+PASS  consolidate: jaccard(V3, concatenated survivor V1\nV2) == 10/11
+PASS  consolidate: jaccard empty vs empty -> 0 (never merge on emptiness)
+PASS  consolidate: jaccard case-insensitive (shared tokenizer with embed)
+PASS  merge: AGENT_MEMORY_MERGE_JACCARD absent -> 0.9 (ON by default)
+PASS  merge: valid 0<v<1 -> v
+PASS  merge: 0.5 -> 0.5
+PASS  merge: v >= 1 -> undefined (OFF, fail-closed)
+PASS  merge: v <= 0 -> undefined (OFF, fail-closed)
+PASS  merge: negative -> undefined (OFF, fail-closed)
+PASS  merge: non-numeric -> undefined (OFF, fail-closed)
+PASS  merge: empty string -> undefined (OFF, fail-closed)
+PASS  consolidate: isNearDuplicate at EXACTLY threshold -> true
+PASS  consolidate: isNearDuplicate above threshold (0.91 > 10/11) -> false
+PASS  consolidate: default 0.9 admits the V1/V2 pair (10/11 >= 0.9)
+PASS  consolidate: default 0.9 REJECTS unrelated texts
+PASS  merge: concatenates survivor + \n + incoming (no text dropped)
+PASS  merge: substring guard — incoming already contained -> survivor UNCHANGED
+PASS  merge: guard closes the re-merge loop (re-saving the merged text is a no-op)
+PASS  merge: trailing whitespace of the survivor collapses before append
+PASS  merge: case/whitespace-normalized containment also guards (punctuation kept)
+PASS  missingConcepts: every expected name already linked -> empty
+PASS  missingConcepts: partial -> the exact missing names, sorted (incoming order ignored)
+PASS  missingConcepts: ORDER-INDEPENDENT over shuffled incoming (byte-identical)
+PASS  missingConcepts: ORDER-INDEPENDENT over shuffled linked (byte-identical)
+PASS  missingConcepts: incoming duplicates DEDUPED
+PASS  missingConcepts: EXACT-name/case match (linked 'Deploy' does NOT cover incoming 'deploy')
+PASS  missingConcepts: NO substring match (linked 'deploy staging' does not cover 'deploy')
+PASS  missingConcepts: empty incoming -> empty (nothing to heal)
+PASS  missingConcepts: empty linked -> every distinct incoming name, sorted
+PASS  metrics: recall@5 with relevant at ranks 1&7 -> 1/2 = 0.5
+PASS  metrics: recall@10 with relevant at ranks 1&7 -> 2/2 = 1.0
+PASS  metrics: relevant never retrieved -> recall@10 = 0
+PASS  metrics: MRR first relevant at rank 3 -> 1/3 ±1e-9
+PASS  metrics: MRR none retrieved -> firstRank 0, reciprocal 0
+PASS  metrics: nDCG ranks 1&3 -> 1.5 / (1 + 1/log2(3)) ±1e-9
+PASS  metrics: rank-9 MISS — recall@5 = 0 yet nDCG@10 > 0
+PASS  metrics: rank-1 nDCG = 1.0000 (toFixed(4))
+PASS  metrics: aggregate of (1.0, 0.5, 0.0) -> every cell 0.5 ±1e-9
+PASS  probe fail-closed: searchByText failure propagates as "probe down" (merge never silently skipped)
+PASS  probe fail-closed: insert NEVER sent — only the dedup pre-check ran (sends=1)
+PASS  store: import + construct are offline (no load-time network side effect)
+PASS  TTL×merge: expired identical candidate dropped -> plain insert (consolidated=false, deduped=false, 2 sends)
+heal survivor=expired-hit links=7
+PASS  TTL×merge: TTL OFF control -> consolidates via guard; guard path heals missing concept links offline (consolidated=true, 5 sends, NO insert)
+PASS  COND-RK-02: guard-path heal response shape unchanged by the heal log (consolidated=true, survivor id echoed)
+PASS  COND-RF-03(a) expired-while-waiting: fresh re-read EXPIRED -> plain insert, never absorbs (consolidated=false, deduped=false, insert SENT, 3 sends)
+PASS  COND-RF-03(b) fresh-read miss: survivor vanished -> remember REJECTS fail-closed (named REQ-RL-001 throw), insert NEVER sent (2 sends)
+PASS  COND-RF-03(c) post-heal still-violated: one retryWrite heal, re-verify still misses concepts -> named REQ-F-01 invariant throw (fail-closed, 8 sends)
+PASS  F-01-EMB precondition: fixture qualifies (jaccard >= 0.9, drifts > 1e-6 — a genuine mismatch, not an epsilon artifact)
+PASS  F-01-EMB(d1) stale embedding heals: violations=[embedding] only -> ONE retryWrite heal -> re-verify green (consolidated=true, 8 sends, NO insert)
+PASS  F-01-EMB(d1) heal observability: stderr line is exactly `heal survivor=seam-emb-d1 invariants=embedding` (family token only)
+PASS  F-01-EMB(d2) still-stale after one heal: named REQ-F-01 throw naming `embedding` (fail-closed, 8 sends)
+PASS  F-01-EMB(d2) unconfirmed heal is never logged (no `heal survivor=` line on the throw path)
+PASS  F-01-EMB(d3) f32 round-trip green: correct embedding passes verify with NO heal (consolidated=true, 5 sends, no heal line)
+PASS  plugin: NO DEFAULT_IMPORTANCE anywhere in agent-memory.ts
+PASS  plugin: omit-when-absent spread present verbatim (importance !== undefined ? { importance } : {})
+
+123 passed, 0 failed
+VERIFY PASS

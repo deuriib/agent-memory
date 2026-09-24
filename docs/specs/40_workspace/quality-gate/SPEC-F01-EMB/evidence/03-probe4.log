@@ -1,0 +1,22 @@
+PASS  probe precondition: stale embedding distance 0.9087 > 0.05 (old/new vectors separable)
+setup: saveMemory X (probe4-mufvvujo): memory:array(1), session_created:array(1), session_existing:array(0)
+PASS  setup: baseline text(OLD) matches X with positive score
+PASS  setup: baseline row carries C1
+PASS  setup: baseline vector(embed(OLD)) reads X at distance <= 0.0001
+update(full): memory:array(1), updated:array(1)
+PASS  update: response is an object with a 'memory' return
+PASS  update: 'memory' return non-empty (anchor found X)
+PASS  update: 'updated' branch indicates presence (setProperty ran)
+PASS  GATE 1: text(NEW) matches X, positive score, live content == C2 (text index refreshed)
+PASS  GATE 2: vector(embed(NEW)) reads X at distance <= 0.0001 (vector index refreshed)
+PASS  GATE 3: text(OLD) no longer scores X positive (old content unthroned)
+PASS  sub: dedupKey(NEW) round-trips to X (informational)
+PASS  sub: f32 round-trip — stored embedding vs Math.fround(embed(NEW)) max diff <= 1e-6 (informational)
+f32: stored embedding vs Math.fround(embed(NEW)) maxDiff=0 dims=384
+PASS  sub: graph concept re-link reaches X
+sub verdict: concept re-link OK (full batch shape shippable)
+VERDICT: A — setProperty refreshes text + vector indexes and unthrones old content; wire src/store.ts
+cleanup: forget X -> forgotten:array(0), target:array(1)
+
+13 passed, 0 failed
+PROBE4 PASS (VERDICT A)

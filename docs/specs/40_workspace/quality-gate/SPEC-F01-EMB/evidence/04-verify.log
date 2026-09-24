@@ -1,0 +1,251 @@
+
+> agent-memory@0.7.0 verify
+> tsx scripts/verify.ts
+
+PASS  embed: length is 384
+PASS  embed: same input -> identical vector
+PASS  embed: different input -> different vector
+PASS  embed: L2 norm ~= 1
+PASS  embed: empty input -> zero vector of length 384
+PASS  embed: golden snapshot (drift guard)
+PASS  mcp adapter: memory_save WITHOUT importance -> store sees undefined (NOT 0.5)
+PASS  mcp adapter: memory_save WITH importance 0.7 -> store sees 0.7 verbatim
+identity: POST /memory/recap -> 200 (our P3.1 server), proceeding
+PASS  livez: status 200
+PASS  livez: {status:'ok'}
+PASS  health: status 200
+PASS  health: {status, counts:{memories,sessions}}
+PASS  health: fresh project -> 0 memories
+PASS  health: fresh project -> 0 sessions
+PASS  remember A: status 201
+PASS  remember A: {id, sessionId, project, concepts}
+PASS  remember A: echoes sessionId
+PASS  remember A: echoes project
+PASS  remember A: echoes concepts
+PASS  remember A: id is a uuid
+PASS  remember A: deduped false on first insert
+PASS  remember B: status 201
+PASS  remember B: body shape
+PASS  remember C: status 201
+PASS  remember C: body shape
+PASS  remember D (defaults): status 201
+PASS  remember D: body shape
+PASS  remember D: auto-generated sessionId
+PASS  remember D: derived default concepts non-empty ≤8
+PASS  bm25: status 200
+PASS  bm25: {mode:'bm25', results, signals}
+PASS  bm25: finds all 4 seeded memories
+PASS  bm25: includes remembered A
+PASS  bm25: D row shows origin default 'rest'
+PASS  bm25: D row shows DERIVED importance (REQ-P1-4: rest base + concept bonus)
+PASS  bm25: D row shows auto sessionId
+PASS  smart-search: status 200
+PASS  smart-search: {mode:'hybrid', results, signals}
+PASS  smart-search: at least 1 hit
+PASS  smart-search: hits are our memories
+PASS  graph-branch: M1 status 201
+PASS  graph-branch: M1 body shape
+PASS  graph-branch: M2 status 201
+PASS  graph-branch: M2 body shape
+PASS  graph-branch: M1 derived concepts lead with 'quantum' (tf=2)
+PASS  graph-branch: smart-search status 200
+PASS  graph-branch: hybrid envelope
+PASS  graph-branch: no `graph:` failure signal (graph source ran)
+PASS  graph-branch: M1 ranks first in fused results
+PASS  graph-branch: M1 fused score == 3/61 (rank 1 in vector+text+graph)
+PASS  dedup: first insert status 201
+PASS  dedup: first insert body
+PASS  dedup: first insert deduped=false
+PASS  dedup: duplicate body
+PASS  dedup: identical content -> SAME id + deduped=true
+PASS  dedup: normalized variant body
+PASS  dedup: case/whitespace variant -> SAME id + deduped=true
+PASS  dedup: project health envelope
+PASS  dedup: duplicates collapse to exactly 1 memory
+PASS  dedup: cross-project body
+PASS  dedup: same content DIFFERENT project -> different id, deduped=false
+PASS  dedup race: first body
+PASS  dedup race: second body
+PASS  dedup race: both 201
+PASS  dedup race: SAME id, deduped flags {false,true}
+PASS  dedup race: sessionId echoes each REQUEST
+PASS  dedup race: project health envelope
+PASS  dedup race: healthCount +1 only (pair collapsed to 1 memory)
+PASS  hook-dedup: S1 novel save status 201
+PASS  hook-dedup: S1 body shape
+PASS  hook-dedup: S1 deduped=false
+PASS  hook-dedup: S1 echoes sessionId S1
+PASS  hook-dedup: S2 repeat save status 201
+PASS  hook-dedup: S2 body shape
+PASS  hook-dedup: S2 deduped=true + SAME id (first-wins, no new row)
+PASS  hook-dedup: S2 response echoes REQUEST sessionId (§3) while row stays under S1
+PASS  hook-dedup: project health envelope
+PASS  hook-dedup: memory count stays 1 after the S2 dedup hit (NO new memory)
+PASS  hook-dedup: sessions envelope
+PASS  hook-dedup: listSessions has S1 only — S2 never materialized (dedup hit writes no Session node)
+PASS  hook-dedup: S1 sessionMemories envelope
+PASS  hook-dedup: sessionMemories(S1) contains the row (original session keeps it)
+PASS  hook-dedup: S2 sessionMemories envelope
+PASS  hook-dedup: sessionMemories(S2) does NOT list it (echoed session ≠ membership)
+PASS  hook-dedup: cross-project save status 201
+PASS  hook-dedup: cross-project body shape
+PASS  hook-dedup: same content DIFFERENT project -> NEW row (deduped=false, other id)
+PASS  hook-dedup: cross-project health envelope
+PASS  hook-dedup: other project holds its own 1 memory (dedup is project-scoped)
+PASS  sessions: status 200
+PASS  sessions: {sessions:[...]}
+PASS  sessions: contains sessions A/B/C
+PASS  sessions: contains auto-generated session D
+PASS  session memories: status 200
+PASS  session memories: {memories:[...]}
+PASS  session memories: finds A
+PASS  session memories: all rows belong to session A
+PASS  forget A: status 200
+PASS  forget A: {forgotten:true}
+PASS  gone: session A listing still valid
+PASS  gone: session A no longer lists A
+PASS  gone: bm25 envelope after forget
+PASS  gone: bm25 returns exactly the 3 remaining memories
+PASS  gone: forgetting A again -> 404
+PASS  gone: forgetting unknown id -> 404
+PASS  health after forget: envelope
+PASS  healthCount: memories = 3 after forget (4 − 1)
+PASS  healthCount: sessions = 4 (forget drops the memory, not the session)
+PASS  boundary: empty remember body -> 400
+PASS  boundary: array body on search -> 400
+PASS  boundary: unknown route -> 404
+PASS  boundary: wrong method on livez -> 405
+PASS  boundary: non-JSON content-type -> 415
+PASS  P3.1 lesson: status 201
+PASS  P3.1 lesson: {id, sessionId, project, concepts}
+PASS  P3.1 lesson: echoes sessionId
+PASS  P3.1 lesson: echoes project
+PASS  P3.1 lesson: echoes concepts
+PASS  P3.1 lesson: id is a uuid
+PASS  P3.1 lesson: extra origin key -> 400
+PASS  P3.1 search: status 200
+PASS  P3.1 search: {mode:'bm25', results, signals}
+PASS  P3.1 search: finds the lesson row
+PASS  P3.1 search: lesson row origin === 'lesson'
+PASS  P3.1 recap: status 200
+PASS  P3.1 recap: {recap, sessionId, count, signals}
+PASS  P3.1 recap: echoes sessionId
+PASS  P3.1 recap: count >= 1
+PASS  P3.1 recap: contains the lesson content
+PASS  P3.1 recap: every bullet line belongs to the requested session
+PASS  P3.1 handoff: status 200
+PASS  P3.1 handoff: {handoff, sessionId, counts, signals}
+PASS  P3.1 handoff: first line project=<project> memories=<N> sessions=<M> recent:
+PASS  P3.1 handoff: counts.memories >= 1
+PASS  P3.1 handoff: contains lesson content or its sessionId line
+PASS  P3.1 health before delete: envelope
+PASS  P3.1 health: 1 memory before delete
+PASS  P3.1 health: 1 session before delete
+PASS  P3.1 delete: status 200
+PASS  P3.1 delete: {deleted:true, receipt:{memoryId, deletedAt}}
+PASS  P3.1 delete: receipt.memoryId matches
+PASS  P3.1 delete: receipt.deletedAt is a non-empty string
+PASS  P3.1 gone: bm25 envelope after delete
+PASS  P3.1 gone: bm25 no longer returns the lesson row
+PASS  P3.1 health after delete: envelope
+PASS  P3.1 health: memories dropped to 0 after delete
+PASS  P3.1 delete: second delete of same id -> 404
+PASS  P3.1 delete: 404 body is {error:'not_found'}
+PASS  P3.1 delete: missing reason -> 400
+PASS  P3.1 delete: unknown memoryId -> 404
+PASS  P3.1 delete: unknown-id 404 body is {error:'not_found'}
+PASS  P3.1 recap after delete: status 200
+PASS  P3.1 recap after delete: envelope
+PASS  P3.1 recap after delete: count 0 and lesson content gone
+PASS  confidence: lesson without importance -> 201
+PASS  confidence: lesson body
+PASS  confidence: rest without importance -> 201
+PASS  confidence: rest body
+PASS  confidence: hook:Stop without importance -> 201
+PASS  confidence: hook body
+PASS  confidence: explicit importance -> 201
+PASS  confidence: explicit body
+PASS  confidence: bm25 status 200
+PASS  confidence: bm25 envelope
+PASS  confidence: lesson row stores DERIVED importance (== derive(lesson, echoed len), >= 0.75)
+PASS  confidence: rest row stores DERIVED importance (== derive(rest, echoed len), != 0.5)
+PASS  confidence: hook row stores DERIVED importance (== derive(hook:Stop, echoed len), >= 0.55)
+PASS  confidence: explicit importance WINS (caller 0.42 stored verbatim)
+PASS  recall wiring: 3 searches RETURNING x -> recallCount(x) === 3
+PASS  recall wiring: never-returned row stays at 0
+PASS  recall lift: confidenceBoost(stored, N) > confidenceBoost(stored, 0)
+PASS  recall tie: constructed exact RRF tie (both scores 1/61)
+PASS  recall tie: baseline (differentially unrecalled) -> NEWER y ranks first via createdAt
+PASS  recall tie: after recalling x more than y, BOOSTED x outranks newer y
+PASS  recall tie: ledger asymmetry observed (x > y)
+PASS  recall tie: stored importances never rewritten by recall (both still 0.6)
+PASS  consolidation: fresh project health envelope
+PASS  consolidation: fresh project starts at 0 memories / 0 sessions
+PASS  consolidation: v1 status 201
+PASS  consolidation: v1 body
+PASS  consolidation: v1 is a plain insert (deduped=false, consolidated=false)
+PASS  consolidation: v2 status 201
+PASS  consolidation: v2 body
+PASS  consolidation: v2 -> consolidated=true, deduped=false, SAME id as v1
+PASS  consolidation: v2 response echoes REQUEST sessionId (first-wins family)
+PASS  consolidation: v3 status 201
+PASS  consolidation: v3 body
+PASS  consolidation: v3 -> consolidated=true, SAME survivor id
+PASS  consolidation: health envelope after 3 saves
+PASS  consolidation: 3 saves -> healthCount memories = 1 (net +1)
+PASS  consolidation: sessions stay 1 (no Session node on merge)
+PASS  consolidation: sessions envelope
+PASS  consolidation: listSessions has pSid1 ONLY (pSid2/pSid3 never materialized)
+PASS  consolidation: sessionMemories(pSid1) envelope
+PASS  consolidation: survivor content === v1\nv2\nv3 (concatenation, no text dropped)
+PASS  consolidation: sessionMemories(pSid2) envelope
+PASS  consolidation: sessionMemories(pSid2) EMPTY (echoed session ≠ membership, no BELONGS_TO on merge)
+PASS  consolidation: bm25(P1) envelope
+PASS  consolidation: bm25 search with P1 text hits the survivor
+PASS  consolidation: hybrid(P1) envelope
+PASS  consolidation: smart-search with P1 text hits the survivor
+PASS  consolidation: bm25(P2) envelope
+PASS  consolidation: bm25 search with P2 text hits the survivor
+PASS  consolidation: hybrid(P2) envelope
+PASS  consolidation: smart-search with P2 text hits the survivor
+PASS  consolidation: bm25(P3) envelope
+PASS  consolidation: bm25 search with P3 text hits the survivor
+PASS  consolidation: hybrid(P3) envelope
+PASS  consolidation: smart-search with P3 text hits the survivor
+PASS  consolidation: re-save body
+PASS  consolidation: re-save of the merged text -> deduped=true, consolidated=false, SAME id
+PASS  consolidation: health envelope after re-save
+PASS  consolidation: re-save adds no row (still exactly 1)
+PASS  consolidation: cleanup forget survivor -> 200
+PASS  rl-001: base status 201
+PASS  rl-001: base body
+PASS  rl-001: base is a plain insert (deduped=false, consolidated=false)
+PASS  rl-001: variant 0 body
+PASS  rl-001: variant 1 body
+PASS  rl-001: variant 2 body
+PASS  rl-001: all 3 concurrent variants -> status 201
+PASS  rl-001: all 3 consolidated=true, deduped=false, SAME survivor id (serialized per survivor)
+PASS  rl-001: health envelope after 3 concurrent merges
+PASS  rl-001: 1 base + 3 concurrent merges -> memories = 1, sessions = 1
+PASS  rl-001: sessionMemories(rlSid0) envelope
+PASS  rl-001: survivor content contains ALL THREE variant wordings verbatim (no lost append)
+PASS  rl-001: cleanup forget survivor -> 200
+PASS  f-01: A status 201
+PASS  f-01: A body
+PASS  f-01: B body
+PASS  f-01: B merges into A (201, consolidated=true, deduped=false, SAME survivor id)
+PASS  f-01: sessionMemories(fSidA) envelope (after merge)
+PASS  f-01: merged survivor content === A\nB (byte length recorded before the heal)
+PASS  f-01: guard re-save body
+PASS  f-01: guard re-save -> 201, consolidated=true, deduped=false, SAME survivor id
+PASS  f-01: response echoes REQUEST concepts [C] (first-wins echo unchanged on the guard path)
+PASS  f-01: response echoes the REQUEST sessionId (contract §3 echo unchanged on the guard path)
+PASS  f-01: sessionMemories(fSidA) envelope (after heal)
+PASS  f-01: survivor content BYTE-IDENTICAL after the guard-path heal (A\nB — no re-append, no rewrite)
+PASS  f-01: control smart-search (no concepts) envelope
+PASS  f-01: smart-search concepts=[C] envelope
+PASS  f-01: smart-search concepts=[C] fused score = control + 1/61 (graph leg rank 1 — the HEALED link caused the recall)
+PASS  f-01: cleanup forget survivor -> 200
+
+243 passed, 0 failed
+VERIFY PASS
