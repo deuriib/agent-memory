@@ -1,3 +1,93 @@
+# Release Notes: v0.7.0
+
+**Date:** 2026-09-24
+**Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
+operations function per ship-release role binding — role assumption stated
+for this lane)
+**Specs Included:** RL-001 + F-01 residual closure (per-survivor merge
+serialization + `updateMemoryContent` post-write verify/heal) — `ROADMAP.md`
+§1.3
+**Domains-Touched:** engineering, security, automation/ops, data lens
+(finance / legal / marketing / people / revenue: **N/A** — code+docs lane)
+**Ship Type:** deploy (local library/server release; no external deployment
+target; no breaking changes; version 0.6.0 → 0.7.0 across 6 carriers +
+tag v0.7.0)
+
+## Highlights
+
+- **REQ-RL-001 — concurrent distinct-variant merges no longer lose an append.**
+  Consolidation now serializes per *survivor* (`survivorTails` +
+  `withSurvivorLock`; lock order dedupKey OUTER → survivor INNER, no cycle)
+  with a fresh `getMemoryById` re-read under the lock (expired-while-waiting
+  → plain insert, never absorbs). §P `rl-001:` block: 3 concurrent distinct
+  variants → same survivor id, all three wordings present; pre-fix
+  counterfactual fails exactly these assertions. Same-process scope;
+  cross-process writers remain out of contract until P4.3.
+- **REQ-F-01 — merge commits verified + healed, not trusted.** Post-write
+  verify under the survivor lock (content, dedupKey, every effective concept
+  linked) with ONE heal (full retry on content drift, link-only
+  `linkMemoryConcepts` otherwise) and a fail-closed throw naming any
+  still-violated invariant. The substring-guard path heals missing links
+  while keeping content byte-identical. §P `f-01:` block: healed link proven
+  by graph-branch fused score = control + 1/61.
+- **Three additive contract §2 queries** (`getMemoryById`, `memoryConcepts`,
+  `linkMemoryConcepts`; bootstrap stays 8 indexes) + one allowlisted stderr
+  heal line (`heal survivor=<id> …`, never content/names) + operator runbook
+  (`docs/CONTRACT.md` §3).
+- **Gate-hardened before ship** — 9 independent reviewers (2 pass, 7
+  conditional→cleared), 0 Critical/High, 12/12 canonical CONDs cleared with
+  evidence (3 duplicates retired, no contradictions); no waivers.
+
+## Contract
+
+`docs/CONTRACT.md` v1.4 → **v1.5**: §2 three additive queries; §3 tier-1 (a)
+CONCURRENCY CLOSED (in-process) + (b) ATOMICITY CLOSED (detected-and-healed
+app-side) with named residuals `F-01-EMB` (embedding; probe4 verdict A covers
+refresh) and `RL-001-QUEUE` (no queue cap; re-review P4.3); §5 bar
+(`verify` 243, `verify-lifecycle` 117). Backward compatible: no
+route/tool/schema changes. Migration: N/A.
+
+## Known Issues
+
+- Residuals with owner + expiry in `GATE_REPORT.md` / `ROADMAP.md` §1.3:
+  `F-01-EMB`, `RL-001-QUEUE`, crash-window lazy heal, session-node run
+  budget (+17/run) — all dated, owner engineering. RL-001 / F-01 rows CLOSED
+  at this release.
+
+## Verification
+
+Full pre-ship bar 2026-09-24 (server :3151, Helix dev untouched; upstream
+`iii` on 3111 untouched): `typecheck` 0 · `verify` **243/243** (`rl-001:`
+13, `f-01:` 16) · `verify-lifecycle` **117/117** · `verify-capture`
+**137/137** · `verify-env` **21/21** · `verify-skills --structural`
+**73/73** · `verify-injection` ALL PASS · bootstrap 8 indexes · CI green on
+the pushed head (runs 36022455544, 36022643924). Helix-restart incident
+mid-lane behaved fail-closed (500s, no false 201s, automatic recovery).
+
+## Quality gate
+
+9 independent reviewers → 2 pass / 7 conditional-with-findings; all cleared
+with evidence → gate **OPEN**:
+`docs/specs/50_archive/RL001-F01/GATE_REPORT.md`.
+
+## Rollback / Undo
+
+Lane commits `01224cc` + `a0257d6` + `fb8e661` + `f371eb9` + `0834704` (+ this
+`chore(release-0.7.0)` commit), tagged **v0.7.0** — reverse-order whole-commit
+revert only (probes re-verified: 1/0/0 at `fb8e661`); check out tag **v0.6.0**
+for a full undo. Version markers return to 0.6.0; no schema, index, or
+migration change; merged rows stay valid under old code. Owner: engineering.
+ETA: immediate.
+
+## PII checkpoint (Ley 172-13)
+
+Zero PII/secrets/tokens in this release or these notes — allowlisted evidence
+only (suite counts, paths, verdicts, owners by role); verify fixtures
+synthetic; new content reads stay in-process, never logged (lengths/counts
+only).
+
+---
+
 # Release Notes: v0.6.0
 
 **Date:** 2026-09-23
