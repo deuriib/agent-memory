@@ -544,17 +544,24 @@ Stated plainly — these are real, not hypothetical:
    or displaying vector results, `score` for BM25/RRF. Both are surfaced on
    the REST row.
 
-8. **Concurrent distinct-variant merges can lose one append — accepted
-   residual (owner: engineering).** The consolidation FIFO lock is keyed by
-   content hash, so it serializes *identical* content only: two concurrent
-   saves of *different* near-dup variants that pick the same survivor both
-   read the pre-merge content, last writer wins, and both callers still get
-   `consolidated:true`. Recoverable — the caller keeps its text and
-   re-saving re-merges. Declared in
-   [`docs/CONTRACT.md`](docs/CONTRACT.md) §3 tier-1 (a); tracked in
-   [`ROADMAP.md`](ROADMAP.md) §1.3 with expiry **2026-12-31 or the start of
-   P4.3 multi-instance work, whichever first** — at P4.3 survivor-level
-   serialization becomes mandatory. Gate P1R-P32 / RL-001.
+8. **Concurrent distinct-variant merges lost one append — REMEDIATED
+   2026-09-24 (in-process survivor serialization); cross-process writers
+   remain out of contract (owner: engineering).** The dedup FIFO lock is
+   still keyed by content hash (identical content only), and consolidation
+   NOW serializes per *survivor* too: `survivorTails` + shared
+   `withFifoLock` (lock order — incoming dedupKey lock OUTER → survivor
+   lock INNER, one survivor per merge, no cycle), with a FRESH
+   `getMemoryById` re-read under that lock (expired-while-waiting → plain
+   insert, never absorbs). Concurrent saves of *different* near-dup
+   variants that pick the same survivor now queue behind it: every append
+   lands, and all callers still get `consolidated:true` with the SAME
+   survivor id. Closed as
+   [`docs/CONTRACT.md`](docs/CONTRACT.md) §3 tier-1 (a) (v1.5); code
+   `01224cc`, evidence `TEST_MATRIX.md` (§P `rl-001:` — 3 concurrent
+   distinct variants → one survivor, all three wordings present).
+   Remaining boundary: the survivor lock serializes SAME-PROCESS writers
+   only — cross-process writers to one Helix instance stay unsupported
+   (single-writer contract, P4.3). Gate P1R-P32 / RL-001.
 
 9. **With tier-1 ON, an unhealthy text index fails WRITES too.** Every novel
    `remember` runs the near-dupe probe (`textSearchWith`), so
@@ -571,6 +578,25 @@ Stated plainly — these are real, not hypothetical:
    procedure (audit → zero-in-edge gate → drop → re-audit) are declared in
    [`docs/CONTRACT.md`](docs/CONTRACT.md) v1.4 §3, verified live 2026-09-23
    (189→188, linked 128 unchanged); gate P1R-P32 → closed at v0.6.0.
+
+11. **Tier-1 merge commit atomicity — REMEDIATED 2026-09-24 (post-write
+    verify + one heal); the commit is detected-and-healed app-side, not
+    engine-guaranteed (owner: engineering).** The merge write remains ONE
+    Helix `writeBatch`, but its mid-batch commit is no longer blindly
+    trusted: after every merge — still under the survivor lock — the store
+    re-reads and asserts `content` === merged content, `dedupKey` === its
+    hash, and every effective concept linked (`missingConcepts`, exact-name
+    set difference); a violation gets exactly ONE heal (full
+    `updateMemoryContent` retry for content/dedupKey drift, link-only
+    `linkMemoryConcepts` for links) and a fail-closed throw naming any
+    invariant still violated. The substring-guard path runs the same
+    concept-link verify + heal while keeping content byte-identical. The
+    engine's mid-batch atomicity remains an assumption — it is now
+    DETECTED and healed app-side instead of trusted. Closed as
+    [`docs/CONTRACT.md`](docs/CONTRACT.md) §3 tier-1 (b) (v1.5); code
+    `a0257d6`, evidence `TEST_MATRIX.md` (§P `f-01:` — graph-branch fused
+    score = control + 1/61 proves the healed link, survivor content
+    byte-identical; §G goldens; §I 5-send NO-insert seam). REQ-F-01.
 
 ## Verification
 

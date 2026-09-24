@@ -1,4 +1,4 @@
-# agent-memory — v1.4 Frozen Contract
+# agent-memory — v1.5 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
@@ -48,6 +48,28 @@ v0.6.0 — with audit / zero-edge-gate / drop queries verified live 2026-09-23),
 the honest right-to-erasure boundary. Docs-only declaration: no route, MCP tool, or
 code change; §5 verification bar unchanged. Closes ROADMAP §1.3 DAT-001 at its
 `2026-12-31 or v0.6.0` trigger. Owner: engineering (procedure re-run on demand).
+
+**v1.5 amendment (2026-09-24, RL-001 + F-01 residual closure lane):** §2 grows
+three ADDITIVE queries — `getMemoryById` (fresh survivor re-read under the merge
+lock; existing index #1 only, bootstrap STAYS 8), `memoryConcepts`, and
+`linkMemoryConcepts` (link-only heal — never touches content/embedding/dedupKey).
+§3 tier-1 (a) CONCURRENCY closes: a per-survivor FIFO lock (`survivorTails` +
+shared `withFifoLock`; lock order dedupKey OUTER → survivor INNER, one survivor
+per merge — no cycle) plus a fresh `getMemoryById` re-read under that lock
+(expired-while-waiting → plain insert, never absorbs) ends the in-process
+lost-append on concurrent distinct near-dup variants — SAME-PROCESS scope only;
+cross-process writers to one Helix instance remain out of contract until P4.3.
+§3 tier-1 (b) ATOMICITY closes: a post-write verify under the survivor lock
+(content, dedupKey, every effective concept linked) with ONE heal and a
+fail-closed throw naming any still-violated invariant replaces the blind
+mid-batch assumption — the substring-guard path now runs the same concept-link
+verify + heal while keeping content byte-identical; `RememberResult` echo
+semantics unchanged; the merge write remains ONE Helix `writeBatch` whose commit
+is DETECTED-and-healed app-side, not engine-guaranteed. §5 grows the §P
+`rl-001:` (13 checks) + `f-01:` heal blocks, the §I guard-path heal seam (5
+sends, NO insert), and the §G `missingConcepts` goldens — verify **243 passed**,
+verify-lifecycle **113 passed**. Code evidence: `01224cc` (REQ-RL-001) +
+`a0257d6` (REQ-F-01).
 
 ## 0. Verified facts (do not re-litigate)
 
@@ -113,6 +135,9 @@ findMemoryByDedupKey(): ReadBatch     // v1.1, §3: params: dedupKey (string) ->
 listExpired():     ReadBatch          // v1.1, §3: params: project (string), cutoff (dateTime), limit (i64)
 listProjects():    ReadBatch          // v1.1, §3: params: limit (i64) -> RAW Session rows {project} (dedup is the CALLER's job — purge.ts Set)
 updateMemoryContent(): WriteBatch     // v1.2, §3: params: memoryId (string), content (string), embedding (array f32), dedupKey (string), concepts (array object), project (string) — anchors by memoryId, setProperty content/embedding/dedupKey under varNotEmpty, re-links `concepts` from the "memory" var via conceptBody(), returns ["updated","memory"]
+getMemoryById(): ReadBatch            // v1.5, §3: params: memoryId (string), project (string) — unique-equality anchor on memoryId + project where-filter (fail-closed double check), projects memoryRowProjection + dedupKey, returns ["memory"]
+memoryConcepts(): ReadBatch           // v1.5, §3: params: memoryId (string), project (string) — anchor Memory by memoryId+project, out("HAS_CONCEPT") → dedup → project Concept name, returns ["names"]
+linkMemoryConcepts(): WriteBatch      // v1.5, §3: params: memoryId (string), project (string), concepts (array object) — link-only heal: anchor + conceptBody() per element (Concept upsert + HAS_CONCEPT); NEVER writes content/embedding/dedupKey; returns ["memory"]; the real gate is the caller's re-read via memoryConcepts
 ```
 
 Indexes from `bootstrapIndexes()` (all `createIndexIfNotExists`):
@@ -268,19 +293,38 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   OFF fail-closed (no probe, straight to insert). probe4 proved on the live
   instance that `setProperty` refreshes BOTH the text and vector indexes
   (§0 fact).
-  **Gate P1R-P32 declarations (v1.2):** (a) **CONCURRENCY** — the FIFO lock
-  is keyed by content hash, so it serializes IDENTICAL content only; two
-  concurrent saves of DISTINCT variants that select the SAME survivor can
-  lose one append while both callers receive `consolidated:true` (accepted
-  residual, owner engineering, within the single-writer RL-001 contract —
-  tracked in ROADMAP §1.3, expiry 2026-12-31 or the P4.3 multi-instance
-  start, whichever first, re-review owner engineering); (b) **ATOMICITY** —
-  the merge is ONE `writeBatch`, but
-  mid-batch atomicity is an ENGINE ASSUMPTION, not a §0-verified fact:
-  concept links ride the same batch with no return var (a partial commit
-  would still pass the presence asserts) and the substring guard does not
-  heal it (a retry sees merged text and skips the write) — consequence
-  accepted, owner engineering; re-verify on Helix upgrade or by 2026-12-31; (c) **TTL×MERGE** — probe candidates run
+  **Gate P1R-P32 declarations (v1.2; (a)+(b) rewritten to CLOSED by the
+  v1.5 amendment):** (a) **CONCURRENCY — CLOSED 2026-09-24 (v1.5):** the
+  dedup FIFO lock remains keyed by content hash (it serializes IDENTICAL
+  content only), and consolidation NOW additionally serializes per
+  SURVIVOR via `survivorTails` + the shared `withFifoLock`
+  (`withSurvivorLock` front). LOCK ORDER — incoming dedupKey lock OUTER →
+  survivor lock INNER; one survivor per merge (a call never holds two
+  survivor locks) and no path acquires a dedupKey lock while holding a
+  survivor lock → fixed acyclic order, no cycle. Under the survivor lock
+  the merge re-reads the row FRESH via `getMemoryById` — it works against
+  the row as it is NOW (a waiter's probe snapshot may be stale), the fresh
+  read re-runs `filterExpired` (expired-while-waiting → returns undefined
+  → plain insert, never absorbs), and it fails closed on vanished /
+  wrong-id / non-string-content reads. Scope: SAME-PROCESS writers (the
+  single-writer contract) — this closes the in-process lost-append only;
+  cross-process writers to one Helix instance REMAIN out of contract until
+  P4.3. (b) **ATOMICITY — CLOSED 2026-09-24 (v1.5):** the merge is still
+  ONE `writeBatch`, but its commit is no longer blindly trusted — a
+  post-write verify runs UNDER the survivor lock (no same-process writer
+  can interleave between write and verify): the re-read asserts `content`
+  === the merged content, `dedupKey` === `contentHash(project,
+  normalize(content))`, and every effective concept linked
+  (`missingConcepts`, exact-name set difference). A violation → ONE heal
+  (content/dedupKey drift → full `updateMemoryContent` retry; links-only
+  → `linkMemoryConcepts` link-only), then re-verify; still wrong → throw
+  NAMING the violated invariant (fail closed). The substring-guard path
+  no longer returns blind: it runs the same concept-link verify + heal
+  while keeping content byte-identical (a re-save carrying NEW explicit
+  concepts links them without re-appending). `RememberResult` echo
+  semantics unchanged. The write remains ONE Helix `writeBatch` whose
+  commit is DETECTED-and-healed app-side, not engine-guaranteed
+  (re-verify on Helix upgrade); (c) **TTL×MERGE** — probe candidates run
   through `filterExpired` first, so a TTL-expired survivor can never absorb
   a fresh write (TTL unset → no-op); (d) **PROVENANCE** — WHICH rows merged
   is not durably recorded (first-wins family; every variant's text survives
@@ -501,22 +545,26 @@ routes).
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**104 passed** — pure: dedupKey/hash golden,
+`scripts/verify-lifecycle.ts` green (**113 passed** — pure: dedupKey/hash golden,
 decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
 render guard, **§F derived confidence** (deriveWriteImportance goldens,
 confidenceBoost monotonic/clamp, recall ledger), **§F-bis** the decay-THEN-boost
 order golden (λ on: equals the hand-computed decay+boost AND differs from the
 wrong order — gate CE-002), **§G consolidation**
-(jaccard/threshold-fail-closed/substring guard), **§H** hand-computed eval
+(jaccard/threshold-fail-closed/substring guard + `missingConcepts` goldens:
+order-independence over shuffled input, dedup, exact-name/case-sensitive
+match, no substring match, empty-set cases), **§H** hand-computed eval
 metric goldens (R@5/R@10/MRR/nDCG/aggregate — gate CE-001/COND-QA-01),
 **§I** fail-closed near-dupe probe (induced probe error → `remember` rejects,
-insert never runs) + TTL×expired-survivor guard + plugin no-default source
-checks — gate COND-QA-03 / RL-002 / COND-QA-02b).
+insert never runs) + TTL×expired-survivor guard + **§I guard-path heal seam**
+(guard path heals missing concept links offline — `consolidated=true`, 5
+sends, NO insert) + plugin no-default source checks — gate COND-QA-03 /
+RL-002 / COND-QA-02b).
 `scripts/verify-capture.ts` green (**137 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helpers, **§F P2.2**
 file-edit marker + basename opt-in (default OFF) + path-bearing tool-name
 fail-closed + plugin failure/start helpers never-throw on non-string tools).
-`scripts/verify.ts` end-to-end green (**214 passed**): health → remember (with
+`scripts/verify.ts` end-to-end green (**243 passed**): health → remember (with
 concepts) → bm25 search hits → smart-search hits → sessions list → session
 memories → forget → gone → `healthCount()` reflects it → lesson (201) → bm25
 search hits it → recap contains it → handoff contains it → governed delete (with
@@ -530,7 +578,12 @@ search path in-process against a stub store — CE-003) + **MCP adapter
 pass-through** (`InMemoryTransport`: save without `importance` → the store sees
 `undefined`, explicit value wins — gate COND-QA-02) → **§P consolidation** (3
 variants → 1 row with `consolidated:true`, each variant's wording recalls the
-survivor, healthCount +1, re-save of the merged text → exact-dedup loop guard).
+survivor, healthCount +1, re-save of the merged text → exact-dedup loop guard;
+v1.5 additions: **§P `rl-001:` block — 13 checks** (3 CONCURRENT distinct
+variants → SAME survivor, all three wordings present, no lost append) and the
+**§P `f-01:` heal block** — heal E2E: graph-branch fused score = control +
+1/61 proves the healed link, survivor content byte-identical after the
+guard-path heal).
 `scripts/verify-skills.ts` green (**119 checks**: 73 structural across the 8
 `skills/*/SKILL.md` — also runnable server-free as `verify-skills --structural`
 and CI-wired — + 46 live round-trips: every skill's frozen route exercised

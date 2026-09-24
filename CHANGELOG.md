@@ -5,6 +5,38 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Three additive contract §2 queries** (`db/queries.ts`, contract v1.5):
+  `getMemoryById` (fresh survivor re-read under the merge lock — memoryId +
+  project fail-closed where-filter, existing index #1 only, bootstrap stays 8),
+  `memoryConcepts` (anchor + `HAS_CONCEPT` → dedup → concept names), and
+  `linkMemoryConcepts` (link-only heal — never writes content/embedding/
+  dedupKey; the caller's re-read via `memoryConcepts` is the real gate)
+  (engineering)
+
+### Fixed
+
+- **REQ-RL-001 — in-process lost-append on concurrent distinct near-dup
+  variants**: tier-1 merges now serialize per SURVIVOR (`survivorTails` +
+  shared `withFifoLock`; lock order dedupKey OUTER → survivor INNER, one
+  survivor per merge — no cycle) and re-read the row FRESH via
+  `getMemoryById` under that lock (expired-while-waiting → plain insert,
+  never absorbs; vanished/wrong-id/non-string-content fail closed) — 3
+  concurrent distinct variants land on ONE survivor with every wording
+  present (§P `rl-001:` 13 checks); contract §3 tier-1 (a) CLOSED
+  2026-09-24, code `01224cc` (engineering)
+- **REQ-F-01 — mid-batch atomicity assumption on tier-1 merge writes**:
+  post-write verify under the survivor lock (content === merged content,
+  dedupKey === its hash, every effective concept linked via
+  `missingConcepts`) with ONE heal — full `updateMemoryContent` retry for
+  content/dedupKey drift, link-only `linkMemoryConcepts` for links — then
+  fail-closed throw naming any still-violated invariant; the
+  substring-guard path now runs the same concept-link verify + heal while
+  keeping content byte-identical (§P `f-01:` heal E2E, §G goldens, §I
+  guard-path heal seam); contract §3 tier-1 (b) CLOSED 2026-09-24, code
+  `a0257d6` (engineering)
+
 ## [v0.6.0] — 2026-09-23
 
 ### Added
