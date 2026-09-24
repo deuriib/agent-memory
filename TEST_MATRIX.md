@@ -93,3 +93,42 @@ COND → test/evidence → artifact:
 | QA-06 | ROADMAP verification row counts → 243 / 117 / 137 | `ROADMAP.md:44` |
 
 Deviations from the packet's literal wording, resolved toward the gate reports' verbatim clear criteria (truth + "confirm totals first" over stale literals): lifecycle **117** (packet predates the +4 checks RF-03/RK-02 mandate); RK-02 log on **stderr** (store may not write stdout — `src/mcp.ts:381`; both streams are the §3 governance log); RK-01 "zero NO rows remain" required the §5 run-budget addition + §3b carve-out; RF-01 via re-scope option (b); RS-02 keeps the AU-002 numbers as criterion (c) alternative; archived docs (`docs/specs/50_archive/**`, `RELEASE_NOTES`) and reviewer-owned gate reports keep their historical counts.
+
+## P4 OPS — ops control plane (SPEC-P4-OPS, planned — execute-spec lane 2026-09-24)
+
+**Spec:** `docs/specs/20_backlog/SPEC-P4-OPS.md#REQ-P4-OPS-01..09+NFR-A..F` · **Harness:** `scripts/verify-ops.ts` (§A–§L) + live slot-2 window (3114/3115/3116/6970, instance `slot2`, `dev` read-only) · **Status convention:** `pending-evidence` until commit with verbatim outputs pasted
+
+| REQ-ID | Evidence ID | Description | Type | Status | Commit |
+|--------|-------------|-------------|------|--------|--------|
+| REQ-P4-OPS-01 | T-P4OPS-01 | CLI surface: `bin/agent-memory.mjs` (Node ≥20 ESM, `node:` builtins only) registered as `bin.agent-memory`, `--help` lists start\|stop\|status\|doctor (exit 0), unknown subcommand/flag or invalid `--slot` → usage on stderr exit 2; `package.json` only gains `bin` + `verify-ops`, `package-lock.json` untouched (AC-01) | E2E harness `verify-ops` §A + `git diff` | pending-evidence | — |
+| REQ-P4-OPS-02 | T-P4OPS-02 | `start --slot 2` spawns Helix `slot2` (`helix add local --name slot2 --port 6970` once, then `helix start slot2`, never `--persist`) + `npx tsx src/server.ts` with §4.3 env (AGENT_MEMORY_PORT=3114, HELIX_URL=6970, state 0600/0700), readiness gate Helix `/healthz` + `/memory/livez` ≤30 s, pre-flight quartet refuse + NEVER-kill hint exit 1 no signal, `git diff --stat src/ db/` empty (AC-02, KR2) | E2E harness `verify-ops` §B + live slot-2 | pending-evidence | — |
+| REQ-P4-OPS-03 | T-P4OPS-03 | `stop --slot 2` SIGTERM→SIGKILL tracked PIDs only with `verifyOwnedPid()` pre-SIGTERM and pre-SIGKILL (C10), `helix stop slot2`, removes state, idempotent exit 0; foreign quartet PIDs unchanged, stale/mismatch → `stale-pid` note exit 1 no signal (AC-03) | E2E harness `verify-ops` §C + live slot-2 | pending-evidence | — |
+| REQ-P4-OPS-04 | T-P4OPS-04 | `status --slot N` read-only quartet + REST/Helix probes + data-dir + `bearer: armed\|unset` (presence-only, never value, never Authorization header; 401=armed) exits 0/1/2 distinct from doctor (AC-04, KR1) | E2E harness `verify-ops` §D + KR1 session | pending-evidence | — |
+| REQ-P4-OPS-05 | T-P4OPS-05 | `doctor --slot N` C1→C3→C2→C4→C5 (C3 ports before C2 bearer), one `PASS\|FAIL\|INFO <check-id>` per check + exactly one `VERDICT: <name>`, closed exits 0/1/2/3/4/5 precedence 5>4>3>1>0; KR1 verdicts `healthy` 0 / `upstream-holds-port` 3 / `helix-down` 4 (+ `secret-missing` 5, `doctor-check-failed` 1), foreign listener receives zero bearer requests (C1), output allowlisted (AC-05, KR1) | E2E harness `verify-ops` §E + KR1 session | pending-evidence | — |
+| REQ-P4-OPS-06 | T-P4OPS-06 | Slot derivation `R(N)=3111+3(N−1)`, `H(N)=6969+(N−1)` §4.2 slots 1–3 table exact, `--slot 0`/`abc` → exit 2, slot N≥2 ∩ {3111,3112,3113,6969}=∅, never 3151, derived via env/flags only, `[local.dev]` frozen (AC-06) | E2E harness `verify-ops` §F + `git diff` | pending-evidence | — |
+| REQ-P4-OPS-07 | T-P4OPS-07 | Data-dir precedence `--data-dir` > `AGENT_MEMORY_DATA_DIR` > `~/.local/share/agent-memory/<slot>/`, state `<parent>/state/slot-N.json` outside `HELIX_DATA_DIR`, remember→search survives `helix restart` + stop/start cycle, state contains no secret (AC-07, KR3* — A3 FAIL see note) | E2E harness `verify-ops` §G + live | pending-evidence | — |
+| REQ-P4-OPS-08 | T-P4OPS-08 | `doctor --migrate` dry-run default zero writes (counts+allowlisted paths only), `--migrate --apply --yes` fail-closed `MIGRATE ABORT: unsupported-runtime` (Probe A3 FAIL — `helix start` does not forward `HELIX_DATA_DIR` on CLI 3.3.0), audit line, MinIO volume never destroyed (AC-08, P4.4 not claimed — framing 3b pending orchestrator) | E2E harness `verify-ops` §H + session log | pending-evidence | — |
+| REQ-P4-OPS-09 | T-P4OPS-09 | Docs closure: README ops section (derivation table, data-dir default, backup+recovery, never-kill, Ley 172-13 PII-store declaration) + `TEST_MATRIX.md` KR1–KR3 rows (this section) linking evidence (AC-09) | doc diff | pending-evidence | — |
+| NFR-P4-OPS-A | T-P4OPS-10 | Never-kill-upstream: no kill-by-port/`fuser`/`prune`/`delete`/`docker rm|kill|volume rm`/`--persist` in source; foreign listeners on stand-in quartet survive all four subcommands unchanged PIDs (AC-A) | static grep + live `verify-ops` §I | pending-evidence | — |
+| NFR-P4-OPS-B | T-P4OPS-11 | Secret non-printing: synthetic `AGENT_MEMORY_SECRET` value 0 occurrences in stdout+stderr of all four subcommands and in state file, output `bearer: armed` only (AC-B) | E2E harness `verify-ops` §J | pending-evidence | — |
+| NFR-P4-OPS-C | T-P4OPS-12 | Port-parity default untouched: bare `npm run dev` still `3111`, `HELIX_URL` `6969`, hook/plugin defaults unchanged; `status --slot 1` reports 3111/6969; `verify-env` PASS (AC-C) | E2E harness `verify-ops` §L + `verify-env` | pending-evidence | — |
+| NFR-P4-OPS-D | T-P4OPS-13 | Durability across restart: save → `helix restart <instance>` → search + save → stop/start cycle → search (AC-D, KR3*) | E2E harness `verify-ops` §G | pending-evidence | — |
+| NFR-P4-OPS-E | T-P4OPS-14 | Zero new deps + suites green: `package-lock.json` untouched, `npm run typecheck` 0, `verify`/`verify-env`/`verify-lifecycle`/`verify-capture`/`verify-skills` PASS, port guard 3111/3112/3113/3151/6969 never bound by harness (AC-E) | suite logs + `git diff` | pending-evidence | — |
+| NFR-P4-OPS-F | T-P4OPS-15 | Ley 172-13 output hygiene: canary memory string 0 occurrences in `doctor`/`status`/`--migrate` outputs; migration report counts+allowlisted paths only (AC-F) | E2E harness `verify-ops` §K | pending-evidence | — |
+
+Planned per-command bar (filled on commit; ports/instances/live-window/session-budget declared per REQ-OPS-RUN-11):
+
+| # | Command | Result |
+|---|---------|--------|
+| 1 | `npm run typecheck` | pending-evidence — bin is `.mjs` outside TS program |
+| 2 | `npx tsx scripts/verify-ops.ts` | pending-evidence — counts pasted here |
+| 3 | `npm run verify-env` | pending-evidence — 21 PASS expected |
+| 4 | `npm run verify-lifecycle` | pending-evidence — 117 PASS expected |
+| 5 | `npm run verify-capture` | pending-evidence — 137 PASS expected |
+| 6 | `npm run verify-skills -- --structural` | pending-evidence — 73 PASS expected |
+| 7 | `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` | pending-evidence — 243 PASS expected (server on 3151, never 3111) |
+| 8 | `git diff --stat src/ db/ hooks/ plugins/` | pending-evidence — empty expected |
+| 9 | `git diff package-lock.json` | pending-evidence — empty expected |
+| 10 | Live slot-2 window `start --slot 2` → `doctor healthy` → remember/search 3114 → stop → idempotent | pending-evidence — slot2 3114/3115/3116/6970, dev read-only |
+
+*Notes:* P4.4 `HELIX_DATA_DIR` forwarding / MinIO migration (REQ-07/08/NFR-D partial) — Probe A3 FAIL (see IMPLEMENTATION_PLAN §Step 0 + PROPOSED_CHANGES Appendix): `helix start` 3.3.0 does not forward `HELIX_DATA_DIR`; `--migrate` fails closed `unsupported-runtime`; framing 3b (data-dir for new instances only) escalated to orchestrator, not claimed in this lane. All other REQs implemented.

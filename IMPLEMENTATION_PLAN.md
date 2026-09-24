@@ -1,180 +1,112 @@
-# Implementation Plan: REQ-RL-001 (per-survivor FIFO lock) + REQ-F-01 (post-write verify + heal)
+# Implementation Plan: SPEC-P4-OPS (P4 ops control plane — CLI + slots + data dir)
 
 **Agent:** vasquez (Engineering Owner R1, execute-spec lane)
-**Date:** 2026-09-23
+**Date:** 2026-09-24
 **Approved By:** orchestrator reference-only packet
-(`SPEC:ROADMAP.md#1.3-rows-RL-001,F-01 + docs/CONTRACT.md#3-tier-1-(a),(b)` /
-`HARD:subagents+no-route-or-MCP-tool-changes+no-helix-restart+single-writer-in-process-scope-only` /
-`GATE:open-residuals-RL-001,F-01-accepted-2026-09-23-expiry-2026-12-31` / `DOMAINS:R1`):
-close the two accepted residuals RL-001 (lost append on concurrent distinct
-near-dup variants) and F-01 (mid-batch atomicity assumption on
-`updateMemoryContent`). Scope is EXACTLY the approved proposal — no expansion.
-**Domains-Touched:** engineering only (R1: `db/queries.ts`, `src/store.ts`,
-`src/consolidate.ts`, `scripts/verify.ts`, `scripts/verify-lifecycle.ts`).
-Docs (ROADMAP/CONTRACT/README) belong to the second lane — this lane reports
-contract deltas verbatim instead of editing them.
-**Prior lanes:** P0 closed, P1.1/P1.3/P1.6 + P2.1 closed at v0.4.0, P1-remainder
-+ P3.2 at v0.5.0, P2-completion at v0.6.0. This plan replaces the previous
-content in-place (lane singleton); prior content preserved in git history.
+(`SPEC:docs/specs/20_backlog/SPEC-P4-OPS.md#REQ-P4-OPS-01..09+NFR-A..F` /
+`HARD:subagents+<zero new deps (node: builtins only), frozen src/**,db/**,hooks/**,plugins/**,
+default REST 3111 untouched, package.json only gains bin+verify-ops, never kill upstream,
+no secret/PII in any output>` /
+`GATE:security-Conditional-C1+C2-applied-in-spec+architecture-Approved-with-conditions` /
+`DOMAINS:R1 (cross R8 runbook, R2 security conditions)`):
+implement the approved change rows of `PROPOSED_CHANGES.md` ONLY — one new CLI binary, one new
+evidence harness, two `package.json` rows, lane-singleton doc rows. Scope is EXACTLY the approved
+proposal; any delta is a cross-domain request to the orchestrator, never in-lane improvisation.
+**Domains-Touched:** engineering (R1, owner) · automation/ops (R8 — runbook contract consumed by
+name, evidence rows) · security (R2 — C1..C10 conditions implemented as code behavior).
+
+**Prior plan content:** the REQ-RL-001 + REQ-F-01 residual-closure plan (2026-09-23, gate
+RL001-F01 remediation 2026-09-24) is replaced in place per the lane-singleton rule; its full
+text and evidence log are preserved in git history (`git log -p -- IMPLEMENTATION_PLAN.md`).
+Prior lanes: P0 closed, P1.1/P1.3/P1.6 + P2.1 closed at v0.4.0, P1-remainder + P3.2 at v0.5.0,
+P2-completion at v0.6.0, RL-001/F-01 at v0.7.1.
+
+## Step 0 — falsifiable probe A3 (before any code) — **DONE, verdict FAIL**
+
+Question: does `helix start` forward `HELIX_DATA_DIR` into the container?
+
+| Probe | Result |
+|-------|--------|
+| `helix status` | `dev (local): http://localhost:6969 - Up - storage: disk` (baseline confirmed) |
+| installed CLI | `/home/deuriib/.local/bin/helix`, ELF, Helix CLI **3.3.0** |
+| binary scan | `HELIX_DATA_DIR` = **0 occurrences**; `data_dir`/`datadir`/`DATA_DIR` case-insensitive = **0** |
+| env names the CLI does read | `HELIX_HOME`, `HELIX_CACHE_DIR`, `HELIX_URL`, `HELIX_TELEMETRY_*`, `S3_BUCKET`, `S3_REGION`, `DB_PATH`, `AWS_*` — no data-dir variable |
+| `helix start --help` | no `--data-dir` flag (`--port --disk --storage-uri --s3-* --image-version --pull --persist` only) |
+| `docker inspect helix-agent-memory-dev` | env = `DB_PATH=db/`, `S3_BUCKET=helix-db`, `AWS_ENDPOINT=...minio:9000`, … — **no `HELIX_DATA_DIR`**; `Mounts: []`; **no generic env passthrough** (no `HOME`/`USER`/`LANG`/`SHELL`) |
+| volumes | only `helix-agent-memory-dev-minio-data` (MinIO named volume) |
+| skill grounding | `helix-cli/SKILL.md:29-32` + `EXAMPLES.md:34-54`: `HELIX_DATA_DIR` is **direct-Docker** mode, mutually exclusive with `S3_BUCKET`, managed with `docker`, not the CLI |
+
+**Verdict: A3 FAILS.** `helix start` on CLI 3.3.0 does not forward `HELIX_DATA_DIR`.
+Consequence (per packet, reversible call): **P4.4 data-dir forwarding + migration is STOPPED**;
+`--migrate` fails closed with `MIGRATE ABORT: unsupported-runtime`; `--data-dir` survives only as
+the state-path input (REQ-07 precedence) and `HELIX_DATA_DIR` is never set. P4.1 (CLI) +
+P4.3 (slots) implement in full. KR3 is NOT claimed — "A3 failed → brief framing 3b" reported to
+the orchestrator for decision.
 
 ## Steps
 
 | Step | Description | Target / Files | Evidence Location | Est. Effort |
 |------|-------------|----------------|-------------------|-------------|
-| 1 | REQ-RL-001 per-survivor FIFO lock: `db/queries.ts` += ADDITIVE `getMemoryById()` ReadBatch + `getMemoryByIdParams` (memoryId string, project string; unique-equality anchor on `memoryId` AND `project` filter as the fail-closed double check; projects `memoryRowProjection` + `dedupKey`; existing index #1 only → bootstrap stays 8); `src/store.ts` += `survivorTails` Map + `withSurvivorLock` (same FIFO pattern as `dedupTails`; LOCK ORDERING documented: incoming dedupKey lock OUTER → survivor lock INNER, one survivor per merge so no lock cycle); `consolidateInto` acquires the survivor lock, RE-READS the survivor fresh via `getMemoryById`, and does everything downstream against the FRESH snapshot: `filterExpired` re-run (survivor expired while waiting → plain insert, never absorbs), `mergedContent(fresh.content, input)`, fresh embed + fresh dedupKey, existing response asserts kept; fresh-read MISS (survivor deleted mid-merge) → throw fail-closed (same posture as the vanished-survivor assert) | `db/queries.ts`, `src/store.ts` | `verify.ts` §P NEW concurrent distinct-variants test (N=3 `Promise.all`, same survivor id, all three wordings in survivor content) + `verify-lifecycle` §I seam harness updated for the fresh-read call (no assertion weakened) | M |
-| 2 | REQ-F-01 post-write verify + heal: `db/queries.ts` += ADDITIVE `memoryConcepts()` ReadBatch + `memoryConceptsParams` (memoryId string, project string; anchor Memory by memoryId+project → `.out("HAS_CONCEPT")` → `.dedup()` → project concept `name`, returns `["names"]`) and ADDITIVE `linkMemoryConcepts()` WriteBatch + `linkMemoryConceptsParams` (memoryId string, concepts array object, project string; anchor by memoryId+project, `conceptBody()` per missing name, returns `["memory"]`; content/embedding/dedupKey NEVER rewritten); `src/consolidate.ts` += pure `missingConcepts(linked, incoming)` set-difference (dedup, exact-name, code-unit sorted → order-independent); `src/store.ts` `consolidateInto` after a successful `updateMemoryContent`: re-read `getMemoryById` + `memoryConcepts`, assert (a) content === nextContent, (b) dedupKey === `contentHash(project, normalize(nextContent))`, (c) every incoming EFFECTIVE concept linked — mismatch → ONE heal (content-state wrong → full `updateMemoryContent` retry; content-state right but links missing → `linkMemoryConcepts` link-only), re-verify, still wrong → throw fail-closed NAMING the failed invariant; substring-guard path now ALSO runs the concept-link verify+heal (may no-op content, must link missing incoming effective concepts) instead of returning without a read; `RememberResult` echo semantics (`consolidated:true`, survivor id, REQUEST echo) unchanged; ALL existing fail-closed asserts kept | `db/queries.ts`, `src/consolidate.ts`, `src/store.ts` | `verify.ts` §P NEW heal test (guard-path save with new explicit concept C → graph-branch recall via `smart-search concepts=[C]`, content byte-length unchanged) + `verify-lifecycle` §G NEW `missingConcepts` goldens (order-independence, dedup, exact-name) + §I seam updated for the guard-path concepts read | M |
-| 3 | Quality bar (run yourself, paste counts): `npm run typecheck` clean → `npx tsx scripts/bootstrap.ts` green (8 indexes, no index added) → `npm run verify-lifecycle` green (§G goldens no regression) → `npm run verify` green against OUR server on 3151 (§P no regression; upstream 3111 untouched; Helix dev never restarted) | repo root + local server :3151 | run outputs summarized in TEST_MATRIX.md | S |
-| 4 | Two Conventional Commits, one per REQ, each body linking REQ-ID → test → artifact; plan/matrix rows updated with evidence (RL row in commit 1, F row + backfill in commit 2); NO ROADMAP/CONTRACT/README commits (docs lane owns them) — report exact §2 export + §3 tier-1 behavior deltas for the docs lane | `src/`, `db/`, `scripts/`, this plan, `TEST_MATRIX.md` | git log | S |
+| 1 | Probe A3 (above) — recorded before any code | read-only: `helix status`, binary scan, `docker inspect`, skill docs | this plan §Step 0 + return report | S |
+| 2 | `bin/agent-memory.mjs` — Node ≥20 ESM, `node:` builtins only. Fail-closed arg parsing (unknown subcommand/flag, invalid `--slot`, flag not allowed for the subcommand → usage on stderr, exit 2; `--help` → stdout, exit 0). Slot math `R(N)=3111+3(N−1)`, `H(N)=6969+(N−1)`, reserved `R+1`/`R+2` never bound, derived ports ≤65535 else exit 2. Subcommands: `start` (pre-flight quartet refuse + NEVER-kill hint + exit 1 no signal; idempotent already-running exit 0 (**C5**); `helix add local --name slotN --port H(N)` once for N≥2 then `helix start <instance>` never the config-rewriting flag; spawn absolute `npx tsx src/server.ts` with §4.3 env, secret only to that child (**C8**); 30 s readiness gate = Helix `/healthz` + our `/memory/livez`; write state 0600 in 0700 `state/`), `stop` (schema validate → re-derive `helixInstance` from `helix.toml [local.*]` → `verifyOwnedPid()` pre-SIGTERM **and again pre-SIGKILL** (**C3/C10**) → bounded grace → `helix stop <instance>` → remove state → audit line (**C6**); idempotent exit 0; stale/mismatch = `stale-pid` note + exit 1, no signal), `status` (read-only quartet/probes/data-dir/`bearer: armed|unset`, never an `Authorization` header, 401 = armed not degraded (**E-3**), exits 0/1/2), `doctor` (checks in order **C1→C3→C2→C4→C5**, one `PASS\|FAIL\|INFO <check-id>` line each + exactly one `VERDICT: <name>`, precedence `5>4>3>1>0`, exits 0/1/2/3/4/5; C2 runs only after C3 verifies slot-owned — foreign listener receives **zero** requests (**C1**); C4 presence-only; C5 table-scoped `helix.toml` parse; `--migrate` = `MIGRATE ABORT: unsupported-runtime` (A3) with audit line on `--apply`, never a write). Shared: one allowlist renderer for all child/error text (oneLine + `$HOME`→`~`, exit codes + static hints only) (**C7**), `verifyOwnedPid()` shared by stop/doctor, path refusal set for `--data-dir`/`--backup-dir` (`/`, system roots, `$HOME` itself; explicit paths under `$HOME` or `/tmp` only) (**C4**), forbidden primitives absent from source (NFR-A) | `bin/agent-memory.mjs` | `scripts/verify-ops.ts` §A–§L + session output | L |
+| 3 | `scripts/verify-ops.ts` — evidence harness in `verify-env.ts` house style (sections, `check()`, counters, `VERIFY PASS/FAIL`, exit 0 only on all-pass, children reaped in `finally`, synthetic-secret leak assertion). Sections A–L per SPEC §3; never binds `3111/3112/3113/3151/6969`, never restarts Helix dev; live-slot checks gated on a running slot and reported `DEFER` with a declared window instead of a silent downgrade; foreign-listener header capture proves C1 (zero requests + zero `authorization`); `stat` mode checks prove 0600/0700 | `scripts/verify-ops.ts` | harness output (counts pasted to TEST_MATRIX) | M |
+| 4 | `package.json` — add ONLY `"bin": {"agent-memory": "./bin/agent-memory.mjs"}` and `"verify-ops": "tsx scripts/verify-ops.ts"`; `package-lock.json` untouched | `package.json` | `git diff package.json` (§A asserts the diff shape) | S |
+| 5 | Declared slot-2 live window (no dev restart): `start --slot 2` → `doctor` healthy → `remember`/`search` round-trip on 3114 → synthetic-secret + induced-C5 runs → `stop --slot 2` → idempotent → ports free → `helix status dev` unchanged. Ports touched: 3114/3115/3116/6970; instances: `slot2` (started+stopped), `dev` read-only probes only | session (containers `helix-agent-memory-slot2*`) | TEST_MATRIX KR1/KR2 rows (verbatim outputs) | M |
+| 6 | Quality bar: `npm run typecheck` · `npx tsx scripts/verify-ops.ts` · `npm run verify-env` (21) · `verify-capture` (137) · `verify-lifecycle` (117) · `verify-skills -- --structural` (73) · `npm run verify` (243) against our server on **3151** (never 3111) | repo root | TEST_MATRIX `## P4 OPS` count bar | M |
+| 7 | Lane singletons + proposal appendix: `TEST_MATRIX.md` gains the `## P4 OPS` section (REQ-ID \| Evidence ID \| Description \| Type \| Status \| Commit, rows `pending-evidence` until commit), `PROPOSED_CHANGES.md` gains an **Implementation notes** appendix row for the A3 deviation, README ops section stays with the docs lane (report its required content verbatim) | `TEST_MATRIX.md`, `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md` | git diff | S |
+| 8 | Three Conventional Commits: (1) `bin/` + `package.json`, (2) `scripts/verify-ops.ts`, (3) plan/matrix/appendix rows — each body links REQ-ID → test → artifact | git | `git log` | S |
 
 ## Order of Operations
 
-Step 1 → 2 sequential inside the lane (both touch `src/store.ts` +
-`db/queries.ts`; each commit must leave the full bar green — the §I seam
-harness adapts once per step because the fresh read (step 1) and the guard-path
-concepts read (step 2) each add one `send()` to the TTL×merge control flow).
-Step 3 runs before each commit; step 4 lands the two commits. Singleton files
-(this plan + TEST_MATRIX) are written up front with planned rows and updated
-in place with evidence before each commit.
+Step 1 (already done) gates step 2: an A3 PASS would have added `HELIX_DATA_DIR` forwarding +
+the migrate write path; the FAIL stops both, so step 2 lands P4.1+P4.3 with a fail-closed
+migrate stub. Step 3 needs the CLI from step 2. Step 4 must land with step 2 (the `bin` entry
+is part of REQ-01). Step 5 (live window) runs after 3 so the harness's deferred live checks go
+green in the recorded run, and it never restarts `helix dev`. Step 6 runs before each commit;
+step 7/8 land the doc rows last (README/TEST_MATRIX prose owned by the docs lane is reported,
+never written here).
 
 ## Rollback Points
 
-**Gate RL001-F01 / COND-RK-03 (2026-09-24): the ONLY safe procedure is a
-reverse-order WHOLE-commit revert.** The lane commits are STACKED, not
-independent. Revert newest-first:
-
-1. This lane's two gate-remediation commits (docs commit first, then the
-   code+tests commit) — newest first.
-2. `git revert fb8e661` (docs: CONTRACT v1.5 + README + CHANGELOG) — tree
-   lands exactly on `a0257d6` (historically green: 243/113).
-3. `git revert a0257d6` (REQ-F-01) — tree lands on `01224cc` (green: 227/104).
-4. `git revert 01224cc` (REQ-RL-001) — tree lands on `a9ef417` (pre-lane green).
-
-No schema/index/route/data backout at any step: the additive queries become
-dead code; merged rows + healed links stay valid under old code; each step is
-tree-equal to a historically green parent — well within 15 minutes.
-
-**Explicit warnings (read before touching git under pressure):**
-
-- Reverting `01224cc` **ALONE CONFLICTS** — read-only probe
-  `git merge-tree --write-tree --merge-base=01224cc <head> a9ef417` →
-  **exit 1**, 5 conflicted files (`TEST_MATRIX.md`, `db/queries.ts`,
-  `scripts/verify.ts`, `scripts/verify-lifecycle.ts`, `src/store.ts`); the
-  other two probes exit **0** (`--merge-base=a0257d6 … 01224cc`,
-  `--merge-base=<head> … a0257d6`) — recorded order **1/0/0**, re-verified
-  2026-09-24 by two reviewers (risk + quality-assurance) at `fb8e661`, and
-  again at `fb8e661` by this remediation lane after its docs commit (the
-  state step 1 below reaches). **At the full remediation HEAD the probes read
-  1/1/0** — probe 2 conflicts because this lane's code commit touches the
-  F-01 hunks; that is precisely why step 1 (revert THIS lane's commits first)
-  is mandatory and why the per-commit shortcuts are forbidden. No probe
-  result changed about the three original commits.
-- Reverting `a0257d6` while **keeping** `fb8e661` is git-clean but
-  semantically false: docs would keep declaring CLOSED behavior the code no
-  longer performs.
-- The per-commit hunk-level partial-rollback steps formerly documented here
-  were WRONG (they conflict mid-incident) and have been replaced by the
-  procedure above (gate RL001-F01 / COND-RK-03; automation AU-005).
-
-- Assumption stated (irreversible-adjacent): merges still rewrite survivor
-  content in place (unchanged from P1.2 — concatenation never discards);
-  the heal path may re-run `updateMemoryContent` ONCE with byte-identical
-  content when only `dedupKey` is stale (idempotent setProperty, dev-instance
-  data only; rollback of merged rows is not promised — same declaration as
-  the P1.2 lane).
-
-## Evidence Log (updated in place before each commit)
-
-### Commit 1 — REQ-RL-001 (2026-09-23)
-
-- Step 1 done exactly as planned: `getMemoryById` ADDITIVE query,
-  `survivorTails`/`withSurvivorLock`/`withFifoLock` in `src/store.ts`,
-  `consolidateInto` → lock wrapper + `mergeUnderSurvivorLock` (fresh read →
-  TTL re-check → guard/write over `fresh.content`) + `getFreshSurvivor`
-  fail-closed parser. No renames, no param-schema changes, no route/MCP
-  changes, `RememberResult` untouched, barrel `db/index.ts` not yet touched
-  (gets all three new exports with commit 2, additive).
-- NEW evidence landed: `verify.ts` §P `rl-001:` block = 13 checks (base
-  insert, N=3 `Promise.all` variants → all `consolidated=true` + same
-  survivor id + `deduped=false`, health 1 memory / 1 session, all three
-  variant wordings verbatim in survivor content, cleanup forget);
-  `verify-lifecycle.ts` §I harness extended with per-call canned `replies`
-  (i5 control serves the fresh read; assertion re-based: pre-check + fresh
-  re-read = 2 sends, insert would be 3 — no assertion weakened).
-- Bar (commit-1 tree, server :3151): typecheck exit 0 · bootstrap
-  `OK (8 indexes ensured)` · verify-lifecycle **104 passed, 0 failed** ·
-  verify **227 passed, 0 failed**. Details pasted in TEST_MATRIX.md.
-
-### Commit 1 — gate RL001-F01 condition clearance, code+tests (2026-09-24)
-
-- Packet: `SPEC:docs/specs/40_workspace/quality-gate/RL001-F01/quality-assurance.md#consolidated-COND-list`
-  / `HARD:subagents+no-push+no-helix-restart+smallest-diff-that-clears` /
-  `GATE:RL001-F01-CONDITIONAL-11-clearable-now-AU-01-at-push` / `DOMAINS:R1`.
-- COND → change → test (code+tests half of the two-commit plan):
-  - **COND-RD-01**: `src/store.ts` merge docstring's unqualified `WITHOUT a write`
-    now names the invariants that survive (`dedupKey`, `concept links`,
-    `embedded=1` text-hash — last two heal without rewriting `content`; doc
-    contract asserted by `verify-lifecycle` §M).
-  - **COND-RF-03**: `verify-lifecycle` §I-c adds the three heal-seam cases at the
-    cited location — (a) expired-while-waiting → insert sent (3 sends),
-    (b) fresh-read miss → `links` stale after heal → merge-path
-    `verifyMergedState` retryWrite variant (8 sends), (c) post-heal still-violated
-    → named `REQ-F-01 … invariant(s) violated` throw (8 sends) — +3 checks;
-    §I also asserts the RK-02 envelope shape (`resolved/rejected/timeout`, no raw
-    msg) +1 check.
-  - **COND-RF-04**: `db/queries.ts` `linkMemoryConceptsParams` order pinned
-    `memoryId, project, concepts` with a pin comment (behavior-neutral: named
-    params at `toQueryRequest`; typecheck 0 + §P f-01 live embed green).
-  - **COND-RK-02**: two heal log lines in `src/store.ts` (post-confirmed-read
-    `ensureConceptLinks`, post-confirmed-retryWrite `verifyMergedState`) —
-    `heal survivor=<id> links=<n>` / `heal survivor=<id> invariants=…`; observed
-    live (`heal survivor=expired-hit links=7`). On stderr: store must not write
-    stdout (`src/mcp.ts:381`); both streams are the §3 governance log.
-- Bar (this tree, server :3151, Helix dev untouched): typecheck exit 0 ·
-  bootstrap `OK (8 indexes ensured)` · verify-lifecycle **117 passed, 0 failed**
-  (113 + RF-03/RK-02 +4) · verify **243 passed, 0 failed** · verify-env 21/0 ·
-  verify-skills --structural 73/0 · verify-capture 137/0 · session nodes
-  490 → 507 (+17/run, RK-01 evidence — the run-budget declaration itself
-  lands in `docs/CONTRACT.md` §5 with commit 2). Full per-command table in
-  TEST_MATRIX.md § Gate-remediation bar. Docs half (RD-01 rest, RF-01, RF-02,
-  RS-02, RK-01, RK-03, QA-05, QA-06) lands in this lane's commit 2.
-
-### Commit 2 — REQ-F-01 (2026-09-23, `a0257d6`) + gate RL001-F01 docs half (2026-09-24)
-
-- Original lane commit 2 (`a0257d6`): `memoryConcepts`/`linkMemoryConcepts`
-  queries, `missingConcepts` goldens, post-write verify + ONE heal, guard-path
-  link heal — evidence = `TEST_MATRIX.md` Final-verification-bar section
-  (verify **243 passed, 0 failed**, verify-lifecycle **113 passed, 0 failed**
-  at that tree, server :3151) + the `f-01:` §P block. Plan/F-row backfill and
-  this entry close the "Evidence Log had Commit-1 only" gap (gate RL001-F01 /
-  COND-QA-06).
-- This lane's commit 2 (docs, gate RL001-F01): CONTRACT §3 gains the
-  RF-01 CLOSED-scope + `embedding` residual, the crash-window carve-out, the
-  RS-02 lock-queue envelope (AU-002 numbers: 6 sends happy / ≤11 worst-heal /
-  ≤165 s at cap, 15 s `withTimeout`, NO queue cap/deadline, trigger P4.3 or
-  first retry storm) and the RK-02 heal-log + operator-runbook declaration;
-  §5 moves 113 → **117** with the §I-c trio + the `verify.ts` session-node
-  run budget (+17/run, measured 490 → 507 → 524, re-review P4.1 / 2026-12-31);
-  ROADMAP §1.3 reconciles both CLOSED rows (past tense + surviving
-  boundaries) and adds ledger rows `F-01-EMB`, `RL-001-QUEUE`,
-  `VERIFY-SESSION-NODES`; `ROADMAP.md:44` counts → 243 / 117 / 137; README
-  Verification → 243 / 117 with the v1.5 §P `rl-001:`/`f-01:` and §G/§I
-  additions named; this plan's Rollback Points rewritten to the proven
-  reverse-order whole-commit revert (probes re-verified 1/0/0 at `fb8e661`;
-  1/1/0 at the remediated HEAD → revert this lane first) and its
-  Quality Gates ticked with counts; CHANGELOG gains the heal-log +
-  gate-remediation entries. Clears COND-RF-01, RF-02, RS-02, RK-01, RK-03,
-  QA-05, QA-06 (docs half of RD-01). Final bar re-run green on this tree:
-  typecheck 0 · bootstrap 8 · lifecycle **117/0** · verify **243/0** ·
-  verify-env 21/0 · verify-skills --structural 73/0 (TEST_MATRIX).
+- **Code revert (reversible, same session, owner R1):** delete `bin/agent-memory.mjs` +
+  `scripts/verify-ops.ts`, revert the two `package.json` rows. Nothing in `src/**`, `db/**`,
+  `hooks/**`, `plugins/**` references the CLI, so `npm run typecheck` + the five suites are the
+  post-revert proof (NFR-E). ETA: immediate.
+- **Config undo:** `git checkout -- helix.toml` removes the additive `[local.slot2]` table
+  written by the official `helix add local` (config registration, A5); `[local.dev]` is never
+  modified, so slot-1 operation needs no restore.
+- **Live window undo:** `agent-memory stop --slot 2` stops our server and `helix stop slot2`
+  stops only the slot-2 containers; volumes are retained (no prune/delete/volume-rm is reachable
+  from this CLI). Upstream `3111/3112/3113` and `helix dev` are never signaled at any point.
+- **A3/deferred scope:** no data is moved, no volume is created for migration — the stopped
+  P4.4 portion has zero residue by construction.
+- **Singleton docs:** plan/TEST_MATRIX revert with their commit; prior plan text recoverable
+  from git history.
 
 ## Quality Gates
 
-- [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0 (re-run at gate RL001-F01 remediation, 2026-09-24)
-- [x] Engineering: `npx tsx scripts/bootstrap.ts` green — **8 indexes ensured + READY** (no index added; re-run 2026-09-24)
-- [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — counts pasted in TEST_MATRIX (§G goldens no regression) — **117 passed, 0 failed** (2026-09-24; 113 at original commit-2, +4 = RL001-F01 RF-03/RK-02)
-- [x] Engineering: `npm run verify` green against OUR server on **3151** — counts pasted in TEST_MATRIX (§P no regression; upstream 3111 untouched) — **243 passed, 0 failed** (re-run 2026-09-24)
-- [x] Engineering: NEW evidence — §P concurrent distinct-variants test (RL-001 acceptance: no lost append) + §P heal test (F-01 acceptance: guard path links C, content unchanged) + §G `missingConcepts` goldens — all present and green; plus RL001-F01 §I-c heal-seam trio + RK-02 envelope assert (TEST_MATRIX § Gate-remediation bar)
-- N/A: security (no auth/data-surface change — internal reads only, no new env, no secret handling change) / finance / legal / marketing / people / revenue
-- [x] Docs (second lane): CONTRACT §2 gains `getMemoryById`/`memoryConcepts`/`linkMemoryConcepts` + §3 tier-1 (a)/(b) re-baselined — deltas reported verbatim by this lane; the gate RL001-F01 docs half (this lane's commit 2) additionally lands CONTRACT §3 RS-02/RF-01/RK-01/RK-02 declarations, §5 113→117 + run budget, ROADMAP §1.3 reconciliation, README 243/117, CHANGELOG — all ticked 2026-09-24
+Domain checks (delete non-touched, keep evidence path):
 
-Final-bar counts are owned by `TEST_MATRIX.md` (§ Gate-remediation bar); the boxes above mirror them per repo convention (gate RL001-F01 / COND-QA-06).
+- [ ] Engineering: `npm run typecheck` clean (0 errors) — bin is `.mjs`, outside the TS program
+- [ ] Engineering: `npx tsx scripts/verify-ops.ts` — counts pasted in TEST_MATRIX `## P4 OPS`
+- [ ] Engineering: regression suites green — `verify-env` (21), `verify-capture` (137),
+  `verify-lifecycle` (117), `verify-skills -- --structural` (73), `verify` (243, server :3151)
+- [ ] Engineering: `git diff` shows ZERO changes under `src/`, `db/`, `hooks/`, `plugins/`
+  and zero `package-lock.json` change
+- [ ] Security (R2 conditions as code): C1 ownership-gated bearer · C2 backup posture (migrate
+  path stopped by A3 — refusal only) · C3 state 0600/0700 + closed schema + re-derived
+  instance + shared `verifyOwnedPid()` · C4 path refusal set · C5 start idempotence ·
+  C6 audit lines (stop + migrate-apply) · C7 single allowlist renderer · C8 secret strip +
+  absolute child paths · C9 `status` never sends a bearer (E-3) · C10 re-verify before SIGKILL
+- [ ] Automation/ops (R8): runbook check list C1..C5, verdict/exit contract §4a, stop ownership
+  §4d and forbidden primitives §4d consumed as written; evidence rows ready for R8 sign-off
+- [ ] Finance / Legal / Marketing / People / Revenue: N/A — local developer tool, no customer
+  surface, no external send/filing, no billing/quota change (PROPOSED_CHANGES blast radius)
+- [ ] Docs (docs lane): README ops section + Ley 172-13 backup declaration + KR1/KR2/KR3
+  verbatim session evidence — reported verbatim by this lane, never written here
+
+## Evidence Log (updated in place before each commit)
+
+- **Probe A3:** FAIL — see §Step 0 (binary scan + `docker inspect` + `--help` + skill docs).
+  Consequence: P4.4 data-dir forwarding + migration STOPPED; `--migrate` fails closed with
+  `MIGRATE ABORT: unsupported-runtime`; framing-3b decision escalated to the orchestrator.

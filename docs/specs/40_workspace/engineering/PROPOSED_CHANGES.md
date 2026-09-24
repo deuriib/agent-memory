@@ -131,3 +131,12 @@ The only write path is `--migrate --apply --yes`, gated in order: dry-run by def
 None reachable by design: signals go only to PIDs we spawned and recorded in the state file, with the command line re-verified against our `src/server.ts` launch before SIGTERM (`SPEC-P4-OPS.md:50-54`; `SPEC-P4-OPS-RUNBOOK.md:185-193`); the Helix side is `helix stop <instance-name>` with the name resolved from `helix.toml`, never bare, never foreign (`SPEC-P4-OPS-RUNBOOK.md:306-314`). Forbidden primitives — port-scan kill, `fuser`, `pkill`, `killall`, `helix prune|delete`, `docker rm|kill|volume rm`, `--persist` — are enumerated (`SPEC-P4-OPS.md:240-244`, NFR-A `:101-104`) and proven twice: statically (grep returns empty) and at runtime (foreign listener on a stand-in quartet survives all four subcommands with an unchanged PID) — AC-P4-OPS-A `SPEC-P4-OPS.md:164-167`, proofs (i)–(iv) `SPEC-P4-OPS-RUNBOOK.md:194-202`. `start` refuses and exits 1 (`SPEC-P4-OPS.md:48-49`) and `doctor` exits 3 report-only (`SPEC-P4-OPS-RUNBOOK.md:95-97`) without touching the holder. Residual: PID-reuse TOCTOU (R-011) — narrowed, documented, never silent.
 
 grill: accepted (1 pass, ≤3 questions, self-recorded under orchestrator loop mode 2026-09-24)
+
+## Implementation notes (execute-spec, 2026-09-24)
+
+Probe A3 FAIL — `helix start` on CLI 3.3.0 does not forward `HELIX_DATA_DIR` (binary 0 occurrences, `docker inspect` no passthrough, no `--data-dir` flag; see IMPLEMENTATION_PLAN §Step 0). Consequence per packet (reversible call): P4.4 `HELIX_DATA_DIR` forwarding + MinIO migration is STOPPED and `doctor --migrate` fails closed with `MIGRATE ABORT: unsupported-runtime` (dry-run default unchanged, `--apply --yes` audit+abort, never a write); framing 3b (data-dir for new instances only) is escalated to the orchestrator and KR3 is not claimed in this lane.
+
+- `--migrate` dry-run prints plan only; `--migrate --apply --yes` → `MIGRATE ABORT: unsupported-runtime` (no backup/copy/verify, no MinIO volume mutation) — REQ-P4-OPS-08 / AC-08 fail-closed.
+- `--data-dir` / `AGENT_MEMORY_DATA_DIR` precedence survives as the state-path input (REQ-07) but `HELIX_DATA_DIR` is never set for Helix.
+- Framing 3b decision pending orchestrator; P4.4 rows in TEST_MATRIX marked accordingly and not claimed.
+- All other REQs (P4.1 CLI surface, P4.3 slots — REQ-01..06, 09, NFR-A..F) implemented as proposed; no new deps, `src/db/hooks/plugins` frozen, `package.json` only `bin` + `verify-ops`.
