@@ -60,7 +60,7 @@
  */
 import { Plugin } from "@opencode/plugin";
 
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */

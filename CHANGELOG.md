@@ -3,6 +3,24 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v0.8.0] — 2026-09-24
+
+### Added
+
+- **P4 ops control-plane CLI — `bin/agent-memory.mjs` (SPEC-P4-OPS, Node ≥20 ESM, `node:` builtins only, zero new deps).** Subcommands `start|stop|status|doctor` + `--help` registered as `"bin":{"agent-memory":"./bin/agent-memory.mjs"}` and `"verify-ops":"tsx scripts/verify-ops.ts"` in `package.json` (only 2 rows, `package-lock.json` empty diff). `start --slot N` spawns Helix instance (`helix add local --name slotN --port H(N)` once for N≥2, never `--persist`) + `npx tsx src/server.ts` with derived env `R(N)=3111+3(N-1) H(N)=6969+(N-1)`, pre-flight quartet refuse + `NEVER kill 3111/3112/3113` hint exit 1 no signal, idempotent already-running exit 0, 30 s readiness `Helix /healthz` + `/memory/livez`, state `0700/0600` sibling `state/slot-N.json` (never inside `HELIX_DATA_DIR`). `stop --slot N` SIGTERM→SIGKILL tracked PIDs only with `verifyOwnedPid` re-verify before EACH signal (C10) then `helix stop <instance>` + remove state, idempotent. `status` read-only quartet/REST/Helix/data-dir + `bearer: armed|unset` presence-only never `Authorization`. `doctor` C1→C3→C2→C4→C5 one `PASS|FAIL|INFO <check-id>` each + single `VERDICT:` with precedence `5>4>3>1>0` (exits 0/1/2/3/4/5), C3 ownership gates C2 bearer (foreign listener 0 requests, `verify-ops` header proof on 3135). Data-dir precedence `--data-dir` > `AGENT_MEMORY_DATA_DIR` > `~/.local/share/agent-memory/<slot>/`; `helix.toml` `[local.dev]` frozen `port 6969 storage="disk" tag v0.0.6`, `[local.slot2]` additive only. Security C1..C10 landed as code + `verify-ops` §§J/K/I, Ley 172-13 output allowlist (`oneLine`+`~`+counts/ports/PIDs only, no memory content/secret/PII), state 0600 secret-free. Evidence `TEST_MATRIX.md` P4 OPS section `T-P4OPS-01..15` (12 DONE + 3 DONE* partial by A3).
+- **Harness `scripts/verify-ops.ts` (§A–§L, 99/0 VERIFY PASS).** Sections `check()` counters `finally` reap, header proof synthetic server on 3135 receives 0 Authorization, secret/canary/port-parity/never-kill proofs, `DEFER` for live-slot where noted; live slot-2 window 3114/3115/3116/6970 `slot2` healthy→remember→search→stop idempotent (see `TEST_MATRIX.md:119-132` bar #1-10).
+- **Docs — `README.md:601-784` Operations — P4 control plane** (slot derivation table `R(N)/H(N)`, CLI usage + exit codes 0/1/2/3/4/5, data-dir/state layout `0700/0600` sibling, backup/recovery, Ley 172-13 PII-store declaration `README.md:715-727`, never-kill hint) + `TEST_MATRIX.md:97-134` 15-row P4 OPS section + per-command bar `#1-10` + live slot-2 window.
+- **Version 0.7.1 → 0.8.0 across 6 carriers:** `package.json`, `package-lock.json` root + `packages[""]`, `src/mcp.ts`, plugin `VERSION`, README badge (engineering, release)
+
+### Fixed
+
+- **Slot Helix `storage="disk"` patch for C5 (doctor).** `bin/agent-memory.mjs` now patches `[local.slotN]` `storage="disk"` on registration so `doctor C5` never mis-reports `memory` for a freshly `helix add local` slot while `helix.toml` is still disk-default. Evidence `TEST_MATRIX.md:132` `storage="disk"` before remember (commit `8d6ae81`) (engineering)
+
+### Notes
+
+- **A3 FAIL — HELIX_DATA_DIR not forwarded on Helix CLI 3.3.0 → framing 3b pending orchestrator (Residual #1).** Probe `IMPLEMENTATION_PLAN.md:24-44` Step 0: binary 0 hits `HELIX_DATA_DIR`, `helix start --help` no `--data-dir`, `docker inspect` no env passthrough; `helix add local` skill documents `HELIX_DATA_DIR` as direct-Docker mode only. Consequently `HELIX_DATA_DIR` is never set, `--data-dir` controls only state path, `doctor --migrate` is fail-closed `MIGRATE ABORT: unsupported-runtime` zero writes (MinIO `helix-agent-memory-dev-minio-data` retained). KR3 not claimed; **P4.4 not claimed** in this lane — reversible per brief §7, not a defect. Expiry **2026-12-31** or framing-3b decision. See `docs/specs/50_archive/P4-OPS/GATE_REPORT.md:60-72` + `HANDOFF.md:116-129`.
+- **Out-of-scope carries (not at gate):** P4.2 `docker-compose.yml`/k8s manifests, P4.5 npm publish, P4.6 zero-container mode still missing (brief §6). Gate **OPEN 8/8 PASS** (`quality-assurance`, `security-reviewer` C1..C10+J/K/I, `automation-reviewer` §4a/4c/4d+CI, `readability` 7/7 3 Low, `reliability` bounded 30s/5s/3s, `resilience` blast-radius/rollback, `risk`, `refuter` 6 claims — see `GATE_REPORT.md`).
+
 ## [v0.7.1] — 2026-09-24
 
 ### Added

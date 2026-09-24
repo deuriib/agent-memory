@@ -1,12 +1,57 @@
-# Release Notes: v0.7.1
+# Release Notes: v0.8.0
 
 **Date:** 2026-09-24
-**Release Manager:** orchestrator (frame-ship lane; ship mechanics by the
-operations function per ship-release role binding — role assumption stated
-for this lane)
-**Specs Included:** F-01-EMB embedding invariant closure (4th invariant in `verifyMergedState`) — `ROADMAP.md` §1.3 `F-01-EMB` **CLOSED** 2026-09-24
-**Domains-Touched:** engineering, security, automation/ops, data lens
-**Ship Type:** deploy (patch, no API/index/route change; version 0.7.0 → 0.7.1 across 6 carriers + tag v0.7.1)
+**Release Manager:** orchestrator (Montilla, CEO) — ship mechanics by operations/engineering per ship-release role binding — role assumption stated for this lane
+**Specs Included:** P4 ops control-plane — CLI binary + slot derivation + data-dir state-path (SPEC-P4-OPS + SPEC-P4-OPS-RUNBOOK) — `ROADMAP.md` §P4 **P4.1/P4.3 CLOSED**, **P4.4 DONE* partial (A3 FAIL framing 3b pending orchestrator)**
+**Domains-Touched:** engineering (R1, owner vasquez) · automation/ops (R8) · security (R2) (finance / legal / marketing / people / revenue: **N/A** — local developer tool, no billing/quota/compliance surface)
+**Ship Type:** deploy (minor, new CLI control-plane; no REST/MCP route or index change; version 0.7.1 → 0.8.0 across 6 carriers + tag v0.8.0)
+
+## Highlights
+
+- **CLI binary `bin/agent-memory.mjs` — `start|stop|status|doctor` (+ `--help`).** Node ≥20 ESM, `node:` builtins only (`child_process, fs, net, os, path, url`), zero new dependencies. Registered as `"bin":{"agent-memory":"./bin/agent-memory.mjs"}` + `"verify-ops":"tsx scripts/verify-ops.ts"` in `package.json` (only 2 rows). Fail-closed arg parsing (`--slot` integer ≥1 else exit 2, unknown flag/subcommand → exit 2 on stderr, `--help` → exit 0).
+- **Slot derivation — 4-port quartet `R(N)=3111+3(N-1) H(N)=6969+(N-1)`.** Derived exclusively via env/flags (`AGENT_MEMORY_PORT`, `helix add local --port`, `HELIX_URL`, `AGENT_MEMORY_URL`); zero edits to `src/**`, `db/**`, `hooks/**`, `plugins/**`. Slot 1 reuses `[local.dev]` (3111/6969/3112/3113); N≥2 → `[local.slotN]` (3114/6970/3115/3116 for slot2, never 3151). Invariants: N≥2 ∩ `{3111,3112,3113,6969}` = ∅, reserved `R+1`/`R+2` never bound. `helix add local` appending `[local.slotN]` is config registration (sanctioned, not source edit).
+- **Multi-instance slot2 live-verified.** `start --slot 2` → `helix add local --name slot2 --port 6970` once (with `storage="disk"` patch for C5) then `helix start slot2` + `npx tsx src/server.ts` (env §4.3), 30 s readiness Helix `/healthz` + `/memory/livez`; `doctor --slot 2` → `PASS C1 200` `PASS C3 owned 3114` `PASS C2 200/200` `PASS C4 present` `PASS C5 disk` → `VERDICT: healthy` exit 0; `remember→search` on 3114 round-trips (1 bm25 hit score 0.86 `signals:[]`); `stop --slot 2` exit 0 + idempotent second `stop` exit 0; `helix status dev` unchanged 6969 up. No dev restart, no upstream 3111/3112/3113 signaled.
+- **Data-dir & state-path (REQ-07/NFR-D, state contract §4.4).** Precedence `--data-dir` > `AGENT_MEMORY_DATA_DIR` > `~/.local/share/agent-memory/<slot>/`. CLI state is sibling `<parent>/state/slot-N.json` (never inside `HELIX_DATA_DIR`), state dir `0700` file `0600`, closed schema (slot/pids/instance/dataDir/startedAt/cliVersion), never secret/content/PII. `stop`/`doctor` re-derive `helixInstance` from `helix.toml` and re-verify `pids.rest` cmdline before **each** signal (SIGTERM and SIGKILL individually, C10).
+- **A3 FAIL framing 3b — HELIX_DATA_DIR not forwarded on Helix CLI 3.3.0.** Probe `IMPLEMENTATION_PLAN.md` Step 0: binary 0 hits `HELIX_DATA_DIR`, `helix start --help` no `--data-dir`, `docker inspect` no passthrough. Consequently `HELIX_DATA_DIR` is never set, `--data-dir` controls only the state path (verified 0600/0700 secret-free), and `doctor --migrate` is fail-closed `MIGRATE ABORT: unsupported-runtime` (any form, zero writes, no backup created, MinIO volume retained). KR3 not claimed; framing 3b (data-dir for new instances only, no dev migration) escalated to orchestrator — reversible, not a defect.
+- **Security C1..C10 landed as code + proof.** C1 ownership-gated bearer (C3 `verifyOwnedPid`+`isDescendant` before C2 probe, `verify-ops` §E header proof 0 Authorization to foreign synthetic server on 3135); C2 backup 0600/0700 declared in `README.md:715-727` but abort supersedes write while A3 FAIL; C3 state hardening 0700/0600+closed schema; C4 path refusal `/, $HOME, system roots`; C5 start idempotent; C6 audit `state/audit.log` 0600/0700; C7 one allowlist renderer (`oneLine+collapse+~`); C8 `helixEnv` strips secret; C9 `status` never sends bearer (401=armed); C10 re-verify before SIGKILL + `stale-pid` note. J/K/I: `verify-ops` §J 0 secret, §K 0 canary, §I foreign 3135 survives + static grep 0 forbidden primitives (`helix prune/delete/docker rm|kill/volume rm/fuser/pkill/killall/--persist`).
+- **Verification `verify-ops` 99/0 + `TEST_MATRIX.md` P4 OPS rows T-P4OPS-01..15 (12 DONE + 3 DONE* partial).** Per-command bar `#1-10`: `typecheck` 0, `verify-ops` **99/0** (§A–§L + header proof + never-kill/secret/canary/port-parity), `verify-env` **21/0**, `verify-lifecycle` **123/0** (117+6), `verify-capture` **137/0**, `verify-skills --structural` **73/0**, `verify` **243/0** (3151, T-RL-001+F-01 green) + live slot-2 window above. `git diff src/ db/ hooks/ plugins/` empty; `package-lock.json` empty; `[local.dev]` frozen `port 6969 storage="disk" tag v0.0.6`.
+
+## Contract
+
+`docs/CONTRACT.md` unchanged (no route/tool/schema/index change — this is an ops control-plane lane). `README.md:601-784` adds Operations — P4 control plane (slot derivation table `R(N)/H(N)`, CLI usage + exit-code matrix 0/1/2/3/4/5, data-dir/state layout `0700/0600` sibling, backup/recovery/Ley 172-13 declaration `README.md:715-727`, never-kill hint). No migration, no index change.
+
+## Known Issues
+
+- **A3 FAIL carried (Residual #1, Medium×High, owner R1+R8 → orchestrator, expiry 2026-12-31 or framing-3b decision).** `HELIX_DATA_DIR` forwarding unsupported on Helix CLI 3.3.0; `doctor --migrate` abort-only; KR3 not claimed; `HELIX_DATA_DIR` never set. Reversible via framing 3b or Helix CLI upgrade. See `GATE_REPORT.md:60-72` 8 residuals + `HANDOFF.md:116-129` + `IMPLEMENTATION_PLAN.md:24-44` Step 0.
+- **P4.4 DONE* partial (3 rows):** T-P4OPS-07 (data-dir state-path proven, HELIX_DATA_DIR forwarding not claimed), T-P4OPS-08 (migrate abort zero writes, no data moved), T-P4OPS-13 (state-path durability proven, HELIX restart with HELIX_DATA_DIR not claimed) — honest by-design, not silent PASS.
+- **Other push-forward (not at gate):** P4.2 docker-compose/k8s, P4.5 npm publish, P4.6 zero-container mode still missing (ROADMAP/P4 scope).
+- **Low hygiene (backlog, not gate-blocking):** RD-P4-001 dead no-op `bin:842-844`, RD-P4-002 depth-4 `bin:786-822`, RD-P4-003 `r1/r2` terse; QA O-01 `T-P4OPS-09 "(this commit)"`; `helix.toml` additive `[local.slot2]` inert until `git checkout -- helix.toml`.
+
+## Verification
+
+typecheck 0 · `verify-ops` **99/0** (VERIFY PASS, §A–§L + header proof) · `verify-env` **21/0** · `verify-lifecycle` **123/0** · `verify-capture` **137/0** · `verify-skills --structural` **73/0** · `verify` **243/0** (3151, Helix dev read-only) · live slot-2 window **DONE** (3114/6970 slot2 healthy + remember→search 1 hit + bootstrap 6970 `OK (8 indexes ensured)` + stop idempotent + dev untouched).
+
+## Quality gate
+
+8 independent reviewers → **8/8 PASS, 0 Critical/High, 0 conditional** → gate **OPEN**: `docs/specs/50_archive/P4-OPS/GATE_REPORT.md` (consolidated) + 8 artifacts (`quality-assurance`, `security-reviewer` C1..C10+J/K/I, `automation-reviewer` runbook §4a/4c/4d+CI, `readability` 7/7 with 3 Low, `reliability` bounded timeouts, `resilience` blast-radius/rollback, `risk`, `refuter` 6 claims). Cross-domain Engineering↔Security and Engineering↔Automation both PASS; Legal/Privacy N/A local tool (Ley 172-13 via output allowlist only).
+
+## Rollback / Undo
+
+Branch `main` ahead of `origin/main`; this ship commit `chore(release-0.8.0)` (+ lane commits `f8e29f1..2a7bc18`) tagged **v0.8.0** — rollback steps:
+
+1. `rm bin/agent-memory.mjs && rm scripts/verify-ops.ts` (or revert `f8e29f1`/`bd65360`).
+2. `git checkout HEAD~1 -- package.json package-lock.json` (reverts only the 2 added rows `bin` + `verify-ops`; `dependencies/devDependencies` and `package-lock.json` were empty diffs — `git diff package-lock.json` empty).
+3. `git checkout -- helix.toml` — removes additive `[local.slot2]` (`port 6970 storage="disk"`) — sanctioned config registration, not source edit.
+4. If slot2 still running: `bin/agent-memory stop --slot 2` (or `helix stop slot2`) — stops only slot2 owned processes; volumes retained (no `helix prune/delete/docker volume rm` reachable).
+5. `npm run typecheck && npm run verify-env` proves clean (no CLI references remain in `src/`/`db/`/`hooks/`/`plugins/`). Check out tag **v0.7.1** for full undo. No schema, index, or migration change; storage remains `disk`. Owner: engineering + orchestrator. ETA: immediate.
+
+## PII checkpoint (Ley 172-13)
+
+Zero PII/secrets/tokens in this release or these notes — allowlisted evidence only (ports, counts, PIDs, verdicts, `~`-collapsed paths, owners by role); `AGENT_MEMORY_SECRET` presence-only (`armed|unset` / `present|missing`); state file 0600 secret-free; synthetic `TEST_SECRET` 0 occurrences (`verify-ops` §J); canary 0 occurrences (§K); backup declaration `README.md:715-727` but no archive created while A3 FAIL — abort path proves never-a-write.
+
+---
+
+# Release Notes: v0.7.1
 
 ## Highlights
 
