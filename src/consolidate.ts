@@ -77,3 +77,28 @@ export function mergedContent(survivorContent: string, incomingContent: string):
   }
   return `${survivorContent.replace(/\s+$/, "")}\n${incomingContent}`;
 }
+
+/**
+ * REQ-F-01: pure set-difference for the concept-link verify + heal — the
+ * names in `incoming` that are NOT linked yet, as a DEDUPED, code-unit
+ * SORTED array. Sorting makes the result ORDER-INDEPENDENT: any permutation
+ * of `linked` or `incoming` yields a byte-identical array (so the heal
+ * payload and the §G goldens are deterministic).
+ *
+ * Matching is EXACT-name and case-sensitive: Concept nodes are keyed by
+ * exact name (`Predicate.eqParam("name")` in conceptBody) and graphSearch
+ * matches `isInParam` exactly — "Deploy" and "deploy" are two different
+ * Concept nodes, so both must be healed. No substring/normalized matching:
+ * linked "deploy staging" does NOT cover incoming "deploy".
+ */
+export function missingConcepts(
+  linked: readonly string[],
+  incoming: readonly string[],
+): string[] {
+  const have = new Set(linked);
+  const missing = new Set<string>();
+  for (const name of incoming) {
+    if (!have.has(name)) missing.add(name);
+  }
+  return [...missing].sort();
+}

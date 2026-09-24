@@ -1568,6 +1568,155 @@ async function main(): Promise<void> {
     check("rl-001: cleanup forget survivor -> 200", rlfg.status === 200, `got ${rlfg.status}`);
   }
 
+  /* P10. REQ-F-01 POST-WRITE VERIFY + HEAL — the substring guard used to
+   * return WITHOUT reading, so a re-save carrying a NEW concept (or a
+   * partial commit that lost the incoming's links) left the survivor
+   * permanently unlinkable by that concept (contract §3 tier-1 (b): the
+   * merge batch's concept links carry NO return var and mid-batch
+   * atomicity is an ENGINE ASSUMPTION — the F-01 residual).
+   *
+   * Sequence: A → plain insert (the survivor); B (near-dup, j = 10/11) →
+   * concatenation merge (content = A\nB); re-save B with a NEW explicit
+   * concept C → exact-dedup misses, the probe picks the survivor, the
+   * fresh re-read hits the SUBSTRING GUARD (B ⊂ A\nB) → content must stay
+   * BYTE-IDENTICAL while the guard path verifies + heals the links for C
+   * (linkMemoryConcepts, content/embedding/dedupKey untouched).
+   *
+   * Graph-branch causality: smart-search WITHOUT concepts runs vector+text
+   * only; WITH concepts=[C] the graph leg joins and contributes exactly
+   * 1/(60+rank) = 1/61 (the survivor is the ONLY row linked to C → rank 1
+   * — RRF in src/search.ts). The fused score must therefore rise by
+   * exactly 1/61 vs the control: an arbitrary boost could not produce that
+   * delta, so the recall via C is CAUSED by the healed link, not by text
+   * similarity. */
+  const fProject = `verify-f01-${randomUUID().slice(0, 8)}`;
+  const fA = "deploy staging checklist runs database migration then restarts api workers";
+  const fB = `${fA} today`;
+  const fMerged = `${fA}\n${fB}`;
+  const fConcept = `f01healconcept${randomUUID().slice(0, 8)}`; // unique → never content-derived; only the heal can link it
+  const fSidA = `verify-f01-sa-${randomUUID().slice(0, 8)}`;
+  const fSidB = `verify-f01-sb-${randomUUID().slice(0, 8)}`;
+
+  const fSurvivorContent = async (survivorId: string, label: string): Promise<string | undefined> => {
+    const env = shape(
+      `f-01: sessionMemories(fSidA) envelope (${label})`,
+      (
+        await call("GET", `/memory/sessions/${encodeURIComponent(fSidA)}/memories`, {
+          project: fProject,
+          limit: "50",
+        })
+      ).body,
+      memoriesEnvelopeSchema,
+    );
+    return env?.memories.find((row) => row.memoryId === survivorId)?.content;
+  };
+
+  const fa = await call("POST", "/memory/remember", undefined, {
+    content: fA,
+    project: fProject,
+    sessionId: fSidA,
+  });
+  check("f-01: A status 201", fa.status === 201, `got ${fa.status}`);
+  const rfa = shape("f-01: A body", fa.body, rememberResultSchema);
+
+  const fb = await call("POST", "/memory/remember", undefined, {
+    content: fB,
+    project: fProject,
+    sessionId: fSidB,
+  });
+  const rfb = shape("f-01: B body", fb.body, rememberResultSchema);
+  check(
+    "f-01: B merges into A (201, consolidated=true, deduped=false, SAME survivor id)",
+    fb.status === 201 &&
+      rfa !== undefined &&
+      rfb !== undefined &&
+      rfb.consolidated === true &&
+      rfb.deduped === false &&
+      rfb.id === rfa.id,
+    `status=${fb.status} consolidated=${String(rfb?.consolidated)} deduped=${String(rfb?.deduped)} ids ${rfa?.id} vs ${rfb?.id}`,
+  );
+
+  if (rfa !== undefined) {
+    const fBefore = await fSurvivorContent(rfa.id, "after merge");
+    check(
+      "f-01: merged survivor content === A\\nB (byte length recorded before the heal)",
+      fBefore === fMerged,
+      `contentLen=${fBefore?.length} want=${fMerged.length}`,
+    );
+  }
+
+  // Re-save B carrying the NEW explicit concept C → the guard path must
+  // link C (verify + link-only heal) while leaving content untouched.
+  const fc = await call("POST", "/memory/remember", undefined, {
+    content: fB,
+    project: fProject,
+    sessionId: fSidB,
+    concepts: [fConcept],
+  });
+  const rfc = shape("f-01: guard re-save body", fc.body, rememberResultSchema);
+  check(
+    "f-01: guard re-save -> 201, consolidated=true, deduped=false, SAME survivor id",
+    fc.status === 201 &&
+      rfa !== undefined &&
+      rfc !== undefined &&
+      rfc.consolidated === true &&
+      rfc.deduped === false &&
+      rfc.id === rfa.id,
+    `status=${fc.status} consolidated=${String(rfc?.consolidated)} deduped=${String(rfc?.deduped)}`,
+  );
+  check(
+    "f-01: response echoes REQUEST concepts [C] (first-wins echo unchanged on the guard path)",
+    rfc !== undefined && rfc.concepts.length === 1 && rfc.concepts[0] === fConcept,
+    JSON.stringify(rfc?.concepts),
+  );
+  check(
+    "f-01: response echoes the REQUEST sessionId (contract §3 echo unchanged on the guard path)",
+    rfc?.sessionId === fSidB,
+    rfc?.sessionId,
+  );
+
+  if (rfa !== undefined) {
+    const fAfter = await fSurvivorContent(rfa.id, "after heal");
+    check(
+      "f-01: survivor content BYTE-IDENTICAL after the guard-path heal (A\\nB — no re-append, no rewrite)",
+      fAfter === fMerged,
+      `contentLen=${fAfter?.length} want=${fMerged.length}`,
+    );
+
+    // Graph-branch causality — same query twice; the ONLY difference is
+    // concepts=[C], so the fused score may rise by exactly 1/61 (graph
+    // leg, rank 1) and nothing else.
+    const fCtrl = shape(
+      "f-01: control smart-search (no concepts) envelope",
+      (await call("POST", "/memory/smart-search", undefined, { query: fB, project: fProject, limit: 10 })).body,
+      hybridEnvelopeSchema,
+    );
+    const fWith = shape(
+      "f-01: smart-search concepts=[C] envelope",
+      (
+        await call("POST", "/memory/smart-search", undefined, {
+          query: fB,
+          project: fProject,
+          limit: 10,
+          concepts: [fConcept],
+        })
+      ).body,
+      hybridEnvelopeSchema,
+    );
+    const fCtrlScore = fCtrl?.results.find((row) => row.memoryId === rfa.id)?.score;
+    const fWithScore = fWith?.results.find((row) => row.memoryId === rfa.id)?.score;
+    const fDelta =
+      fCtrlScore !== undefined && fWithScore !== undefined ? fWithScore - fCtrlScore : Number.NaN;
+    check(
+      "f-01: smart-search concepts=[C] fused score = control + 1/61 (graph leg rank 1 — the HEALED link caused the recall)",
+      Number.isFinite(fDelta) && Math.abs(fDelta - 1 / 61) < 1e-9,
+      `control=${fCtrlScore} withC=${fWithScore} delta=${fDelta} want=${1 / 61}`,
+    );
+
+    const ffg = await call("POST", "/memory/forget", undefined, { memoryId: rfa.id });
+    check("f-01: cleanup forget survivor -> 200", ffg.status === 200, `got ${ffg.status}`);
+  }
+
   /* M. Summary. */
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) {

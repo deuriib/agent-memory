@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractConcepts, MAX_CONCEPTS, MAX_CONCEPT_CHARS } from "../src/concepts.js";
 import { confidenceBoost, deriveWriteImportance, noteRecall, recallCount, resetRecalls } from "../src/confidence.js";
-import { isNearDuplicate, jaccard, mergeThreshold, mergedContent } from "../src/consolidate.js";
+import { isNearDuplicate, jaccard, mergeThreshold, mergedContent, missingConcepts } from "../src/consolidate.js";
 import { contentHash, decayedImportance, filterExpired, normalizeContent } from "../src/lifecycle.js";
 import { oneLine } from "../src/logline.js";
 /* COND-QA-01: the §H goldens score with the SAME module the eval harness
@@ -692,6 +692,63 @@ async function main(): Promise<void> {
     restoreMerge();
   }
 
+  // missingConcepts (REQ-F-01) — the pure set-difference behind the
+  // concept-link verify + heal: DEDUP, EXACT-name/case matching (Concept
+  // nodes are keyed by exact name — Predicate.eqParam("name") — and
+  // graphSearch matches isInParam exactly, so "Deploy" ≠ "deploy"), and
+  // code-unit SORTED output so the result is ORDER-INDEPENDENT: any
+  // permutation of either list yields a byte-identical array (which is
+  // what makes the heal payload and these goldens deterministic).
+  check(
+    "missingConcepts: every expected name already linked -> empty",
+    missingConcepts(["deploy", "staging"], ["deploy", "staging"]).length === 0,
+    JSON.stringify(missingConcepts(["deploy", "staging"], ["deploy", "staging"])),
+  );
+  check(
+    "missingConcepts: partial -> the exact missing names, sorted (incoming order ignored)",
+    JSON.stringify(missingConcepts(["deploy"], ["zeta", "deploy", "alpha"])) ===
+      JSON.stringify(["alpha", "zeta"]),
+    JSON.stringify(missingConcepts(["deploy"], ["zeta", "deploy", "alpha"])),
+  );
+  check(
+    "missingConcepts: ORDER-INDEPENDENT over shuffled incoming (byte-identical)",
+    JSON.stringify(missingConcepts(["alpha", "beta"], ["z", "y", "x"])) ===
+      JSON.stringify(missingConcepts(["alpha", "beta"], ["x", "z", "y"])),
+    `${JSON.stringify(missingConcepts(["alpha", "beta"], ["z", "y", "x"]))} vs ${JSON.stringify(missingConcepts(["alpha", "beta"], ["x", "z", "y"]))}`,
+  );
+  check(
+    "missingConcepts: ORDER-INDEPENDENT over shuffled linked (byte-identical)",
+    JSON.stringify(missingConcepts(["b", "a", "c"], ["q", "p"])) ===
+      JSON.stringify(missingConcepts(["c", "a", "b"], ["p", "q"])),
+    `${JSON.stringify(missingConcepts(["b", "a", "c"], ["q", "p"]))} vs ${JSON.stringify(missingConcepts(["c", "a", "b"], ["p", "q"]))}`,
+  );
+  check(
+    "missingConcepts: incoming duplicates DEDUPED",
+    JSON.stringify(missingConcepts(["deploy"], ["x", "x", "y", "x"])) ===
+      JSON.stringify(["x", "y"]),
+    JSON.stringify(missingConcepts(["deploy"], ["x", "x", "y", "x"])),
+  );
+  check(
+    "missingConcepts: EXACT-name/case match (linked 'Deploy' does NOT cover incoming 'deploy')",
+    JSON.stringify(missingConcepts(["Deploy"], ["deploy"])) === JSON.stringify(["deploy"]),
+    JSON.stringify(missingConcepts(["Deploy"], ["deploy"])),
+  );
+  check(
+    "missingConcepts: NO substring match (linked 'deploy staging' does not cover 'deploy')",
+    JSON.stringify(missingConcepts(["deploy staging"], ["deploy"])) === JSON.stringify(["deploy"]),
+    JSON.stringify(missingConcepts(["deploy staging"], ["deploy"])),
+  );
+  check(
+    "missingConcepts: empty incoming -> empty (nothing to heal)",
+    missingConcepts(["a", "b"], []).length === 0,
+    JSON.stringify(missingConcepts(["a", "b"], [])),
+  );
+  check(
+    "missingConcepts: empty linked -> every distinct incoming name, sorted",
+    JSON.stringify(missingConcepts([], ["b", "a"])) === JSON.stringify(["a", "b"]),
+    JSON.stringify(missingConcepts([], ["b", "a"])),
+  );
+
   /* H. eval/metrics goldens (COND-QA-01) — every expected value is a
    * hand-computed literal (never produced by the function under test), so a
    * formula breakage cannot self-certify. eps 1e-9 throughout. */
@@ -910,13 +967,19 @@ async function main(): Promise<void> {
 
     // Control: TTL OFF -> the same candidate survives, consolidates via the
     // substring guard (consolidated=true, NO insert send) — proves the TTL
-    // filter is the only thing that changed between the two runs. REQ-RL-001:
-    // reaching the merge now re-reads the survivor FRESH under the survivor
-    // lock first, so the canned sequence is [dedup miss, fresh row]. sends=2
-    // therefore means pre-check + fresh re-read and NO insert (an insert
-    // would be call 3 → sends=3; a missing fresh read would leave sends=1).
+    // filter is the only thing that changed between the two runs.
+    // REQ-RL-001: reaching the merge re-reads the survivor FRESH under the
+    // survivor lock (call 2). REQ-F-01: the guard path now also verifies +
+    // heals the concept LINKS instead of returning without reading —
+    // canned here as a simulated partial commit (call 3 says NOTHING is
+    // linked → linkMemoryConcepts heal (call 4) → re-read shows the links
+    // landed (call 5)). sends=5 therefore means pre-check + fresh re-read +
+    // concepts read + link heal + re-read with NO insert (a plain insert
+    // would bypass all of that; a skipped fresh read would leave sends=4;
+    // a skipped concepts read would leave sends=2).
     delete process.env["AGENT_MEMORY_TTL_DAYS"];
     const i5Sends: unknown[] = [];
+    const i5ExpectedConcepts = extractConcepts(expiredContent); // guard derives from content (request passed none)
     const i5 = makeSeamStore(
       i5Sends,
       () => Promise.resolve([expiredHit]),
@@ -932,6 +995,13 @@ async function main(): Promise<void> {
             },
           ],
         },
+        { names: [] }, // call 3: guard-path memoryConcepts read — NOTHING linked (simulated partial commit)
+        { memory: [{ memoryId: "expired-hit" }] }, // call 4: linkMemoryConcepts heal — anchor present
+        // call 5: re-read — the heal landed every expected name. Rows are
+        // RECORDS {name} (memoryConcepts projects PropertyProjection.new("name");
+        // readLinkedConcepts drops non-record rows via toRecords, so a plain
+        // string array would read as "nothing linked" and trip the invariant).
+        { names: i5ExpectedConcepts.map((name) => ({ name })) },
       ],
     );
     const i5Result = await i5.remember({
@@ -942,8 +1012,8 @@ async function main(): Promise<void> {
       concepts: [],
     });
     check(
-      "TTL×merge: TTL OFF control -> same candidate consolidates (consolidated=true, pre-check + fresh re-read, no insert)",
-      i5Result.consolidated === true && i5Sends.length === 2,
+      "TTL×merge: TTL OFF control -> consolidates via guard; guard path heals missing concept links offline (consolidated=true, 5 sends, NO insert)",
+      i5Result.consolidated === true && i5Sends.length === 5,
       JSON.stringify({ consolidated: i5Result.consolidated, sends: i5Sends.length }),
     );
   } finally {

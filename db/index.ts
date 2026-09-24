@@ -19,6 +19,9 @@ export {
   findMemoryByDedupKey,
   listExpired,
   listProjects,
+  getMemoryById,
+  memoryConcepts,
+  linkMemoryConcepts,
   saveMemoryParams,
   listSessionsParams,
   sessionMemoriesParams,
@@ -30,4 +33,7 @@ export {
   findMemoryByDedupKeyParams,
   listExpiredParams,
   listProjectsParams,
+  getMemoryByIdParams,
+  memoryConceptsParams,
+  linkMemoryConceptsParams,
 } from "./queries";

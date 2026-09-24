@@ -45,4 +45,18 @@ updated in place per execute-spec).
 
 ## Final verification bar (run on the commit-2 tree, server :3151, Helix dev untouched)
 
-- (pasted after the runs)
+- `npm run typecheck` — exit 0 (no errors).
+- `npx tsx scripts/bootstrap.ts` — `bootstrapIndexes: OK (8 indexes ensured)` + `READY` (no index added by either REQ).
+- `npm run verify-lifecycle` — **113 passed, 0 failed** / `VERIFY PASS` (includes §G `missingConcepts` goldens + §I guard-path heal seam: `TTL OFF control -> consolidates via guard; guard path heals missing concept links offline (consolidated=true, 5 sends, NO insert)` PASS).
+- `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` — **243 passed, 0 failed** / `VERIFY PASS`; T-RL-001 block (13 checks) green in the same run; T-F-01 `f-01:` block verbatim (tail):
+  - `PASS f-01: guard re-save -> 201, consolidated=true, deduped=false, SAME survivor id`
+  - `PASS f-01: response echoes REQUEST concepts [C] (first-wins echo unchanged on the guard path)`
+  - `PASS f-01: response echoes the REQUEST sessionId (contract §3 echo unchanged on the guard path)`
+  - `PASS f-01: sessionMemories(fSidA) envelope (after heal)`
+  - `PASS f-01: survivor content BYTE-IDENTICAL after the guard-path heal (A\nB — no re-append, no rewrite)`
+  - `PASS f-01: control smart-search (no concepts) envelope`
+  - `PASS f-01: smart-search concepts=[C] envelope`
+  - `PASS f-01: smart-search concepts=[C] fused score = control + 1/61 (graph leg rank 1 — the HEALED link caused the recall)`
+  - `PASS f-01: cleanup forget survivor -> 200`
+- Adjacent suites (no-regression on the shared store): `verify-capture` **137 checks, 0 failed**; `verify-env` **21 passed, 0 failed**; `verify-skills --structural` **73 passed, 0 failed**; `verify-injection` **ALL PASS** (exit 0).
+- Incident note (harness, not product): the first commit-2 `verify` attempt returned `internal_error` on `health`/`remember` because the Helix dev CONTAINER was inside a restart window (`helix status` uptime reset to <1s; SDK `fetch failed … Cannot reach Helix at http://localhost:6969/v2/query`). Re-run green once the container was back; no code change came from this. One test-fixture root cause was found and fixed in-lane (Phase-1 single hypothesis): the §I canned reply at call 5 fed `names` as a STRING array while `memoryConcepts` returns RECORDS `{name}` (`PropertyProjection.new("name")`) and `readLinkedConcepts` drops non-record rows via `toRecords` — so the re-read saw zero linked names and failed closed with all 7 missing. Fixture corrected to `i5ExpectedConcepts.map((name) => ({ name }))`; product code unchanged (fail-closed behavior was correct).

@@ -29,7 +29,11 @@ import {
   getMemoryByIdParams,
   graphSearch as graphSearchQuery,
   healthCount as healthCountQuery,
+  linkMemoryConcepts as linkMemoryConceptsQuery,
+  linkMemoryConceptsParams,
   listSessions as listSessionsQuery,
+  memoryConcepts as memoryConceptsQuery,
+  memoryConceptsParams,
   saveMemory as saveMemoryQuery,
   searchByText as searchByTextQuery,
   searchByVector as searchByVectorQuery,
@@ -40,7 +44,7 @@ import {
 import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
 import { deriveWriteImportance } from "./confidence.js";
-import { jaccard, mergeThreshold, mergedContent } from "./consolidate.js";
+import { jaccard, mergeThreshold, mergedContent, missingConcepts } from "./consolidate.js";
 import { contentHash, filterExpired, normalizeContent } from "./lifecycle.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
@@ -152,7 +156,8 @@ export interface MemoryRow {
 /**
  * REQ-RL-001: the subset of a Memory row the consolidation path needs from a
  * FRESH `getMemoryById` re-read taken under the per-survivor lock — content
- * (merge base) and createdAt (TTL re-check). `project` is
+ * (merge base), createdAt (TTL re-check) and, for REQ-F-01's post-write
+ * verify, the committed `dedupKey`. `project` is
  * enforced in the query's where-clause rather than projected, so it needs no
  * field here; a missing createdAt reads as "" and filterExpired keeps the row
  * (the same documented fail-toward-keeping rule any unparseable timestamp has).
@@ -161,6 +166,8 @@ interface FreshSurvivorRow {
   memoryId: string;
   content: string;
   createdAt: string;
+  /** REQ-F-01: absent on legacy rows reads as "" — see getFreshSurvivor. */
+  dedupKey: string;
 }
 
 export interface SearchHit extends MemoryRow {
@@ -744,7 +751,17 @@ export class HelixStore implements MemoryStore {
     }
     const nextContent = mergedContent(fresh.content, input.content);
     if (nextContent === fresh.content) {
-      // Substring guard hit: the fresh survivor already holds BOTH texts.
+      // Substring guard hit: the fresh survivor already holds BOTH texts —
+      // content is deliberately NOT rewritten (byte-identical survivor).
+      // REQ-F-01: the guard must no longer return without reading: a
+      // re-save carrying NEW explicit concepts (or an earlier batch that
+      // lost the incoming's links) still has to link them, so this path
+      // now runs the concept-link verify + link-only heal below — while
+      // keeping the response echo (consolidated / survivor id / REQUEST
+      // concepts) exactly as before.
+      const guardConcepts =
+        input.concepts.length > 0 ? [...input.concepts] : extractConcepts(input.content);
+      await this.ensureConceptLinks(survivor.memoryId, input.project, guardConcepts);
       return {
         id: survivor.memoryId,
         sessionId: input.sessionId, // echo the REQUEST (contract §3)
@@ -766,37 +783,30 @@ export class HelixStore implements MemoryStore {
       input.concepts.length > 0 ? [...input.concepts] : extractConcepts(input.content);
     const concepts: Record<string, PropertyValueInput>[] = effectiveConcepts.map((name) => ({ name }));
 
-    const response = await this.send(
-      updateMemoryContentQuery().toQueryRequest(updateMemoryContentParams, {
-        memoryId: survivor.memoryId,
-        content: nextContent,
-        embedding,
-        dedupKey: contentHash(input.project, normalizeContent(nextContent)),
-        concepts,
-        project: input.project,
-      }),
-    );
+    const nextDedup = contentHash(input.project, normalizeContent(nextContent));
+    const mergedWrite = {
+      memoryId: survivor.memoryId,
+      content: nextContent,
+      embedding,
+      dedupKey: nextDedup,
+      concepts,
+      project: input.project,
+    };
+    await this.sendMergedUpdate(mergedWrite);
 
-    // Probe4 calibrated the live shape: {memory: [anchored row],
-    // updated: [setProperty row]} on success; an empty anchor or an empty
-    // 'updated' branch means the merge did NOT happen — throw fail-closed
-    // (contract §2 posture; never report a merge that wrote nothing).
-    if (!isRecord(response) || !Object.hasOwn(response, "memory") || !Object.hasOwn(response, "updated")) {
-      throw new Error(
-        "updateMemoryContent response did not include the 'memory' and 'updated' returns (contract §2 fail-closed: a silent no-op must never masquerade as a merge)",
-      );
-    }
-    const anchor = response["memory"];
-    if (!Array.isArray(anchor) || anchor.length === 0) {
-      throw new Error(
-        "updateMemoryContent anchored no Memory row — survivor vanished mid-merge (contract §2 fail-closed)",
-      );
-    }
-    if (!indicatesPresence(response["updated"])) {
-      throw new Error(
-        "updateMemoryContent 'updated' branch was empty — setProperty did not run (contract §2 fail-closed)",
-      );
-    }
+    // REQ-F-01: post-write verify + ONE heal (contract §3 tier-1 (b) — the
+    // concept links ride this same writeBatch with no return var and
+    // mid-batch atomicity is an ENGINE ASSUMPTION, not a verified fact).
+    // Runs BEFORE the response is returned, still under the survivor lock,
+    // so no same-process writer can interleave between write and verify.
+    await this.verifyMergedState({
+      memoryId: survivor.memoryId,
+      project: input.project,
+      expectedContent: nextContent,
+      expectedDedupKey: nextDedup,
+      expectedConcepts: effectiveConcepts,
+      retryWrite: () => this.sendMergedUpdate(mergedWrite),
+    });
 
     return {
       id: survivor.memoryId, // the SURVIVOR's id — no new row was created
@@ -860,7 +870,173 @@ export class HelixStore implements MemoryStore {
       memoryId: freshMemoryId,
       content,
       createdAt: readString(row, ["createdAt", "created_at"], ""),
+      // REQ-F-01: legacy rows may lack the key (reads as "" — only the
+      // post-write dedupKey invariant compares it, and that path WRITES the
+      // key first, so a committed row always carries it).
+      dedupKey: readString(row, ["dedupKey", "dedup_key"], ""),
     };
+  }
+
+  /**
+   * REQ-F-01: the ONE update writer for a tier-1 merge — sends
+   * `updateMemoryContent` with the Probe4-calibrated fail-closed asserts
+   * ({memory: [anchored row], updated: [setProperty row]}: an empty anchor
+   * or empty 'updated' branch means the merge wrote NOTHING and must never
+   * masquerade as success). Extracted from the merge body so the post-write
+   * heal can re-send the IDENTICAL write with the IDENTICAL asserts
+   * (setProperty re-send is idempotent).
+   */
+  private async sendMergedUpdate(args: {
+    memoryId: string;
+    content: string;
+    embedding: number[];
+    dedupKey: string;
+    concepts: Record<string, PropertyValueInput>[];
+    project: string;
+  }): Promise<void> {
+    const response = await this.send(
+      updateMemoryContentQuery().toQueryRequest(updateMemoryContentParams, args),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "memory") || !Object.hasOwn(response, "updated")) {
+      throw new Error(
+        "updateMemoryContent response did not include the 'memory' and 'updated' returns (contract §2 fail-closed: a silent no-op must never masquerade as a merge)",
+      );
+    }
+    const anchor = response["memory"];
+    if (!Array.isArray(anchor) || anchor.length === 0) {
+      throw new Error(
+        "updateMemoryContent anchored no Memory row — survivor vanished mid-merge (contract §2 fail-closed)",
+      );
+    }
+    if (!indicatesPresence(response["updated"])) {
+      throw new Error(
+        "updateMemoryContent 'updated' branch was empty — setProperty did not run (contract §2 fail-closed)",
+      );
+    }
+  }
+
+  /**
+   * REQ-F-01: read the survivor's linked concept names via `memoryConcepts`
+   * (anchor + HAS_CONCEPT traversal). Shape drift — a missing 'names'
+   * return or a wrong-typed one — throws fail-closed: a broken read must
+   * never be interpreted as "all concepts linked" (that would silently
+   * skip the heal). Individual rows without a name read as "" (they can
+   * never equal a non-empty expected name, so they only ever count as
+   * NOT-yet-linked for their own — nonexistent — name).
+   */
+  private async readLinkedConcepts(memoryId: string, project: string): Promise<string[]> {
+    const response = await this.send(
+      memoryConceptsQuery().toQueryRequest(memoryConceptsParams, { memoryId, project }),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "names")) {
+      throw new Error(
+        "memoryConcepts response did not include the 'names' return (contract §2 fail-closed: shape drift must never be read as 'every concept linked')",
+      );
+    }
+    const namesReturn = response["names"];
+    if (namesReturn !== null && !Array.isArray(namesReturn)) {
+      throw new Error(
+        `memoryConcepts 'names' return has unexpected type ${typeof namesReturn} (contract §2 fail-closed: shape drift must never be read as 'every concept linked')`,
+      );
+    }
+    const names: string[] = [];
+    for (const row of toRecords(namesReturn ?? [])) {
+      names.push(readString(row, ["name"], ""));
+    }
+    return names;
+  }
+
+  /**
+   * REQ-F-01 concept-link verify + ONE link-only heal: read the linked
+   * names, compute the missing set (pure `missingConcepts` — exact-name,
+   * deduped, sorted), link ONLY those via `linkMemoryConcepts` (content /
+   * embedding / dedupKey are NEVER touched by this write), re-read, and
+   * fail closed NAMING the invariant if anything is still missing. A
+   * no-op when every expected name is already linked (and when nothing is
+   * expected). Used by BOTH the substring-guard path and the post-write
+   * verify's concepts-only branch.
+   */
+  private async ensureConceptLinks(
+    memoryId: string,
+    project: string,
+    expectedConcepts: readonly string[],
+  ): Promise<void> {
+    if (expectedConcepts.length === 0) return;
+    const linked = await this.readLinkedConcepts(memoryId, project);
+    let missing = missingConcepts(linked, expectedConcepts);
+    if (missing.length === 0) return;
+    const response = await this.send(
+      linkMemoryConceptsQuery().toQueryRequest(linkMemoryConceptsParams, {
+        memoryId,
+        project,
+        concepts: missing.map((name): Record<string, PropertyValueInput> => ({ name })),
+      }),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "memory")) {
+      throw new Error(
+        "linkMemoryConcepts response did not include the 'memory' return (contract §2 fail-closed: a silent no-op must never masquerade as a heal)",
+      );
+    }
+    if (!indicatesPresence(response["memory"])) {
+      throw new Error(
+        `linkMemoryConcepts anchored no Memory row for survivor ${memoryId} (contract §2 fail-closed)`,
+      );
+    }
+    const after = await this.readLinkedConcepts(memoryId, project);
+    missing = missingConcepts(after, expectedConcepts);
+    if (missing.length > 0) {
+      throw new Error(
+        `REQ-F-01: concept-link invariant violated after heal — survivor ${memoryId} is still missing linked concept(s): ${missing.join(", ")} (fail-closed)`,
+      );
+    }
+  }
+
+  /**
+   * REQ-F-01 post-write verify + ONE heal (contract §3 tier-1 (b)): the
+   * merged state is re-read FRESH (still under the survivor lock) and
+   * three invariants are asserted:
+   *   (a) `content` === the merged content we asked to write;
+   *   (b) `dedupKey` === contentHash(project, normalize(content)) — the
+   *       exact key passed to the write;
+   *   (c) every EFFECTIVE concept of this merge is linked from the survivor.
+   * On any violation: ONE heal — content-state wrong → `retryWrite` (the
+   * full updateMemoryContent re-sent: content + key + links together);
+   * links-only wrong → the link-only heal via `ensureConceptLinks` — then
+   * re-verify; still wrong → throw NAMING the violated invariant(s),
+   * fail-closed. A survivor that vanished between write and verify
+   * propagates getFreshSurvivor's own fail-closed error.
+   */
+  private async verifyMergedState(args: {
+    memoryId: string;
+    project: string;
+    expectedContent: string;
+    expectedDedupKey: string;
+    expectedConcepts: readonly string[];
+    retryWrite: () => Promise<void>;
+  }): Promise<void> {
+    const violations = async (): Promise<string[]> => {
+      const fresh = await this.getFreshSurvivor(args.memoryId, args.project);
+      const linked = await this.readLinkedConcepts(args.memoryId, args.project);
+      const names: string[] = [];
+      if (fresh.content !== args.expectedContent) names.push("content");
+      if (fresh.dedupKey !== args.expectedDedupKey) names.push("dedupKey");
+      const missing = missingConcepts(linked, args.expectedConcepts);
+      if (missing.length > 0) names.push(`concepts[${missing.join(",")}]`);
+      return names;
+    };
+    const before = await violations();
+    if (before.length === 0) return;
+    if (before.includes("content") || before.includes("dedupKey")) {
+      await args.retryWrite();
+    } else {
+      await this.ensureConceptLinks(args.memoryId, args.project, args.expectedConcepts);
+    }
+    const after = await violations();
+    if (after.length > 0) {
+      throw new Error(
+        `REQ-F-01: post-write verify failed after one heal on survivor ${args.memoryId}: invariant(s) violated — ${after.join(", ")} (fail-closed)`,
+      );
+    }
   }
 
   async searchByVector(input: VectorSearchInput): Promise<SearchHit[]> {

@@ -556,6 +556,82 @@ export function getMemoryById(): ReadBatch {
 }
 
 /* ------------------------------------------------------------------ *
+ * memoryConcepts — REQ-F-01 (ADDITIVE, contract §2 delta).
+ *
+ * Concept-link READ for the post-write verify + guard-path heal: anchor
+ * the Memory by its unique memoryId AND project (same fail-closed
+ * where-clause posture as getMemoryById — the query refuses rows outside
+ * the caller's project), traverse OUT HAS_CONCEPT, dedup (conceptBody
+ * links unconditionally, so repeated merges CAN add duplicate edges),
+ * project the Concept `name`. The store compares this against the merge's
+ * effective concept list (pure missingConcepts) and heals via
+ * linkMemoryConcepts. No index needed — edge traversal from an anchored
+ * node. Returns ["names"] (rows of {name}).
+ * ------------------------------------------------------------------ */
+
+export const memoryConceptsParams = defineParams({
+  memoryId: param.string(),
+  project: param.string(),
+});
+
+export function memoryConcepts(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "names",
+      g()
+        .nWithLabel(LABELS.Memory)
+        .where(
+          Predicate.and([
+            Predicate.eqParam("memoryId", "memoryId"),
+            Predicate.eqParam("project", "project"),
+          ]),
+        )
+        .out(EDGES.HAS_CONCEPT)
+        .dedup()
+        .project([PropertyProjection.new("name")]),
+    )
+    .returning(["names"]);
+}
+
+/* ------------------------------------------------------------------ *
+ * linkMemoryConcepts — REQ-F-01 (ADDITIVE, contract §2 delta).
+ *
+ * Link-only heal: anchor the Memory by memoryId + project, then run the
+ * SAME conceptBody() per missing name (Concept upsert + HAS_CONCEPT edge)
+ * that saveMemory/updateMemoryContent already use. It NEVER writes
+ * content / embedding / dedupKey — so the substring-guard path can heal
+ * lost links WITHOUT touching content (byte-identical survivor) and the
+ * post-write heal can add links without re-deriving content state.
+ * Returns ["memory"] (the anchor — forget-style presence read); the REAL
+ * gate is the caller's re-read via memoryConcepts: link rows carry no
+ * return var (the F-01 assumption), so a batch that links nothing is
+ * caught by the VERIFY, never trusted from this response.
+ * ------------------------------------------------------------------ */
+
+export const linkMemoryConceptsParams = defineParams({
+  memoryId: param.string(),
+  concepts: param.array(param.object()), // missing names only — may be EMPTY
+  project: param.string(), // outer param for conceptBody's Concept creation (same as saveMemory)
+});
+
+export function linkMemoryConcepts(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "memory",
+      g()
+        .nWithLabel(LABELS.Memory)
+        .where(
+          Predicate.and([
+            Predicate.eqParam("memoryId", "memoryId"),
+            Predicate.eqParam("project", "project"),
+          ]),
+        ),
+    )
+    .forEachParam("concepts", conceptBody())
+    .returning(["memory"]);
+}
+
+/* ------------------------------------------------------------------ *
  * updateMemoryContent — REQ-P1-2 (ADDITIVE, contract §2 delta).
  *
  * Tier-1 consolidation's in-place survivor update: anchor the Memory by its
