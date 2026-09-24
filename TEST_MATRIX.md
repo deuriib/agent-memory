@@ -63,7 +63,7 @@ updated in place per execute-spec).
 
 ## Gate-remediation bar (gate RL001-F01, lane 2026-09-24)
 
-Full verification bar after the RL001-F01 condition-clearance changes (one run, in order, each command pasted with its own counts). The run-budget declaration in `scripts/verify.ts` §10 now counts **+17 Session nodes per `verify` run** (lazy `_SESSION_STALE_MS` cursor heal: one new node per pre-stale session on the first run after 2h of activity — `docs/CONTRACT.md` §5); totals below are post-heal steady-state.
+Full verification bar after the RL001-F01 condition-clearance changes (one run, in order, each command pasted with its own counts). `scripts/verify.ts` mints fresh uuid test sessions per run: the memory rows self-clean via `forget` at test end, but **no Session deletion path exists**, so each run leaves **+17 Session nodes** (the run-budget declaration lands in `docs/CONTRACT.md` §5, commit 2).
 
 | # | Command | Result |
 | - | ------- | ------ |
@@ -74,7 +74,7 @@ Full verification bar after the RL001-F01 condition-clearance changes (one run, 
 | 5 | `npm run verify-env` | **21 passed, 0 failed** |
 | 6 | `npm run verify-skills -- --structural` | **73 passed, 0 failed** |
 | 7 | `npm run verify-capture` | **137 passed, 0 failed** (incidental, not part of the gate bar) |
-| 8 | Session-node run budget (RK-01 evidence) | `helix query dev -e '… nWithLabel("Session").count() …'`: 490 → **507 (+17/run, bounded)** |
+| 8 | Session-node run budget (RK-01 evidence) | `helix query dev -e '… nWithLabel("Session").count() …'`: 490 → 507 → **524** — **+17 per `verify` run**, measured ×2 (2026-09-24); accumulation unbounded until reset → declared in `docs/CONTRACT.md` §5 (commit 2) |
 
 COND → test/evidence → artifact:
 
@@ -86,7 +86,7 @@ COND → test/evidence → artifact:
 | RF-03 | `verify-lifecycle` §I-c seam cases — (a) expired-while-waiting → **insert sent** (3 sends), (b) fresh-read miss → reject, `links` stale after heal → **8 sends** (merge-path `verifyMergedState` retryWrite variant = the exact cited location), (c) post-heal still-violated → named throw (8 sends); plus RK-02 response-shape assert in §I | `scripts/verify-lifecycle.ts` §I-c |
 | RF-04 | Typecheck (0) + §P f-01 live embed pass after DB-API param-order pin | `db/queries.ts:111` |
 | RS-02 | Doc declaration of the AU-002 send envelope (NO queue cap / waiter deadline / circuit breaker) | `docs/CONTRACT.md` §3 |
-| RK-01 | §10 `run budget` declares +17/run session-node lazy heal; `verify` 243 green post-declaration; count 490→507 bounded (evidence #8); §3b crash-window carve-out sentence | `scripts/verify.ts` §10, `docs/CONTRACT.md` §5, §3 |
+| RK-01 | `docs/CONTRACT.md` §5 session-node run budget declared (+17/run, measured 490→507→524, re-review P4.1/2026-12-31) + §3b crash-window carve-out + `ROADMAP.md` §1.3 `VERIFY-SESSION-NODES` row; `verify` 243 green post-declaration (evidence #8) | `docs/CONTRACT.md` §5, §3; `ROADMAP.md` §1.3 |
 | RK-02 | Two heal log sites + §I message-stability assert + `heal survivor=expired-hit links=7` observed on a live run (stderr) | `src/store.ts:1048, 1166` |
 | RK-03 | `README` §G line count → 117; structural `verify-skills` gate-line pass (73 bar) | `README.md:607` |
 | QA-05 | This section — per-command counts, single consolidated bar | `TEST_MATRIX.md` |

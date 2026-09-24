@@ -38,15 +38,43 @@ in place with evidence before each commit.
 
 ## Rollback Points
 
-- After step 1 (commit 1): revert the `getMemoryById` hunks + survivor-lock
-  hunks + the §P concurrent block + §I harness — behavior returns to the
-  per-dedupKey-only lock (RL-001 residual reopens); no schema, no index, no
-  route touched; rows written by the concurrent test are seed data on random
-  `verify-*` projects (forgotten at test end), no prod risk.
-- After step 2 (commit 2): revert the `memoryConcepts`/`linkMemoryConcepts`
-  hunks + verify/heal hunks + `missingConcepts` + §P heal block + §G goldens —
-  merge behavior returns to commit-1 state (F-01 residual reopens); additive
-  queries are never referenced after revert.
+**Gate RL001-F01 / COND-RK-03 (2026-09-24): the ONLY safe procedure is a
+reverse-order WHOLE-commit revert.** The lane commits are STACKED, not
+independent. Revert newest-first:
+
+1. This lane's two gate-remediation commits (docs commit first, then the
+   code+tests commit) — newest first.
+2. `git revert fb8e661` (docs: CONTRACT v1.5 + README + CHANGELOG) — tree
+   lands exactly on `a0257d6` (historically green: 243/113).
+3. `git revert a0257d6` (REQ-F-01) — tree lands on `01224cc` (green: 227/104).
+4. `git revert 01224cc` (REQ-RL-001) — tree lands on `a9ef417` (pre-lane green).
+
+No schema/index/route/data backout at any step: the additive queries become
+dead code; merged rows + healed links stay valid under old code; each step is
+tree-equal to a historically green parent — well within 15 minutes.
+
+**Explicit warnings (read before touching git under pressure):**
+
+- Reverting `01224cc` **ALONE CONFLICTS** — read-only probe
+  `git merge-tree --write-tree --merge-base=01224cc <head> a9ef417` →
+  **exit 1**, 5 conflicted files (`TEST_MATRIX.md`, `db/queries.ts`,
+  `scripts/verify.ts`, `scripts/verify-lifecycle.ts`, `src/store.ts`); the
+  other two probes exit **0** (`--merge-base=a0257d6 … 01224cc`,
+  `--merge-base=<head> … a0257d6`) — recorded order **1/0/0**, re-verified
+  2026-09-24 by two reviewers (risk + quality-assurance) at `fb8e661`, and
+  again at `fb8e661` by this remediation lane after its docs commit (the
+  state step 1 below reaches). **At the full remediation HEAD the probes read
+  1/1/0** — probe 2 conflicts because this lane's code commit touches the
+  F-01 hunks; that is precisely why step 1 (revert THIS lane's commits first)
+  is mandatory and why the per-commit shortcuts are forbidden. No probe
+  result changed about the three original commits.
+- Reverting `a0257d6` while **keeping** `fb8e661` is git-clean but
+  semantically false: docs would keep declaring CLOSED behavior the code no
+  longer performs.
+- The per-commit hunk-level partial-rollback steps formerly documented here
+  were WRONG (they conflict mid-incident) and have been replaced by the
+  procedure above (gate RL001-F01 / COND-RK-03; automation AU-005).
+
 - Assumption stated (irreversible-adjacent): merges still rewrite survivor
   content in place (unchanged from P1.2 — concatenation never discards);
   the heal path may re-run `updateMemoryContent` ONCE with byte-identical
@@ -105,16 +133,48 @@ in place with evidence before each commit.
   bootstrap `OK (8 indexes ensured)` · verify-lifecycle **117 passed, 0 failed**
   (113 + RF-03/RK-02 +4) · verify **243 passed, 0 failed** · verify-env 21/0 ·
   verify-skills --structural 73/0 · verify-capture 137/0 · session nodes
-  490 → 507 (+17/run, RK-01 §10 evidence). Full per-command table in
+  490 → 507 (+17/run, RK-01 evidence — the run-budget declaration itself
+  lands in `docs/CONTRACT.md` §5 with commit 2). Full per-command table in
   TEST_MATRIX.md § Gate-remediation bar. Docs half (RD-01 rest, RF-01, RF-02,
   RS-02, RK-01, RK-03, QA-05, QA-06) lands in this lane's commit 2.
 
+### Commit 2 — REQ-F-01 (2026-09-23, `a0257d6`) + gate RL001-F01 docs half (2026-09-24)
+
+- Original lane commit 2 (`a0257d6`): `memoryConcepts`/`linkMemoryConcepts`
+  queries, `missingConcepts` goldens, post-write verify + ONE heal, guard-path
+  link heal — evidence = `TEST_MATRIX.md` Final-verification-bar section
+  (verify **243 passed, 0 failed**, verify-lifecycle **113 passed, 0 failed**
+  at that tree, server :3151) + the `f-01:` §P block. Plan/F-row backfill and
+  this entry close the "Evidence Log had Commit-1 only" gap (gate RL001-F01 /
+  COND-QA-06).
+- This lane's commit 2 (docs, gate RL001-F01): CONTRACT §3 gains the
+  RF-01 CLOSED-scope + `embedding` residual, the crash-window carve-out, the
+  RS-02 lock-queue envelope (AU-002 numbers: 6 sends happy / ≤11 worst-heal /
+  ≤165 s at cap, 15 s `withTimeout`, NO queue cap/deadline, trigger P4.3 or
+  first retry storm) and the RK-02 heal-log + operator-runbook declaration;
+  §5 moves 113 → **117** with the §I-c trio + the `verify.ts` session-node
+  run budget (+17/run, measured 490 → 507 → 524, re-review P4.1 / 2026-12-31);
+  ROADMAP §1.3 reconciles both CLOSED rows (past tense + surviving
+  boundaries) and adds ledger rows `F-01-EMB`, `RL-001-QUEUE`,
+  `VERIFY-SESSION-NODES`; `ROADMAP.md:44` counts → 243 / 117 / 137; README
+  Verification → 243 / 117 with the v1.5 §P `rl-001:`/`f-01:` and §G/§I
+  additions named; this plan's Rollback Points rewritten to the proven
+  reverse-order whole-commit revert (probes re-verified 1/0/0 at `fb8e661`;
+  1/1/0 at the remediated HEAD → revert this lane first) and its
+  Quality Gates ticked with counts; CHANGELOG gains the heal-log +
+  gate-remediation entries. Clears COND-RF-01, RF-02, RS-02, RK-01, RK-03,
+  QA-05, QA-06 (docs half of RD-01). Final bar re-run green on this tree:
+  typecheck 0 · bootstrap 8 · lifecycle **117/0** · verify **243/0** ·
+  verify-env 21/0 · verify-skills --structural 73/0 (TEST_MATRIX).
+
 ## Quality Gates
 
-- [ ] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0
-- [ ] Engineering: `npx tsx scripts/bootstrap.ts` green — **8 indexes ensured + READY** (no index added)
-- [ ] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — counts pasted in TEST_MATRIX (§G goldens no regression)
-- [ ] Engineering: `npm run verify` green against OUR server on **3151** — counts pasted in TEST_MATRIX (§P no regression; upstream 3111 untouched)
-- [ ] Engineering: NEW evidence — §P concurrent distinct-variants test (RL-001 acceptance: no lost append) + §P heal test (F-01 acceptance: guard path links C, content unchanged) + §G `missingConcepts` goldens
+- [x] Engineering: `npm run typecheck` clean (no `any`, no `@ts-ignore`, no TODO) — exit 0 (re-run at gate RL001-F01 remediation, 2026-09-24)
+- [x] Engineering: `npx tsx scripts/bootstrap.ts` green — **8 indexes ensured + READY** (no index added; re-run 2026-09-24)
+- [x] Engineering: `npx tsx scripts/verify-lifecycle.ts` green — counts pasted in TEST_MATRIX (§G goldens no regression) — **117 passed, 0 failed** (2026-09-24; 113 at original commit-2, +4 = RL001-F01 RF-03/RK-02)
+- [x] Engineering: `npm run verify` green against OUR server on **3151** — counts pasted in TEST_MATRIX (§P no regression; upstream 3111 untouched) — **243 passed, 0 failed** (re-run 2026-09-24)
+- [x] Engineering: NEW evidence — §P concurrent distinct-variants test (RL-001 acceptance: no lost append) + §P heal test (F-01 acceptance: guard path links C, content unchanged) + §G `missingConcepts` goldens — all present and green; plus RL001-F01 §I-c heal-seam trio + RK-02 envelope assert (TEST_MATRIX § Gate-remediation bar)
 - N/A: security (no auth/data-surface change — internal reads only, no new env, no secret handling change) / finance / legal / marketing / people / revenue
-- [ ] Docs (second lane): CONTRACT §2 gains `getMemoryById`/`memoryConcepts`/`linkMemoryConcepts` + §3 tier-1 (a)/(b) re-baselined — deltas reported verbatim by this lane, files untouched here
+- [x] Docs (second lane): CONTRACT §2 gains `getMemoryById`/`memoryConcepts`/`linkMemoryConcepts` + §3 tier-1 (a)/(b) re-baselined — deltas reported verbatim by this lane; the gate RL001-F01 docs half (this lane's commit 2) additionally lands CONTRACT §3 RS-02/RF-01/RK-01/RK-02 declarations, §5 113→117 + run budget, ROADMAP §1.3 reconciliation, README 243/117, CHANGELOG — all ticked 2026-09-24
+
+Final-bar counts are owned by `TEST_MATRIX.md` (§ Gate-remediation bar); the boxes above mirror them per repo convention (gate RL001-F01 / COND-QA-06).

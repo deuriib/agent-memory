@@ -68,8 +68,12 @@ semantics unchanged; the merge write remains ONE Helix `writeBatch` whose commit
 is DETECTED-and-healed app-side, not engine-guaranteed. §5 grows the §P
 `rl-001:` (13 checks) + `f-01:` heal blocks, the §I guard-path heal seam (5
 sends, NO insert), and the §G `missingConcepts` goldens — verify **243 passed**,
-verify-lifecycle **113 passed**. Code evidence: `01224cc` (REQ-RL-001) +
-`a0257d6` (REQ-F-01).
+verify-lifecycle **117 passed** (113 at the original v1.5 landing; +4 from the
+gate RL001-F01 remediation pass: the §I-c heal-seam trio + the RK-02
+heal-response envelope assert). Code evidence: `01224cc` (REQ-RL-001) +
+`a0257d6` (REQ-F-01); gate RL001-F01 condition clearance in this lane's git
+log (this amendment's docs half carries the RF-01 re-scope, RS-02 envelope,
+RK-01/RK-02 declarations and the §5 count updates).
 
 ## 0. Verified facts (do not re-litigate)
 
@@ -324,13 +328,55 @@ verbatim. The old `importance=0.5` default is retired: 0.5 remains only the
   concepts links them without re-appending). `RememberResult` echo
   semantics unchanged. The write remains ONE Helix `writeBatch` whose
   commit is DETECTED-and-healed app-side, not engine-guaranteed
-  (re-verify on Helix upgrade); (c) **TTL×MERGE** — probe candidates run
+  (re-verify on Helix upgrade). **CLOSED scope (gate RL001-F01 /
+  COND-RF-01):** CLOSED covers exactly `content` + `dedupKey` + concept
+  links — the batch's `embedding` write is NOT part of the verify, so a
+  mid-batch partial commit that lands those three but drops the embedding
+  refresh passes every invariant while the vector index keeps serving the
+  pre-merge embedding. **Named residual** (owner: engineering; expiry
+  **≤ 2026-12-31 or next Helix engine upgrade**, whichever first; ledger
+  row `F-01-EMB` in `ROADMAP.md` §1.3); (c) **TTL×MERGE** — probe candidates run
   through `filterExpired` first, so a TTL-expired survivor can never absorb
   a fresh write (TTL unset → no-op); (d) **PROVENANCE** — WHICH rows merged
   is not durably recorded (first-wins family; every variant's text survives
   inside the survivor's concatenated content); (e) **INDEX DEPENDENCY** — the
   probe needs the text index: run `bootstrap` first; writes fail closed while
   an index is missing.
+- **Crash-window carve-out (gate RL001-F01 / COND-RK-01, declared
+  2026-09-24):** a process crash between the merge write and the post-write
+  verify leaves a links-partial commit that heals only LAZILY — the next
+  guard-path save of that survivor re-runs `ensureConceptLinks`; there is no
+  journal and no scheduled repair. Owner: engineering; trigger/expiry =
+  **next Helix engine upgrade or P4.3**, whichever first.
+- **Lock-queue wait envelope (gate RL001-F01 / COND-RS-02, dated
+  declaration 2026-09-24):** the nested FIFO locks (incoming dedupKey OUTER →
+  survivor INNER) have **no queue cap and no server-side request deadline**;
+  each individual send is bounded by a 15 s `withTimeout`, so the round-trip
+  envelope is **6 sends happy / ≤11 sequential sends worst-heal / ≤165 s at
+  the per-send cap**, held under the locks (happy-path in-lock hold grew ~2×,
+  worst-path ~3–4× vs pre-RL-001). Hooks/plugin stay insulated (1.5 s
+  detached / exit 0 — the agent never blocks); blast radius = REST/MCP
+  callers only. Owner: engineering; trigger = **P4.3 multi-instance OR first
+  observed retry storm**. A code fix (queue cap / request deadline) is a
+  SEPARATE proposal lane, not implicit in this declaration (source: gate
+  automation AU-002 round-trip table; security SEC-F01 deferred to the same
+  trigger). Ledger row `RL-001-QUEUE` in `ROADMAP.md` §1.3.
+- **Heal observability + operator runbook (gate RL001-F01 / COND-RK-02,
+  2026-09-24):** every CONFIRMED heal emits ONE allowlisted single-line log
+  entry on **stderr** — `heal survivor=<memoryId> links=<n>` (link-only heal,
+  emitted after the confirming re-read) or `heal survivor=<memoryId>
+  invariants=content,dedupKey|links` (full-write heal, emitted after the
+  confirming re-verify) — memoryId + count/family tokens ONLY: never content,
+  never embedding, never concept names (SEC-F02), collapsed to one line
+  (`oneLine`, CWE-117); **stderr because stdout is the MCP protocol channel**
+  (`src/mcp.ts`), and both streams are covered by the §3 governance-log
+  declaration above. **Operator runbook:** on `-> 500: Error: REQ-F-01:` /
+  `REQ-RL-001:` in the log — it means FAIL-CLOSED (the merge/write was NOT
+  reported as success; nothing silently succeeded); what to do: a RETRY is
+  safe and converges (substring guard → `ensureConceptLinks` on the guard
+  path; the full-write path re-verifies and heals once), escalate if it
+  repeats; how to find: `grep "REQ-F-01:\|REQ-RL-001:"` (failures) and
+  `grep "heal survivor="` (successful heals) on the server's stderr.
 - **Derived recall confidence (v1.2, P1.4, ranking-time):** both search paths
   call `noteRecall(memoryId)` for every RETURNED row; the fused tie-break (see
   fusion paragraph below) uses `confidenceBoost(decayedImportance(…),
@@ -545,7 +591,7 @@ routes).
 ## 5. Verification bar
 
 `npm run typecheck` clean. `scripts/bootstrap.ts` green (**8 indexes**).
-`scripts/verify-lifecycle.ts` green (**113 passed** — pure: dedupKey/hash golden,
+`scripts/verify-lifecycle.ts` green (**117 passed** — pure: dedupKey/hash golden,
 decay math incl. half-life, TTL filter, concept determinism, `oneLine` CWE-117
 render guard, **§F derived confidence** (deriveWriteImportance goldens,
 confidenceBoost monotonic/clamp, recall ledger), **§F-bis** the decay-THEN-boost
@@ -558,8 +604,13 @@ metric goldens (R@5/R@10/MRR/nDCG/aggregate — gate CE-001/COND-QA-01),
 **§I** fail-closed near-dupe probe (induced probe error → `remember` rejects,
 insert never runs) + TTL×expired-survivor guard + **§I guard-path heal seam**
 (guard path heals missing concept links offline — `consolidated=true`, 5
-sends, NO insert) + plugin no-default source checks — gate COND-QA-03 /
-RL-002 / COND-QA-02b).
+sends, NO insert) + **§I-c heal-seam trio + RK-02 envelope assert** (gate
+RL001-F01, +4: expired-while-waiting → plain insert, 3 sends; fresh-read miss
+→ stale links → merge-path `verifyMergedState` retryWrite variant, 8 sends;
+post-heal still-violated → named `REQ-F-01 … invariant(s) violated` throw,
+8 sends; heal response envelope `resolved/rejected/timeout`, no raw message)
++ plugin no-default source checks — gate COND-QA-03 /
+RL-002 / COND-QA-02b / RL001-F01 COND-RF-03 + COND-RK-02).
 `scripts/verify-capture.ts` green (**137 checks** — 7 events × payload/exit-0/
 silence, privacy canary, negatives, dead server, plugin helpers, **§F P2.2**
 file-edit marker + basename opt-in (default OFF) + path-bearing tool-name
@@ -583,7 +634,19 @@ v1.5 additions: **§P `rl-001:` block — 13 checks** (3 CONCURRENT distinct
 variants → SAME survivor, all three wordings present, no lost append) and the
 **§P `f-01:` heal block** — heal E2E: graph-branch fused score = control +
 1/61 proves the healed link, survivor content byte-identical after the
-guard-path heal).
+guard-path heal). **Session-node run budget (gate RL001-F01 / COND-RK-01,
+COND-DAT-002-style, declared 2026-09-24):** each run mints fresh uuid session
+ids and every novel-write session materializes a `Session` node — the memory
+ROWS self-clean via `forget` at test end, but **no Session deletion path
+exists** (`forgetMemory` drops Memory only), so every run leaves **+17
+Session nodes** (measured 2026-09-24 across two consecutive runs: 490 → 507 →
+524; consolidation/dedup sessions materialize none). Accumulation is
+unbounded on the dev instance until reset. Accepted residual: owner
+**engineering**; trigger/expiry = **P4.1 session-deletion work or 2026-12-31**,
+whichever first — until then the operator resets the dev instance (or prunes
+the `verify*` projects' sessions once a deletion path exists) when hygiene
+matters. Count source: `scripts/verify.ts`. Mirrored as ledger row
+`VERIFY-SESSION-NODES` in `ROADMAP.md` §1.3.
 `scripts/verify-skills.ts` green (**119 checks**: 73 structural across the 8
 `skills/*/SKILL.md` — also runnable server-free as `verify-skills --structural`
 and CI-wired — + 46 live round-trips: every skill's frozen route exercised

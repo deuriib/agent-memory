@@ -604,7 +604,7 @@ All run clean:
 
 - `npm run typecheck` (`tsc --noEmit`) — zero errors; no `any`, no
   `@ts-ignore`, no TODO anywhere in the source.
-- `npm run verify` (`scripts/verify.ts`) — **`214 passed, 0 failed` →
+- `npm run verify` (`scripts/verify.ts`) — **`243 passed, 0 failed` →
   `VERIFY PASS`** (identity guard → health → remember with concepts → BM25 hits
   → smart-search hits → sessions list → session memories → forget → gone →
   counts reflect it, plus embedder determinism, defaults, boundary validation,
@@ -621,14 +621,19 @@ All run clean:
   1 row with `consolidated:true`, each variant's wording recalls it,
   healthCount +1, merged-text re-save → exact-dedup loop guard) + the MCP
   adapter pass-through (`InMemoryTransport`: save without `importance` → the
-  store sees `undefined`, explicit value wins). Before the
+  store sees `undefined`, explicit value wins) + the v1.5 §P `rl-001:`
+  block (3 CONCURRENT distinct near-dup variants → SAME survivor, all three
+  wordings verbatim, no lost append — 13 checks) and the §P `f-01:` heal
+  block (heal E2E: graph-branch fused score = control + 1/61 proves the
+  healed link; survivor content byte-identical after the guard-path heal —
+  16 checks). Before the
   first write it probes
   `POST /memory/recap` and aborts (exit 1, no writes) unless the target
   answers 200 — so when `3111` is occupied by the upstream `agentmemory`, run
   it against ours: `AGENT_MEMORY_PORT=3151 npm run dev` then
   `AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify` (README conflict
   procedure).
-- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`104 passed` →
+- `npm run verify-lifecycle` (`scripts/verify-lifecycle.ts`) — **`117 passed` →
   `VERIFY PASS`**: pure dedupKey/hash golden vectors, decay math (λ=0 → 1,
   half-life exact, monotonic, clamp), TTL filter (OFF/boundary/purity),
   concept extraction determinism + bounds, `oneLine` CWE-117 render guard
@@ -637,8 +642,13 @@ All run clean:
   (deriveWriteImportance goldens, confidenceBoost monotonic/clamp, recall
   ledger), §F-bis the decay-THEN-boost order golden (λ on, discriminating),
   §G consolidation (jaccard, threshold fail-closed OFF, substring
-  guard), §H hand-computed eval-metric goldens (R@5/R@10/MRR/nDCG/aggregate),
-  and §I fail-closed near-dupe probe + TTL×expired-survivor guard + plugin
+  guard + `missingConcepts` goldens — order-independence over shuffled
+  input, dedup, exact-name/case-sensitive, no substring, empty-set),
+  §H hand-computed eval-metric goldens (R@5/R@10/MRR/nDCG/aggregate),
+  and §I fail-closed near-dupe probe + TTL×expired-survivor guard +
+  guard-path heal seam (5 sends, NO insert) + §I-c heal-seam trio
+  (expired-while-waiting → plain insert, fresh-read miss → stale links →
+  merge-path retryWrite, post-heal still-violated → named throw) + plugin
   no-default source checks. No Helix, no server — CI-runnable.
 - `npm run verify-capture` (`scripts/verify-capture.ts`) — **`137 checks` →
   `ALL PASS`**: all 7 hook events × exact payload/origin/exit-0/stdout+stderr

@@ -7,6 +7,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Per-confirmed-heal observability line** (gate RL001-F01 / COND-RK-02):
+  `ensureConceptLinks` and `verifyMergedState` each emit ONE allowlisted
+  single-line **stderr** entry after a CONFIRMED heal —
+  `heal survivor=<memoryId> links=<n>` (link-only, after the confirming
+  re-read) / `heal survivor=<memoryId> invariants=content,dedupKey|links`
+  (full-write, after the confirming re-verify) — memoryId + count/family
+  tokens only, never content and never concept names (SEC-F02), `oneLine`
+  collapsed (CWE-117); stderr because stdout is the MCP protocol channel
+  (`src/mcp.ts:381`) (engineering)
 - **Three additive contract §2 queries** (`db/queries.ts`, contract v1.5):
   `getMemoryById` (fresh survivor re-read under the merge lock — memoryId +
   project fail-closed where-filter, existing index #1 only, bootstrap stays 8),
@@ -36,6 +45,30 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
   keeping content byte-identical (§P `f-01:` heal E2E, §G goldens, §I
   guard-path heal seam); contract §3 tier-1 (b) CLOSED 2026-09-24, code
   `a0257d6` (engineering)
+- **Gate RL001-F01 remediation — 11 clearable-now conditions cleared**
+  (2026-09-24, two commits): RD-01 merge-docstring no longer says
+  "WITHOUT a write" unqualified (concept-link verify + heal now runs on the
+  guard path); RF-03 the three contract-claimed fail-closed sub-paths gain
+  asserting §I-c seam cases (expired-while-waiting → plain insert, 3 sends;
+  fresh-read miss → stale links → merge-path retryWrite, 8 sends;
+  post-heal still-violated → named throw, 8 sends) + the RK-02
+  heal-response envelope assert (verify-lifecycle 113 → **117**); RF-04
+  `linkMemoryConceptsParams` pinned to the frozen §2 order
+  `memoryId, project, concepts` (behavior-neutral: named params);
+  RF-01 "ATOMICITY CLOSED" re-scoped to content/dedupKey/links with
+  `embedding` named as residual (≤2026-12-31 / engine upgrade);
+  RF-02/RS-01/QA-003 ROADMAP §1.3 rows reconciled to CLOSED past-tense +
+  surviving boundaries and `:44` counts → 243/117/137; RS-02 lock-queue
+  envelope declared (6 sends happy / ≤11 worst-heal / ≤165 s, no queue cap,
+  trigger P4.3 or first retry storm); RK-01 residual ledger completed
+  (`F-01-EMB`, `RL-001-QUEUE`, `VERIFY-SESSION-NODES` + crash-window
+  carve-out + session-node run budget +17/run); RK-02 operator runbook
+  line; RK-03 rollback rewritten to the proven reverse-order whole-commit
+  revert (probes 1/0/0 re-verified at `fb8e661`; at the remediated HEAD they
+  read 1/1/0, hence "revert this lane first"); QA-05 README Verification →
+  243/117 with v1.5
+  blocks named; QA-06 plan Quality Gates ticked + Commit-2 evidence entry
+  (engineering, docs)
 
 ## [v0.6.0] — 2026-09-23
 
