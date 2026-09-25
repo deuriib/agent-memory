@@ -615,3 +615,70 @@ the `embedding` token, (iii) post-heal still-violated → named `REQ-F-01` throw
 **Packet:** `SPEC:docs/specs/20_backlog/SPEC-F01-EMB.md#REQ-F-01-EMB-01..06 (MISSING — P0) / HARD:subagents+storage=disk+no-secrets / GATE:none-yet / DOMAINS:R1,R2,R8`
 
 **Commit:** left to the orchestrator (lane synthesis): `docs(arch-review): F-01-EMB conditional, no ADR`
+
+---
+
+# Architecture Review: REQ-BRAINY-ENG-06 REST move-route delta (`POST /v1/notes/:id/move`) — Lane 5
+
+**Reviewer:** general(vasquez) — Engineering/Architecture Owner (R1), `review-architecture` stage (independent of the proposing lane)
+**Date:** 2026-09-25
+**Verdict:** **Approved-with-conditions (C1–C4)** — `frame-ship:execute-spec` blocked until C1 (R2 security) clears; C2–C4 discharge at execute/quality-gate
+**Packet (reference-only):** `SPEC:docs/specs/20_backlog/SPEC-001-brainy-engineering.md#REQ-BRAINY-ENG-06 + AC-06 + §4.3 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:proposal-addendum=a88f0a4 pending-architecture / DOMAINS:R1,R8,R2,R4,R5`
+**ADR:** `docs/adr/ADR-0003-post-v1-notes-move-route.md` created (accepted with conditions; delta quoted there, NOT applied here)
+
+| Input | Artifact |
+|---|---|
+| Proposal under review (addendum §1–§7) | `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md` `## Addendum — REQ-BRAINY-ENG-06: REST move route` (commit `a88f0a4`) |
+| Canonical contract | `docs/specs/10_design/ARCHITECTURE.md` v3 (§7 REST table `:139-144`, CLI table `:49`, INV-012) |
+| Spec | `docs/specs/20_backlog/SPEC-001-brainy-engineering.md` (REQ-06 `:41`, AC-06 `:76`, §4.3 table) |
+| Contract facts | `docs/CONTRACT.md` §0 (typed `defineParams`/`toQueryRequest`, no string concatenation — Security C8) |
+
+## 1. Gap verification (re-read, not taken on faith)
+
+- `grep -n "move" src/server.ts` → **0 matches** (no move route). CLAIM HOLDS.
+- Route inventory `grep -n "/v1/" src/server.ts` → `POST /v1/notes` (`:382`), `POST /v1/notes/:id/distill` (`:402`), `GET /v1/notes/:id` (`:419`), `POST /v1/search` (`:436`), `POST /v1/memory` (`:452`), `GET /v1/context/:project` (`:475`), `POST /v1/link` (`:498`) — no `/move`. CLAIM HOLDS.
+- `grep -n "moveNote" db/queries.ts src/store.ts` → `db/queries.ts:147` (`moveNoteParams`), `db/queries.ts:834` (`export function moveNote(...)` anchors note, `setProperty paraCategory/updatedAt`, drops existing `outE(BELONGS_TO)`, anchors-or-creates target, adds new `BELONGS_TO`); `src/store.ts:58-59,474,493,1887-1909` (`async moveNote` delegating via `toQueryRequest`). CLAIM HOLDS.
+- CLI workaround `bin/brainy.mjs:1582-1606` (`cmdMove`): `GET /v1/notes/:id` (`:1587`) + `POST /v1/link {fromId, toId, type: BELONGS_TO}` (`:1597-1601`) with inline "no dedicated move route" comment (`:1594-1596`). CLAIM HOLDS.
+- Frozen tables: `SPEC-001 §4.3` 6 routes, no move row; `ARCHITECTURE.md §7` (`:139-144`) same 6 routes, no move row; CLI table (`ARCHITECTURE.md:49`) maps `brainy move` to edge rewrite with no HTTP binding. CLAIM HOLDS.
+
+## 2. Blast-radius honesty
+
+- **Truly additive:** one route + two one-row doc deltas; no schema, dependency, bin, MCP, store, or query changes proposed. HOLDS.
+- **Not duplicative:** `POST /v1/link` is add-only — `linkNotes` (`db/queries.ts:925-938`) performs `addE` with no drop; `store.linkNodes` (`src/store.ts:1962-1983`) never drops. It cannot express drop+add move semantics. A dedicated route is the minimal fix.
+- **No new PII store, dependency, or port:** note content/tenant unchanged; `bin/` + MCP untouched in this lane (R8 repoints CLI separately); frozen legacy `/memory/*` alias and `livez`-exempt bearer posture unaffected.
+- **Contract-shape reuse:** strict zod beside `linkNodesBodySchema` (`src/server.ts:236-243`), existing `projectSchema`/`decodeSegment`/`parseOr400`/`HttpError`/bearer guard (`:364-380`)/`sendJson`, approved `store.moveNote` → `moveNote` chain. Parametric invariants (CONTRACT §0) preserved.
+
+## 3. Test-plan traceability (AC-06/AC-12)
+
+| REQ/AC | Test | Artifact |
+|---|---|---|
+| AC-06 edge rewrite | `POST /v1/notes/:id/move {to:"area", name}` on note with `BELONGS_TO` | 200 `{id, para:{label:"Area",name}}`; `GET` shows exactly one `BELONGS_TO` to new target |
+| AC-06 404 | unknown `:id` / unknown-empty target | `404 note_not_found` / `404 para_target_not_found` |
+| AC-12 route table | harness hits move route (not `/v1/link`); ARCH/SPEC one-row deltas present | request harness + delta rows |
+| C4 caps | strict probes (`replace`, `name:""`, `to:"foo"`, oversize) | `400 invalid_request`, unknown keys rejected |
+| C8 tenant | project-A note → project-B target | `400 invalid_tenant_link`, no edge write |
+| Auth | no bearer | `401 unauthorized` |
+
+Pattern grounded on `tests/step6.test.ts:183-213,371-414` fake-store harness (no container). TRACEABLE — PASS.
+
+## 4. Conditions for approval (C1–C4)
+
+- **C1 (owner: R2 `general(barrera)`; before `execute-spec`):** separate `frame-ship:review-security` pass REQUIRED (see §5). Implementation blocked until R2 Approves.
+- **C2 (owner: R1 execute lane; at `execute-spec`):** apply exactly the two ADR-0003-quoted one-row deltas (`ARCHITECTURE.md` §7 + `SPEC-001` §4.3); no REQ/AC prose edits, no other contract/store/query/schema/dep/port/MCP/bin changes.
+- **C3 (owner: R8 `general(espinoza)`; own lane):** repoint CLI `move` to `POST /v1/notes/:id/move {to,name}`; refresh the "no dedicated move route" comment on landing.
+- **C4 (owner: R1 execute lane; `quality-gate`):** implement §3 test plan with REQ→test→artifact traceability.
+
+## 5. Separate `review-security` by R2: REQUIRED — justification
+
+**REQUIRED.** The route touches auth (dual-bearer reuse, 401 envelope) and performs a destructive PII-adjacent graph write (drop+add `BELONGS_TO` on note content governed by Ley 172-13 purpose/TTL). Per chain hard rules (auth/data/API → `review-security`) and the proposal's own approver list (R2 mandatory), the architecture verdict cannot substitute for the security verdict. R2 must independently confirm bearer reuse, C4 zod caps, C8 same-tenant enforcement before any edge write, and no secret/PII leakage in logs/errors. This review records C4/C8 conformance as architecture-visible evidence only; the binding security gate belongs to `general(barrera)`.
+
+## 6. Sign-off
+
+- [x] engineering/architecture owner (R1, `general(vasquez)`) — **Approved-with-conditions (C1–C4)**: gap verified line-by-line, additive-only, non-duplicative of `/v1/link`, contract delta confined to two quoted rows; ADR-0003 recorded, contracts untouched in this stage.
+- [ ] security owner (R2, `general(barrera)`) — **PENDING** (`review-security` REQUIRED, C1).
+- [ ] legal/privacy owner (R4, `general(subero)`) — consumed as-is (no new PII store); countersignature if required.
+- [ ] automation/ops owner (R8, `general(espinoza)`) — **PENDING** CLI repoint in own lane (C3).
+
+**Assumptions:** `MoveNoteInput` semantics (`src/store.ts:1887-1909`) unchanged; target anchor-or-create retained with `404` on empty/unknown; single-`writeBatch` move serializes in HelixDB (no new locking).
+**Residual risks:** R-MOVE-01 link-accumulated edges persist until R8 repoints (C3); R-MOVE-02 strict-body rejects workaround shape by design; R-MOVE-04 concurrent same-note moves serialize engine-side.
+**Cross-domain:** R2 gate (C1, blocking); R8 repoint (C3, coordinated); R4/R5 no action (no new PII store, no brand surface change).
