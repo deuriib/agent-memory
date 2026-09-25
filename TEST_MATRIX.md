@@ -132,3 +132,116 @@ Per-command bar (live evidence, server :3151 + slot2 window 3114/6970, instance 
 | 10 | Live slot-2 window `AGENT_MEMORY_SECRET=test-secret-p4-ops-fixed bin/agent-memory start --slot 2` → `doctor healthy` → `remember`→`search` 3114 → `stop --slot 2` → idempotent | **DONE**: `start` exit 0 (helix registered `slot2:6970` + `storage="disk"` patch + ready 200/200); `doctor --slot 2` → `PASS C1` 200, `PASS C3` owned 3114, `PASS C2` 200/200, `PASS C4` present, `PASS C5` disk → `VERDICT: healthy` exit 0; `POST /memory/remember` → `{"id":"0b0a4b43-…","deduped":false}`; `POST /memory/search` → 1 result `bm25` score 0.86 `signals:[]`; bootstrap 6970 `OK (8 indexes ensured)` before remember; `stop --slot 2` exit 0 + second `stop` exit 0 idempotent; `helix status` dev unchanged (6969 up), `git diff --stat src/ db/` empty, `helix.toml` only `[local.slot2]` additive (sanctioned) |
 
 *Notes:* P4.4 `HELIX_DATA_DIR` forwarding / MinIO migration (REQ-07/08/NFR-D partial) — Probe A3 FAIL (see IMPLEMENTATION_PLAN §Step 0 + PROPOSED_CHANGES Appendix): `helix start` 3.3.0 does not forward `HELIX_DATA_DIR`; `--migrate` fails closed `unsupported-runtime`; framing 3b (data-dir for new instances only) escalated to orchestrator, not claimed in this lane. All other REQs implemented.
+
+---
+
+## Brainy v1 (SPEC-001..005)
+
+**Agent:** general(vasquez) — Engineering Owner (R1, execute-spec Step 11 verification pass)
+**Date:** 2026-09-25
+**Packet:** `SPEC:docs/specs/20_backlog/SPEC-001-brainy-engineering.md#NFR-BRAINY-ENG-01..04 + AC-NFR01..04, SPEC-003 #REQ-BRAINY-OPS-06, SPEC-005 #CDR-07 / HARD:subagents+max2lanes+no-secrets+alias1version+never-kill-3111 / GATE:evidence-pass / DOMAINS:R1,R8,R5,R2,R4`
+**Scope of this lane:** evidence ONLY — no gate verdicts, no implementation changes. FAILs are recorded honestly; nothing is papered over.
+**Live window (this lane only):** Helix instance `slot9` (:6977, `helix start slot9`, container `helix-brainy-slot9`) + REST `HELIX_URL=http://localhost:6977 BRAINY_PORT=38911 npx tsx src/server.ts` (PID 210521). Shared `dev` :6969 and ports 3111/3112/3113 never touched, never signaled. `helix.toml` section reorder is a `helix start` side effect, left dirty for the owning lane.
+**Prior sections of this file are preserved untouched** (lane-singleton rule); full history in `git log -p -- TEST_MATRIX.md`.
+
+### Verification bar (this lane, 2026-09-25)
+
+| # | Command | Result |
+|---|---------|--------|
+| 1 | `npm run typecheck` | exit 0, 0 errors |
+| 2 | `npm test` | **80 passed, 0 failed** (incl. `ttl.test.ts` CDR-02 canaries) |
+| 3 | `npx tsx scripts/verify-ops.ts` | **124 passed, 0 failed** / VERIFY PASS (§A–§L + C1 header proof: foreign listener 0 Authorization headers) |
+| 4 | `npx tsx scripts/verify-lifecycle.ts` | **123 passed, 0 failed** / VERIFY PASS |
+| 5 | `npm run bootstrap` (shared dev :6969) | **FAIL (evidence)** — `index_definition_conflict vector_dimension` (pre-existing 384-dim indexes on shared dev); attempt 1 of 2, recorded, dev left untouched |
+| 6 | `helix start slot9` + `BRAINY_URL=http://localhost:6977 npm run bootstrap` | exit 0 — `bootstrapIndexes: OK (25 indexes ensured)` + `READY — Brainy indexes verified (searchByText responding on attempt 5, 8.1s)` |
+| 7 | `AGENT_MEMORY_URL=http://127.0.0.1:38911 npm run verify` | **238 passed, 5 failed / VERIFY FAIL** — all 5 are legacy 384-dim expectations in `scripts/verify.ts` (off-limits to this lane): `embed: length is 384 — got 1536`, `embed: empty input zero vector of length 384`, embed golden snapshot drift, 2 RRF-score goldens pinned to 384-dim rankings. 243 total = historical 243 bar. Retried (2 runs, same deterministic 5). Cross-domain request filed, no freelance edit. |
+| 8 | `AGENT_MEMORY_URL=http://127.0.0.1:38911 npx tsx scripts/eval.ts` | **EVAL PASS** — R@5/MRR/nDCG 1.0000 both modes (40 docs / 15 queries); scorecard rewritten by harness, refreshed by this lane |
+| 9 | Latency probe (50× `POST /memory/search`, `/tmp/opencode/latprobe.mjs`) | min 3.92ms, p50 5.23ms, **p95 8.68ms**, max 70.79ms (single outlier) at N=40 rows — **NFR-01 NOT proven at ~10k scale** (no scale harness; see NFR row) |
+| 10 | CDR-07 live canaries (slot9/:38911, projects `cdr07-probe`/`tmp`) | TTL both-knobs/canonical-silent/alias-WARN/OFF all proven (unit `filterExpired` + `ttl.test.ts`); hook `UserPromptSubmit` stores exactly `user prompt submitted` (no prompt text); export fixture frontmatter `project`+`tags` only; ARCO access→move→distill→forget proven for Memory rows; sentinel `s3cr3t-cdr07-sentinel-9f2k` 0 hits in server stdout/stderr (details in CDR-07 table) |
+| 11 | Secret hygiene | `gitleaks`: **not-installed** (never claimed). Grep fallback: `ghp_/sk-live|test-/AKIA` → 0 hits repo-wide (excl. node_modules/.helix/.git); `BRAINY_SECRET=`/`AGENT_MEMORY_SECRET=` assignments → only `s3cr3t` test-value docs in SPEC-004:56 / SPEC-005:86 (documented test values, not credentials) + scanner self-descriptions |
+
+### REQ → test/evidence → artifact → commit (45 rows)
+
+| REQ-ID | Evidence ID | Test / evidence | Artifact | Commit |
+|--------|-------------|-----------------|----------|--------|
+| REQ-BRAINY-ENG-01 | T-ENG-01 | `tests/step1.test.ts` package/bin/env rename + dual-bin; live: shim `WARN deprecated` observed on `export` via alias (`WARN deprecated use BRAINY_URL — AGENT_MEMORY_URL alias will be removed in next major`) | `package.json:2,14-17`, `helix.toml:2`, `bin/brainy.mjs`, `bin/agent-memory.mjs` | `53f5588` |
+| REQ-BRAINY-ENG-02 | T-ENG-02 | `tests/step1.test.ts`; brand-debt grep (R5 lane owns the sweep; this lane did not re-run the full `agentmemory\|iii-engine` grep — **gap noted**) | `docs/CONTRACT.md`, `ARCHITECTURE.md` v3 | `53f5588`, `c02a0e0` |
+| REQ-BRAINY-ENG-03 | T-ENG-03 | `tests/step2.test.ts` LABELS/EDGES; live bootstrap `25 indexes ensured` + note CRUD live (`POST /v1/notes` 201, `BELONGS_TO` auto `resource/inbox`) | `db/queries.ts` | `befa3c7` |
+| REQ-BRAINY-ENG-04 | T-ENG-04 | `tests/step2.test.ts` (indexes 1536) + `tests/step3.test.ts` (EMBED_DIM=1536, L2 norm, determinism) + `tests/step9.test.ts` (migration); **contradicted in part** by legacy `verify.ts` 384-dim goldens (5 FAIL, bar #7) — unit evidence stands, harness drift filed | `db/queries.ts`, `src/embed.ts`, `scripts/migrate-embeddings.ts` | `befa3c7`, `74ec6eb`, `18a5ea4` |
+| REQ-BRAINY-ENG-05 | T-ENG-05 | `tests/step4.test.ts`; live `POST /v1/notes {title,content,project:cdr07-probe}` → 201 `{deduped:false, paraCategory:resource}` | `src/store.ts:HelixStore.saveNote`, `src/server.ts:390`, `src/mcp.ts:brainy_capture` | `5b40c8e` |
+| REQ-BRAINY-ENG-06 | T-ENG-06 | `tests/step4.test.ts` + `tests/move.test.ts`; live `POST /v1/notes/:id/move {to:area,name:inbox,project}` → 200; cross-tenant move → 400 `invalid_tenant_link` (C8 live); ADR-0003 | `src/store.ts`, `db/queries.ts:moveNote`, `src/server.ts:427` | `5b40c8e`, `a1d71c9`, `201b1ee` |
+| REQ-BRAINY-ENG-07 | T-ENG-07 | `tests/step4.test.ts`; live `POST /v1/notes/:id/distill` → new Note `Distilled: …` (append-only, new id) | `src/server.ts:410`, `db/queries.ts:distillNote` | `5b40c8e` |
+| REQ-BRAINY-ENG-08 | T-ENG-08 | Live `brainy export --format markdown` → 1 note, fixture `--- project: cdr07-probe / tags: [] ---` + content only (allowlist `project/tags/[[links]]`, no secret/PII beyond the row itself) | `src/server.ts:GET /v1/context/:project`, `bin/brainy.mjs:375` | `a1e2e89` |
+| REQ-BRAINY-ENG-09 | T-ENG-09 | `tests/step5.test.ts`; live eval hybrid 1.0000 R@5/MRR/nDCG; `signals:[]` observed on all live searches (no 500) | `src/search.ts:hybridSearch`, `db/queries.ts:searchByVector/Text/graphSearch` | `7a7691f` |
+| REQ-BRAINY-ENG-10 | T-ENG-10 | `tests/step7.test.ts` (`McpServer name=brainy`, 4 native + 11 `memory_*` aliases, `_meta.authorization` gate); live count `brainy_*` registrations = 5 incl. `brainy_reality_check` (grep `src/mcp.ts:719`) | `src/mcp.ts:162-535,719` | `fb9c274` |
+| REQ-BRAINY-ENG-11 | T-ENG-11 | `tests/step9.test.ts` (compat mapping + import-transcript round-trip); live `POST /v1/memory` legacy row + `POST /memory/forget` erase proven in ARCO flow | `src/compat/agentmemory.ts`, `scripts/import-transcript.ts` | `18a5ea4` |
+| REQ-BRAINY-ENG-12 | T-ENG-12 | `tests/step6.test.ts`; live route table exercised: `POST /v1/notes`, `GET /v1/notes/:id?project=`, `POST /v1/notes/:id/move`, `POST /v1/notes/:id/distill`, `POST /v1/memory`, legacy `/memory/*` + `X-Deprecated` alias | `src/server.ts` | `af40e87` |
+| REQ-BRAINY-MKT-01 | T-MKT-01 | Doc diff: `package.json:2 name=brainy`, `helix.toml:2 project=brainy`, dual-bin (no automated test — doc evidence) | `package.json`, `helix.toml`, `bin/*` | `53f5588`, `c02a0e0` |
+| REQ-BRAINY-MKT-02 | T-MKT-02 | R5 sign-off matrix (commit `d41ded1`); full purge grep owned by concurrent R5 lane — **not independently re-verified by this lane (gap noted)** | `README.md`, docs sweep | `c02a0e0`, `d41ded1` |
+| REQ-BRAINY-MKT-03 | T-MKT-03 | Doc diff: hero/tagline + `package.json description` + `plugin.json` (doc evidence) | `README.md`, `package.json`, `plugin.json` | `c02a0e0` |
+| REQ-BRAINY-MKT-04 | T-MKT-04 | Doc diff: README quickstart + 3 examples + migration (doc evidence; examples not re-executed live by this lane — **gap noted**) | `README.md` | `c02a0e0` |
+| REQ-BRAINY-MKT-05 | T-MKT-05 | Doc diff: `CHANGELOG.md ## [v1.0.0] / [brainy v1]` breaking entry (doc evidence) | `CHANGELOG.md` | `c02a0e0` |
+| REQ-BRAINY-MKT-06 | T-MKT-06 | Doc diff: `docs/CONTRACT.md` header `Brainy — v1 Frozen Contract` (doc evidence) | `docs/CONTRACT.md` | `a79643c`, `c02a0e0` |
+| REQ-BRAINY-MKT-07 | T-MKT-07 | Bar #11 secret/placeholder scan (0 real findings); R5 sign-off `d41ded1` | `README.md`, `CHANGELOG.md`, docs | `c02a0e0`, `d41ded1` |
+| REQ-BRAINY-OPS-01 | T-OPS-01 | `tests/step8.test.ts` + `verify-ops` §A/§F (bin rename, slot math, quartet, NEVER_BIND); live export ran via `bin/brainy.mjs` | `bin/brainy.mjs`, `bin/agent-memory.mjs` | `a1e2e89`, `339c511` |
+| REQ-BRAINY-OPS-02 | T-OPS-02 | `tests/step8.test.ts`; **live finding:** `src/store.ts:848` reads `HELIX_URL` only (no `BRAINY_URL` canonical-first) — server had to be started with `HELIX_URL=:6977` (`BRAINY_URL` alone → `invalid_vector_dimension` via dev :6969). Cross-domain request to R1 (SPEC-003 REQ-OPS-02 vs implementation). Bootstrap/import scripts do resolve `BRAINY_URL` first. | `bin/brainy.mjs`, `src/store.ts:848`, `scripts/bootstrap.ts:25` | `a1e2e89` |
+| REQ-BRAINY-OPS-03 | T-OPS-03 | `verify-ops` §G (state path/0700/0600/closed schema, verified in bar #3) | `bin/brainy.mjs` | `a1e2e89`, `339c511` |
+| REQ-BRAINY-OPS-04 | T-OPS-04 | `verify-ops` §B/§C/§D + move repoint commits; live: preflight never-kill not re-proven live by this lane (covered by harness §I) | `bin/brainy.mjs` | `a1e2e89`, `201b1ee` |
+| REQ-BRAINY-OPS-05 | T-OPS-05 | `verify-ops` §E (C1→C3→C2→C4→C5 order, precedence 5>4>3>1>0, one VERDICT, C1 zero-auth proof — bar #3) | `bin/brainy.mjs` | `a1e2e89`, `339c511` |
+| REQ-BRAINY-OPS-06 | T-OPS-06 | `verify-ops` §H (fail-closed `MIGRATE ABORT: unsupported-runtime`); data-dir precedence; CI gates (typecheck+suites green per bar #1–4) | `bin/brainy.mjs` | `a1e2e89`, `339c511` |
+| REQ-BRAINY-SEC-01 | T-SEC-01 | `tests/step6.test.ts` + `verify-ops` C1 proof; live server ran open-auth on loopback (documented dev posture, `auth: open` in boot log); **live 401 matrix with `BRAINY_SECRET` set NOT run (no `verify-auth-matrix.ts` harness exists — gap noted)** | `src/server.ts:284-290`, `src/auth.ts:33-41` | `af40e87` |
+| REQ-BRAINY-SEC-02 | T-SEC-02 | `tests/step7.test.ts` (`isMetaAuthorized` gate, unauthorized `tools/call`); live MCP handshake not exercised (stdio) — **gap noted** | `src/mcp.ts:162-183`, `src/auth.ts:48-55` | `fb9c274` |
+| REQ-BRAINY-SEC-03 | T-SEC-03 | Bar #11 (0 findings) + live sentinel 0 hits in server stdout/stderr (CDR-07 table) | `src/server.ts:463-465,605-607`, `src/errors.ts:62-73` | `af40e87`, `fb9c274` |
+| REQ-BRAINY-SEC-04 | T-SEC-04 | `SECURITY_REVIEW.md §4.1` STRIDE table + `4626695` R2 verdict + `2a6bf20` co-review (review artifacts, not re-judged by this lane) | `docs/specs/40_workspace/engineering/SECURITY_REVIEW.md` | `4626695`, `2a6bf20` |
+| REQ-BRAINY-SEC-05 | T-SEC-05 | Hook proof (`hooks/capture.mjs:72` fixed string; live row content exactly `user prompt submitted`) + export allowlist + TTL store declaration (`a79643c`) — CDR-07 table | `hooks/capture.mjs`, `src/errors.ts`, `docs/CONTRACT.md` | `a79643c` |
+| REQ-BRAINY-SEC-06 | T-SEC-06 | `tests/step6.test.ts` (zod bounds) + live: oversize/cross-tenant 400s observed (`invalid_tenant_link` live; 1MiB/413 not probed live — **gap noted**); `signals:[]` no-500 observed | `src/server.ts` schemas, `src/search.ts` signals | `af40e87`, `7a7691f` |
+| REQ-BRAINY-LEG-01 | T-LEG-01 | `a79643c` CONTRACT PII-store declaration (`Note.content` purpose+TTL+deletion, ARCO SLA) — doc evidence | `docs/CONTRACT.md` | `a79643c` |
+| REQ-BRAINY-LEG-02 | T-LEG-02 | Minimization checkpoints: hook fixed-strings + export allowlist + evidence allowlist (this file carries counts/ids only) — live hook/export proof in CDR-07 table | `hooks/capture.mjs`, `bin/brainy.mjs:export` | `a79643c`, `cf91d47` |
+| REQ-BRAINY-LEG-03 | T-LEG-03 | `tests/ttl.test.ts` (80/80 bar) + live `filterExpired` canary: both-knobs canonical-wins silent / alias-only exactly one WARN / canonical-only silent / invalid+zero+absent OFF (kept 2/2); `5ee1728` canonical-first read | `src/lifecycle.ts:57-69,144`, `bin/brainy.mjs:1061` | `5ee1728` |
+| REQ-BRAINY-LEG-04 | T-LEG-04 | Live ARCO flow on :38911: access `GET /v1/notes/:id?project=` 200 → rectify `POST .../move` 200 + `POST .../distill` new-id → erase `POST /memory/forget` `{forgotten:true}` (Memory rows). **Gap:** `store.forgetNote` has NO REST/MCP caller (`grep forgetNote src/server.ts src/mcp.ts` → 0) — Note-row erasure is code-only, unexposed. CDR-04 ack `2232087` covers the spec drift. | `src/store.ts:1950`, `src/server.ts:689` | `2232087`, `a1d71c9` |
+| REQ-BRAINY-LEG-05 | T-LEG-05 | `2a6bf20` R2 co-review cross-border table (review artifact — doc evidence, not live-probed) | `docs/specs/40_workspace/*` | `2a6bf20` |
+| REQ-BRAINY-LEG-06 | T-LEG-06 | `cf91d47` DPIA baseline (review artifact — doc evidence) | `docs/specs/40_workspace/legal/*` | `cf91d47` |
+| REQ-BRAINY-LEG-07 | T-LEG-07 | Privacy-by-design: allowlist logs/exports + `filterExpired` fail-keep + tenant scoping live (`?project=` miss → 404, cross-tenant → 400) | `src/server.ts`, `src/lifecycle.ts` | `af40e87`, `5ee1728` |
+| REQ-BRAINY-LEG-08 | T-LEG-08 | Breach-notification path declared in `2a6bf20`/`cf91d47` (doc evidence; no live breach drill — **gap noted**) | review artifacts | `2a6bf20`, `cf91d47` |
+| REQ-BRAINY-LEG-09 | T-LEG-09 | Bar #11 + live sentinel grep (0 hits); evidence in this file allowlisted (ids/counts only, `sha256` dedupKey redacted to prefix-free form — no raw content) | repo-wide | (this commit) |
+| NFR-BRAINY-ENG-01 | T-NFR-01 | p95 **8.68ms at N=40** (probe, SCORECARD) — **NOT proven at ~10k nodes**: `scripts/eval.ts` has no scale knob/latency column. Gate FAIL-or-waiver belongs to quality-gate; this lane claims no waiver. | `docs/benchmarks/SCORECARD.md` | (this commit) |
+| NFR-BRAINY-ENG-02 | T-NFR-02 | `helix.toml [local.*] storage="disk"` + live `READY` poll (8.1s, attempt 5) + save→search→forget round-trips on slot9 | `helix.toml`, `scripts/bootstrap.ts` | `53f5588`, `18a5ea4` |
+| NFR-BRAINY-ENG-03 | T-NFR-03 | `tests/step3.test.ts` + `tests/step9.test.ts` + `scripts/migrate-embeddings.ts`; legacy 384 goldens in `verify.ts` contradict (bar #7, filed) | `src/embed.ts`, `scripts/migrate-embeddings.ts` | `74ec6eb`, `18a5ea4` |
+| NFR-BRAINY-ENG-04 | T-NFR-04 | = T-SEC-03 + T-LEG-01..03 + bar #11 (no secrets; PII declared w/ TTL+erasure) | (see SEC/LEG rows) | `a79643c`, `5ee1728` |
+| NFR-BRAINY-OPS-01 | T-NFR-OPS-01 | `verify-ops` §I never-kill + §J secret + §L port-parity (bar #3, 124/124) + AC-NFR01 grep hints in SPEC-003 | `bin/brainy.mjs:452-469`, `src/server.ts:653-661` | `a1e2e89`, `339c511` |
+
+### Coverage summary
+
+- 45/45 REQ+NFR rows mapped to a test/evidence id + artifact + real commit hash.
+- Honest gaps (no test/evidence, or evidence short of the gate): (1) `verify.ts` 5 FAILs — legacy 384-dim goldens vs 1536-dim implementation (harness drift, cross-domain request to owning lane; `scripts/*.ts` off-limits here). (2) NFR-01 `@10k nodes` — not-run, no scale harness exists. (3) Note-row erasure surface — `forgetNote` unexposed via REST/MCP. (4) Live 401 matrix with `BRAINY_SECRET` set — no harness, not run. (5) Live MCP stdio handshake — not exercised. (6) 1MiB/413 + 15s-timeout live probes — not run. (7) README 3 examples — not re-executed live. (8) Brand-debt full-repo grep — owned by concurrent R5 lane, not re-run here. (9) Breach drill — doc only. (10) `src/store.ts:848` reads `HELIX_URL` only (no `BRAINY_URL` canonical-first) — SPEC-003 REQ-OPS-02 deviation, cross-domain request to R1.
+
+### Security C1..C8 audit proof table (mapping: IMPLEMENTATION_PLAN.md §Security Conditions)
+
+| Cond | Control location | Proving test / grep | Result |
+|------|------------------|---------------------|--------|
+| C1 Bearer parity + alias | `src/server.ts:284-290`, `src/auth.ts:33-41`, `src/mcp.ts:162-183` | `tests/step6.test.ts` + `tests/step7.test.ts` (80/80 bar); `verify-ops` C1 foreign-listener 0-Auth proof (124 bar) | **pass** (unit+harness; live 401 matrix not-run — gap 4) |
+| C2 No secrets + placeholders | repo-wide | `gitleaks` not-installed (stated, not claimed); fallback `ghp_/sk-/AKIA` 0 hits + `BRAINY_SECRET=` only `s3cr3t` test-value docs; live sentinel 0 hits in server out/err | **pass** (fallback only — no gitleaks) |
+| C3 Doctor probe isolation C1→C3→C2 | `bin/brainy.mjs`, `scripts/verify-ops.ts` §E | verify-ops C1 header proof: synthetic server 0 Authorization headers; order + precedence asserts (124 bar) | **pass** |
+| C4 Strict validation + DoS caps | `src/server.ts` zod schemas, 1MiB cap | `tests/step6.test.ts`; live cross-tenant 400 `invalid_tenant_link`; 413/timeout live probes not-run | **pass*** (partial: 413/timeout not probed live) |
+| C5 Ley 172-13 minimization + store | `src/store.ts`, `hooks/capture.mjs:72`, export, `docs/CONTRACT.md` | hook live row = `user prompt submitted` exactly; export fixture allowlist; `tests/ttl.test.ts`; `a79643c` declaration | **pass** |
+| C6 Never-kill + safe signaling | `bin/brainy.mjs:452-469 signalOwned/verifyOwnedPid`, `src/server.ts:653-661` | verify-ops §I foreign listeners survive (124 bar); this lane signaled ONLY its own PID 209471/210521, never 3111/3112/3113; `helix stop slot9` by instance name at teardown | **pass** |
+| C7 State/audit 0700/0600 | `bin/brainy.mjs` | verify-ops §G (124 bar) | **pass** (harness; not re-probed live by this lane) |
+| C8 Param binding + tenant isolation | `db/queries.ts` (defineParams, no concat), `src/server.ts:427-456` move guard, `src/store.ts` | `tests/step2/step6.test.ts`; live: unscoped `GET /v1/notes/:id` → 404, cross-tenant move → 400 `invalid_tenant_link` | **pass** |
+
+### CDR-07 live evidence (R4/R2 gate-blocking item)
+
+| Item | Procedure (slot9/:38911) | Result |
+|------|--------------------------|--------|
+| TTL both-knobs | `filterExpired` live import: canonical100+alias200 → canonical wins silent; alias200 → exactly one `WARN deprecated use BRAINY_TTL_DAYS`; canonical100 → silent; abc/0/absent → OFF (kept 2/2) | **pass** |
+| Hook payload | stdin with PII prompt text → exit 0, zero stdout/stderr; stored row content exactly `user prompt submitted` (project `tmp`, searched live); `hooks/capture.mjs:72` never reads `hook.prompt` | **pass** |
+| Export allowlist | `brainy export --format markdown` → fixture `--- project/tags ---` + content; no secret, no extra fields (`[[links]]` absent = no links on canary, nothing else emitted) | **pass** |
+| ARCO flow | access `GET /v1/notes/:id?project=` 200 → rectify `move` 200 + `distill` new-id → erase `POST /memory/forget` `{forgotten:true}` (Memory rows; hook + secret canaries forgotten too) | **pass*** (Memory rows; Note-row erase unexposed — gap 3) |
+| Live secret grep | sentinel `s3cr3t-cdr07-sentinel-9f2k` sent in bearer header + remember content → `grep -c` over full server stdout/stderr = **0 hits** | **pass** |
+
+### Incidents / deviations observed by this lane (for orchestrator)
+
+1. `helix start slot9` reordered `helix.toml` sections (tool side effect) — file left dirty, owned by another lane; this commit stages ONLY the two approved files.
+2. First hook probe ran without `AGENT_MEMORY_URL` set → POSTed one fixed-string observation (`user prompt submitted`, no PII) to the default `:3111` upstream. No prompt text, no secret, no content left the lane — but it was a write to a protected port's server. Reported, not repeated (second probe targeted :38911).
+3. `npm run verify`'s harness resolves the server via `AGENT_MEMORY_URL`, not `BRAINY_URL` — same alias-direction observation as T-OPS-02.
+4. Canary Note rows (`cdr07-probe` project + distilled copy) remain in slot9's disk volume — no Note-delete surface exists to remove them (gap 3); content is synthetic, no PII.
+
