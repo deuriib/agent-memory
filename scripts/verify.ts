@@ -43,7 +43,7 @@ const SECRET = process.env["AGENT_MEMORY_SECRET"];
  * (second hash), weighting, and normalization changes at once.
  * Refresh ONLY alongside a deliberate, documented change to the embedder.
  */
-const GOLDEN = "[[62,0.5773502691896258],[178,-0.5773502691896258],[382,-0.5773502691896258]]";
+const GOLDEN = "[[562,-0.5773502691896258],[766,-0.5773502691896258],[830,0.5773502691896258]]";
 
 function goldenSnapshot(vector: readonly number[]): string {
   const nonZero: [number, number][] = [];
@@ -246,15 +246,15 @@ async function main(): Promise<void> {
   const e1 = embed(text);
   const e2 = embed(text);
   const e3 = embed("a completely different sentence entirely");
-  check("embed: length is 384", e1.length === 384, `got ${e1.length}`);
+  check("embed: length is 1536", e1.length === 1536, `got ${e1.length}`);
   check("embed: same input -> identical vector", JSON.stringify(e1) === JSON.stringify(e2));
   check("embed: different input -> different vector", JSON.stringify(e1) !== JSON.stringify(e3));
   const norm = Math.sqrt(e1.reduce((sum, value) => sum + value * value, 0));
   check("embed: L2 norm ~= 1", Math.abs(norm - 1) < 1e-9, `norm=${norm}`);
   const empty = embed("");
   check(
-    "embed: empty input -> zero vector of length 384",
-    empty.length === 384 && empty.every((value) => value === 0),
+    "embed: empty input -> zero vector of length 1536",
+    empty.length === 1536 && empty.every((value) => value === 0),
   );
   const goldenActual = goldenSnapshot(embed("jwt token expiry"));
   check(
