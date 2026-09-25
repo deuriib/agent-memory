@@ -43,6 +43,35 @@ function clamp01(value: number): number {
   return value;
 }
 
+let warnedDeprecatedTtl = false;
+
+/**
+ * TTL day-count, canonical-first: `BRAINY_TTL_DAYS` wins; the legacy
+ * `AGENT_MEMORY_TTL_DAYS` alias resolves behind a single static deprecation
+ * notice on stderr (module flag, one line per process, no values — same shape
+ * as `secretFromEnv` in `src/auth.ts`). Absent/invalid/<= 0 -> `undefined`
+ * (TTL OFF declared, never silent). Env is re-read per call so tests control
+ * the knob without reloading the module.
+ */
+function ttlDaysFromEnv(): number | undefined {
+  const canonical = readPositiveEnv("BRAINY_TTL_DAYS");
+  if (canonical !== undefined) return canonical;
+  const alias = readPositiveEnv("AGENT_MEMORY_TTL_DAYS");
+  if (alias !== undefined) {
+    if (!warnedDeprecatedTtl) {
+      warnedDeprecatedTtl = true;
+      console.error("WARN deprecated use BRAINY_TTL_DAYS");
+    }
+    return alias;
+  }
+  return undefined;
+}
+
+/** Reset warning state for test isolation */
+export function _resetTtlWarningState(): void {
+  warnedDeprecatedTtl = false;
+}
+
 /**
  * Normalize content for hashing: lowercase, collapse every whitespace run to
  * a single space, trim the ends. "  Hello   World  " and "hello world" are
@@ -103,7 +132,9 @@ export function decayedImportance(importance: number, createdAt: string, nowMs: 
 /**
  * Drop TTL-expired rows (REQ-P1-1 corte A), preserving input order.
  *
- * AGENT_MEMORY_TTL_DAYS: absent/invalid/<= 0 -> OFF (returns every row).
+ * TTL knob is canonical-first: `BRAINY_TTL_DAYS`, falling back to the legacy
+ * `AGENT_MEMORY_TTL_DAYS` alias with a single static `WARN deprecated`
+ * notice on stderr. Absent/invalid/<= 0 -> OFF (returns every row).
  * A row expires only when ageDays is STRICTLY GREATER than the TTL — a row
  * exactly at the boundary survives (never delete on the fence). Unparseable
  * createdAt -> NOT expired (fail toward keeping data: hiding wrongly is
@@ -114,7 +145,7 @@ export function filterExpired<T extends { createdAt: string }>(
   rows: readonly T[],
   nowMs: number,
 ): T[] {
-  const ttlDays = readPositiveEnv("AGENT_MEMORY_TTL_DAYS");
+  const ttlDays = ttlDaysFromEnv();
   if (ttlDays === undefined) return [...rows];
   const kept: T[] = [];
   for (const row of rows) {
