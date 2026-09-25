@@ -310,3 +310,74 @@ Traceability to packet focuses:
 ## Sign-off
 
 - [x] **security owner (R2) — `general(barrera)`:** **Conditional (C1–C10)** issued at review; verified and cleared to **OPEN** in `GATE_REPORT.md` (8/8 PASS, commit `615d06ea`).
+
+---
+
+# Security Review: REQ-BRAINY-ENG-06 move-route delta — `POST /v1/notes/:id/move` (R2 delta verdict)
+
+**Reviewer:** `general(barrera)` — Security Owner (R2), per `frame-ship:review-security` (`references/security-review-template.md` + `references/threat-model.md`)
+**Date:** 2026-09-25
+**Verdict:** **Approved with conditions SC-MOVE-01..05** — satisfies architecture condition C1 (`ADR-0003 § Conditions C1`); execute lane is unblocked subject to the conditions below, verified at `quality-gate`.
+**Methodology:** STRIDE
+**GATE at review time:** `architecture=Approved-with-conditions C1..C4` (C1 = this R2 approval, now discharged as conditional)
+
+**Packet (reference-only):**
+`SPEC:docs/specs/20_backlog/SPEC-004-brainy-security.md#REQ-BRAINY-SEC + SPEC-001#REQ-BRAINY-ENG-06,AC-06,AC-12 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:architecture=Approved-with-conditions C1..C4 (C1 = R2 approval required before execute) / DOMAINS:R2,R1,R8,R4,R5`
+
+## 1. Scope of this delta review
+
+| Input | Artifact | Role |
+|---|---|---|
+| Proposal addendum | `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md` `## Addendum — REQ-BRAINY-ENG-06: REST move route` (commit `a88f0a4`) | One additive route `POST /v1/notes/:id/move`, strict zod, dual bearer, C8 same-tenant `400 invalid_tenant_link`, reuse of `HelixStore.moveNote` — no schema/dependency/bin/MCP/store/query changes |
+| Architecture verdict | `docs/adr/ADR-0003-post-v1-notes-move-route.md` (commit `bf2b595`) | Frozen delta (2 one-row doc deltas), reviewer analysis, conditions C1..C4 (C1 = this review) |
+| Code grounding (read-only) | `src/auth.ts:1-77` · `src/server.ts:32,236-250,296-310,364-380,498-530,910-916` · `src/store.ts:1887-1909,1962-1972` · `src/mcp.ts:188-223` · `db/queries.ts:147-152,834-879` | Bearer contract, C8 link pattern, body caps, moveNote chain, MCP error boundary |
+| Open R2 observation | `src/mcp.ts` `handle()` `isError`-vs-protocol-rejection | Ruled separately in §5 below |
+
+Out of scope (untouched by the delta, carried over from the Lane 4 `Conditional (C1–C8)` review above): legacy `/memory/*` alias posture (1-version), `bin/`, MCP tools, HelixQL schema, PII store declarations, doctor probe ordering, never-kill invariant, state permissions.
+
+## 2. STRIDE analysis — `POST /v1/notes/:id/move`
+
+| Threat | Applicable? | Control + evidence |
+|---|---|---|
+| **Spoofing** (forged bearer on the new route) | Yes | New route inherits the audited guard by construction: guard `src/server.ts:369` (`!isLivez && !isBearerAuthorized(...)` → `401` + `www-authenticate: Bearer` `:370-372`) sits before all route blocks; only `/memory/livez` and `/v1/livez` exempt (`:367-368`). `secretFromEnv` resolves `BRAINY_SECRET` first with static deprecation notice (`src/auth.ts:20-34`); comparison is constant-time `timingSafeEqual` over SHA-256 digests (`src/auth.ts:42-49`); non-loopback-without-secret boot warns `WARN INSECURE` (`src/server.ts:913-916`). Proposal mandates placement after `GET /v1/notes/:id` (`:419-435`) — i.e. below the guard — with no new auth scheme. **PASS, condition SC-MOVE-01.** |
+| **Tampering** (unauthorized `BELONGS_TO` edge rewrite) | Yes | Destructive write is gated twice: (a) strict zod `moveNoteBodySchema` (`to` closed enum, `name` trimmed 1..500, `.strict()` rejects unknown keys — mirrors `linkNodesBodySchema` `src/server.ts:236-243` and `distillNoteBodySchema` `:245-250`); (b) server-side same-tenant verification before any edge write, mirroring the existing `/v1/link` C8 block (`src/server.ts:502-510`: fetch both nodes under resolved tenant, mismatch → `400 invalid_tenant_link` with no write; store-level throw `src/store.ts:1972` mapped at `:519-525`). Proposal mandates cross-tenant input → `400 invalid_tenant_link` with no write. Query layer is typed `moveNoteParams` (`db/queries.ts:147-152`) + `toQueryRequest` (`src/store.ts:1900-1905`); `moveNote` body (`db/queries.ts:834-879`) uses `eqParam`/`PropertyInput.param` only — zero string concatenation (repo-wide `defineParams` count 20+ sites; no `${}` interpolation in `db/queries.ts`). No new HelixQL introduced. **PASS, conditions SC-MOVE-02/03/04.** |
+| **Repudiation** (denial of a move) | Low | Move is a PARA reclassification (edge drop+add), not a deletion/erasure under the governance-line contract (`src/server.ts:690-705` governance line applies to `POST /memory/delete` with `reason`). No audit-line requirement is declared for moves in SPEC/BRIEF/ADR. Repudiation coverage: synchronous `200 {id, para:{label,name}}` response plus the allowlisted access log (`METHOD PATH STATUS DURATIONms` only). **Decision: no governance log entry required for move. Accepted, no condition.** |
+| **Information disclosure** (404/400 oracle, cross-tenant probe) | Yes | Error envelope unchanged (`{error, details?}`; zod details are field-path messages only, `src/server.ts:279-288`). `false` → `404 note_not_found`; unknown/empty target → `404 para_target_not_found`; cross-tenant → `400 invalid_tenant_link`. Note lookup is tenant-scoped (`getNoteById(id, project)`), so a cross-tenant note id resolves to `404`, not `400` — no tenant-membership oracle beyond what the existing `/v1/link` block already exposes. Exploitation requires a valid bearer on loopback. No new log/export surface; no secret/PII in error text. **PASS with note (Low, accepted).** |
+| **Denial of Service** (body overfill, unbounded work) | Yes | `readJsonBody` enforces `content-type: application/json` → `415`, `MAX_BODY_BYTES = 1_048_576` → `413` (`src/server.ts:32,296-310`) — covers the new route by construction since the handler must call `readJsonBody` per the proposal. Field caps (`name` 1..500, closed enum, `.strict()`) bound parsing; work is one scoped `writeBatch` (anchor + drop + anchor-or-create + add, `db/queries.ts:834-879`) under the existing 15s `withTimeout` envelope. **PASS, condition SC-MOVE-02 (must route body through `readJsonBody` + `parseOr400`).** |
+| **Elevation of privilege** (tenant escape via move) | Yes | Tenant precedence fixed: body `project` ?? query `?project=` ?? `"default"` (same as link/distill family). Same-tenant check before any write (SC-MOVE-03) plus `DEFAULT_PROJECT` scoping on lookup means a move cannot attach a note to another tenant's PARA node and cannot widen to other PII stores. No new privilege, port, dependency, or MCP surface. Fail-closed throughout (`400`/`404`/`401`, never silent create — empty/unknown target → `404`). **PASS, condition SC-MOVE-03.** |
+
+Blast-radius honesty (verified): `grep -c "move" src/server.ts` = **0** (no route exists yet — purely additive on implementation); no new PII store, no new secret, no new port, no `bin/` change in this lane, no MCP tool, no legacy `/memory/*` change; legacy alias stays 1-version (7 canonical `/v1/*` routes after, per ADR-0003).
+
+## 3. Verdict
+
+**Approved with conditions SC-MOVE-01..05.** Architecture condition C1 is discharged by this review (conditional approval counts as R2 approval under ADR-0003 C1). **`execute may proceed`** subject to all five conditions holding in the implementation and being evidenced at `quality-gate`.
+
+## 4. Security conditions (owner + deadline each)
+
+Mapper note: no `IMPLEMENTATION_PLAN.md` exists in-repo; C1..C8 below map to the canonical table in this file (`SECURITY_REVIEW.md` §4, Lane 4 review).
+
+- **[SC-MOVE-01 — bearer reuse, maps C1]** New handler MUST sit below the existing guard (`src/server.ts:364-380` pattern), rely on the dual-bearer `isBearerAuthorized` gate with `livez`-only exemption, and return `401 unauthorized` + `www-authenticate: Bearer` on mismatch. No new auth scheme, no exemption. **Owner:** R1 execute lane. **Deadline:** at `execute-spec`.
+- **[SC-MOVE-02 — strict input + body caps, maps C4]** Body schema MUST be `.strict()` with `to` closed enum + `name` trimmed 1..500 (+ optional `projectSchema`), parsed via `parseOr400` over `readJsonBody` (1 MiB / 413 envelope). Unknown keys, empty/oversize `name`, unknown `to` → `400 invalid_request`. **Owner:** R1 execute lane. **Deadline:** at `execute-spec`, evidenced at `quality-gate` (strict-body probes).
+- **[SC-MOVE-03 — same-tenant check before any write, maps C8]** Handler MUST verify note and PARA target belong to the same `project` tenant BEFORE any edge write (mirror `src/server.ts:502-510`); mismatch → `400 invalid_tenant_link` with zero writes. **Owner:** R1 execute lane. **Deadline:** at `execute-spec`, evidenced at `quality-gate` (cross-tenant probe).
+- **[SC-MOVE-04 — query safety, maps C8]** Handler MUST delegate to the existing `HelixStore.moveNote` → `moveNote` query chain (`src/store.ts:1887-1909`, `db/queries.ts:834-879`); zero new HelixQL, zero string concatenation, typed `defineParams` + `toQueryRequest` only. **Owner:** R1 execute lane. **Deadline:** at `execute-spec`.
+- **[SC-MOVE-05 — secrets/PII hygiene, maps C2/C5]** Tests and docs for the route MUST use placeholders only (`<note-id>`, `<area-name>`); no real secrets, no raw PII in evidence (paths + line numbers + grep counts). Pre-push secret scan MUST pass with 0 findings. **Owner:** R1 execute lane (+ R8 for CLI repoint). **Deadline:** `quality-gate`.
+- Cross-ref (not owned here): ADR-0003 C3 — R8 repoints CLI `move` (`bin/brainy.mjs:1582-1606`) to the new route in its own lane. **Owner:** R8 `general(espinoza)`.
+
+Findings count for this delta: **0 Critical · 0 High · 0 Medium · 0 Low** (one Low disclosure-oracle note accepted in §2 table, no finding filed).
+
+## 5. Ruling on the open R2 observation: MCP `isError`-vs-protocol-rejection (`src/mcp.ts`)
+
+**Ruling: ACCEPTED declared residual — no finding, no condition.** The observation as filed does not match the code: auth failures are NOT converted to `isError` results. `handle()` (`src/mcp.ts:209-223`) throws `McpError(ErrorCode.InvalidRequest, "unauthorized")` at `src/mcp.ts:214-215` BEFORE the `try` block — i.e. at protocol level, observable by the MCP client as a request error. Only post-auth store failures fall into the `try` (`:217-222`) and become sanitized `isError` results (`failed({error:"internal_error"})` + `logSafeNote` stderr line), which is the correct posture: a dead Helix must never crash the stdio process and must never leak secrets/content. Auth-first-then-boundary ordering is verified by reading `src/mcp.ts:209-223`. This matches the Lane 4 accepted residual S-004-005 pattern (protocol behavior declared, no secret/schema leakage). **Owner:** R2 (declaration). **Expiry:** re-review only if `handle()` ordering changes or auth moves inside the `try`.
+
+## 6. Evidence hygiene statement
+
+This delta review cites allowlisted references only: file paths, line numbers, grep counts, and error-code strings. No secrets, credentials, tokens, or sessions are recorded (placeholders only). No raw PII appears in evidence (`<note-id>` / `<area-name>` placeholders; `[REDACTED]` convention retained for any future user data).
+
+## 7. Sign-off
+
+- [x] **Security Owner (R2) — `general(barrera)`:** **Approved with conditions SC-MOVE-01..05.** STRIDE complete for `POST /v1/notes/:id/move`; bearer/C4/C8/query-safety claims verified against real code (see evidence summary in commit message thread-back). Cleared for `frame-ship:execute-spec` (discharges ADR-0003 C1); all five conditions to be validated at `frame-ship:quality-gate`.
+- [ ] **Engineering Owner (R1) — `general(vasquez)`:** required countersignature (owner of SC-MOVE-01..04 implementation).
+- [ ] **Automation/Ops Owner (R8) — `general(espinoza)`:** required countersignature (CLI `move` repoint, ADR-0003 C3).
+- [ ] **Legal/Privacy Owner (R4) — `general(subero)`:** consumed as-is (no new PII store; Ley 172-13 posture carried over).
+
+**Packet:** `SPEC:docs/specs/20_backlog/SPEC-004-brainy-security.md#REQ-BRAINY-SEC + SPEC-001#REQ-BRAINY-ENG-06,AC-06,AC-12 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:architecture=Approved-with-conditions C1..C4 (C1 = R2 approval required before execute) / DOMAINS:R2,R1,R8,R4,R5`
