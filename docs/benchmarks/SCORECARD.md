@@ -138,3 +138,79 @@ Notes:
   appendix are what THIS run observed.
 - If searches report `index_not_found`, run `npx tsx scripts/bootstrap.ts` first
   (idempotent), then re-run.
+
+---
+
+## NFR-01 scale (10k) — R1 scale-evidence lane, 2026-09-25
+
+**Closing condition:** C-QA-02 / RL-003 (p95 < 10ms proven only at N=40; 10k leg not-run).
+
+**Environment:** slot3 owned by this lane — REST :3117 (pid 9302), Helix :6971
+(instance `slot3`), bootstrap `25 indexes ensured` + READY. Shared `dev` :6969
+and ports 3111/3112/3113 never touched. Node v26.9.0, tsx v4.23.15.
+(slot2 was `owned=no`/occupied by a sibling R8 lane at start — this lane used
+slot3 per the conflict rule and signaled no foreign PID.)
+
+**Method:** `npx tsx scripts/eval.ts --scale 10000` (new scale mode; default
+40-doc mode byte-identical behavior). Deterministic seed 20260925, N=10,000
+synthetic notes (25 probe topics x 8 docs with planted distinctive token
+pairs + 9,800 distractors; 8-word nonce tail per doc; build-time asserts:
+zero probe-token leakage, all intra-topic + 5,000 sampled pairs Jaccard <
+0.85 so the 0.9 near-dup merge never fires). 25 held-out probe queries,
+limit=10, 5 warmup + 60 measured sequential searches per path, client
+round-trip over localhost, nearest-rank percentiles. Graph leg = concepts
+branch of `POST /memory/smart-search` (topic-tag concepts); `POST /v1/link`
+operates on PARA Note nodes, not memory rows, so it cannot link memories.
+
+**Ingestion:** 10,000 docs in 2566.2s = **3.9 notes/sec** fresh
+(190.6 notes/sec dedup re-ingest). ~300 transient Helix
+`transaction_conflict` 500s across the fresh ingest, all absorbed by harness
+retry (5 attempts, exp backoff); immediate manual retry also 201s — transient
+contention, not data loss. Counts gate exact: memories=10000.
+
+**Latency (N=10,000):**
+
+| path | n | min | p50 | p95 | max |
+|---|---|---|---|---|---|
+| bm25 `POST /memory/search` | 60 | 24.41ms | 29.08ms | **39.20ms** | 47.60ms |
+| hybrid `POST /memory/smart-search` concepts=[] | 60 | 104.74ms | 126.98ms | **143.71ms** | 157.67ms |
+| hybrid+concepts `POST /memory/smart-search` topic tag | 60 | 108.79ms | 133.62ms | **175.20ms** | 193.62ms |
+
+**Quality at scale (planted qrels — meaningful, not vacuous):**
+
+| mode | R@5 | R@10 | MRR@10 | nDCG@10 |
+|---|---|---|---|---|
+| bm25 | 0.3950 | 0.8050 | 0.9100 | 0.7782 |
+| hybrid | 0.3250 | 0.5700 | 0.7600 | 0.5571 |
+| hybrid+concepts | 0.3400 | 0.7800 | 0.4880 | 0.6362 |
+
+**NFR-01 verdict: FAIL at 10k scale.** Every path exceeds p95 < 10ms
+(bm25 39.20ms ≈ 4x over; hybrid 143.71ms ≈ 14x; graph 175.20ms ≈ 18x).
+No tuning was performed to force a pass; no waiver is claimed here. The 40-doc
+section above stays as historical record.
+
+**New finding S1 (High — blocks NFR-01; product, off-whitelist, no fix
+applied):** every `smart-search`+concepts query returns a rank-0
+`"source":"graph"` hit with correct content but **empty `id` and `memoryId`**
+(25/25 queries, deterministic). Evidence: raw `POST
+/memory/smart-search` responses captured 2026-09-25 (e.g. query `veltrox
+quandar shards the cache slabs` → rank 0 `memoryId:""`, content =
+`[scale-note s00001 ...]`). The harness scores these as rank-occupying misses
+(UNUSABLE=25) and times the path regardless. Owner: R1 (src/search.ts graph
+traversal → result mapping). Repro: seed scale project + `smart-search` with
+any topic-tag concept.
+
+**Observation S2 (Medium — reliability, for R1/reliability lane):** Helix
+answers lone sequential writes/deletes with transient `transaction_conflict`
+500s (~1/30 writes at scale ingest; also on rapid `POST /memory/forget`
+bursts; server log `slot-3.log`). Always resolved on retry; surfaced as
+`internal_error` with no server-side retry. Not NFR-01-blocking (read-path
+NFR), recorded for the reliability owner.
+
+**Reproduce:**
+
+```bash
+node bin/brainy.mjs start --slot 3          # REST 3117 / Helix 6971
+HELIX_URL=http://localhost:6971 npx tsx scripts/bootstrap.ts
+AGENT_MEMORY_URL=http://127.0.0.1:3117 npx tsx scripts/eval.ts --scale 10000
+```

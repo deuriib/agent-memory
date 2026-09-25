@@ -53,6 +53,7 @@
  * (idempotent) first.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { logSafeNote } from "../src/errors.js";
 import { EVAL_DOCS, EVAL_QUERIES, type EvalDoc, type EvalQuery } from "../eval/corpus.js";
@@ -179,6 +180,14 @@ const rememberResultSchema = z.object({ id: z.string().min(1), deduped: z.boolea
 const searchEnvelopeSchema = z.object({
   mode: z.enum(["bm25", "hybrid"]),
   results: z.array(z.object({ memoryId: z.string().min(1) })),
+});
+
+/** Lenient shape for the graph path: graph-source hits may carry an empty
+ * memoryId (product bug — filed cross-domain to R1). The harness maps those
+ * to unique unusable sentinels (rank-occupying misses), never to qrels. */
+const scaleRawEnvelopeSchema = z.object({
+  mode: z.string(),
+  results: z.array(z.object({ memoryId: z.string() })),
 });
 
 type RememberResult = z.infer<typeof rememberResultSchema>;
@@ -467,6 +476,769 @@ function renderScorecard(
 }
 
 /* ------------------------------------------------------------------ */
+/* Scale mode (--scale N): NFR-01 latency proof at gate scale          */
+/*                                                                     */
+/* Default behavior (no flag) is UNCHANGED: main() below runs the      */
+/* 40-doc corpus, writes the scorecard, prints EVAL PASS. Scale mode   */
+/* uses a SEPARATE tenant project, never touches the scorecard file,   */
+/* and prints a paste-ready markdown block to stdout.                  */
+/*                                                                     */
+/* Corpus: deterministic mulberry32(SEED) generation. 25 probe topics  */
+/* x 8 docs carry a planted distinctive token pair (qrels); the rest   */
+/* are distractors from a generic pool that never contains probe       */
+/* tokens (asserted at build time). Every doc carries an 8-word nonce  */
+/* tail (asserted pairwise Jaccard < 0.85 at build) so the product's   */
+/* near-dup consolidation (default Jaccard >= 0.9) never merges two    */
+/* scale docs — the run measures retrieval, not consolidation. The     */
+/* graph leg is exercised through the concepts branch of               */
+/* POST /memory/smart-search (topic-tag concepts per probe query);     */
+/* POST /v1/link is NOT used — it operates on PARA Note nodes, not     */
+/* memory rows, so it cannot link scale memories. Quality metrics are  */
+/* therefore meaningful (planted qrels), not vacuous — and latency is  */
+/* client-measured round-trip per search.                              */
+/* ------------------------------------------------------------------ */
+
+const SCALE_PROJECT = "agent-memory-eval-scale";
+const SCALE_SESSION_ID = "eval-scale-seed";
+const SCALE_ORIGIN = "eval-scale";
+const SCALE_SEED = 20260925;
+const SCALE_DEFAULT_N = 10_000;
+const SCALE_MIN_N = 250;
+const SCALE_PROBE_TOPIC_COUNT = 25;
+const SCALE_PROBE_DOCS_PER_TOPIC = 8;
+const SCALE_WARMUP = 5;
+const SCALE_MEASURED = 60;
+const SCALE_INGEST_LOG_EVERY = 1_000;
+/* Write/read resilience: Helix can answer a lone write with a transient
+ * `transaction_conflict` 500 under sequential load (observed 1 in ~55 during
+ * the first 10k attempt; immediate manual retry 201). The harness retries
+ * retryable statuses, never 4xx/shape drift (fail fast). This changes no
+ * product code and no measurement methodology — only run survival. */
+const SCALE_ATTEMPTS = 5;
+const SCALE_RETRY_BASE_MS = 250;
+
+function isRetryableScaleStatus(status: number): boolean {
+  return status === -1 || status === 429 || (status >= 500 && status < 600);
+}
+
+async function callScaleWrite(
+  label: string,
+  method: string,
+  path: string,
+  body: unknown,
+): Promise<HttpResult> {
+  let last: HttpResult = { status: -1, body: "no attempts made" };
+  for (let attempt = 1; attempt <= SCALE_ATTEMPTS; attempt++) {
+    last = await call(method, path, undefined, body);
+    if (last.status >= 200 && last.status < 300) return last;
+    if (!isRetryableScaleStatus(last.status) || attempt === SCALE_ATTEMPTS) return last;
+    console.log(`${label}: attempt ${attempt}/${SCALE_ATTEMPTS} -> ${last.status}, backing off`);
+    await sleep(SCALE_RETRY_BASE_MS * 2 ** (attempt - 1));
+  }
+  return last;
+}
+
+/** CLI: no args -> null (default 40-doc mode). `--scale [N]` / `--scale=N`. */
+function parseScaleArg(argv: string[]): number | null {
+  let scale: number | null = null;
+  for (let i = 0; i < argv.length; i++) {
+    const arg: string | undefined = argv[i];
+    if (arg === "--scale") {
+      const next: string | undefined = argv[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        scale = SCALE_DEFAULT_N;
+      } else {
+        const parsed = Number.parseInt(next, 10);
+        if (!Number.isSafeInteger(parsed) || parsed < SCALE_MIN_N) {
+          return fail(`--scale expects an integer >= ${SCALE_MIN_N}, got "${next}"`);
+        }
+        scale = parsed;
+        i += 1;
+      }
+    } else if (arg !== undefined && arg.startsWith("--scale=")) {
+      const raw = arg.slice("--scale=".length);
+      const parsed = Number.parseInt(raw, 10);
+      if (!Number.isSafeInteger(parsed) || parsed < SCALE_MIN_N) {
+        return fail(`--scale expects an integer >= ${SCALE_MIN_N}, got "${raw}"`);
+      }
+      scale = parsed;
+    } else {
+      return fail(`unknown argument "${arg}" — usage: npx tsx scripts/eval.ts [--scale N | --scale=N]`);
+    }
+  }
+  return scale;
+}
+
+/** Deterministic PRNG (mulberry32) — same seed -> same corpus, every run. */
+export function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = state;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pick<T>(rng: () => number, items: readonly T[]): T {
+  const item: T | undefined = items[Math.floor(rng() * items.length)];
+  if (item === undefined) fail("scale corpus: empty pick pool (internal bug)");
+  return item;
+}
+
+/** Distinctive token pairs — invented stems, never present in generic pool. */
+const SCALE_PROBE_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ["veltrox", "quandar"],
+  ["zephra", "moltvik"],
+  ["kludgex", "prillox"],
+  ["snarvek", "tundrax"],
+  ["mortvane", "wexley"],
+  ["jorvik", "plendel"],
+  ["traxel", "quimbor"],
+  ["vexley", "drantor"],
+  ["zindle", "fraxmoor"],
+  ["grembal", "oshvane"],
+  ["quistral", "vendrox"],
+  ["threxmoor", "yavendel"],
+  ["blorvik", "quandel"],
+  ["crimvelox", "jastriel"],
+  ["drovnyk", "kestrev"],
+  ["esplivor", "fentrax"],
+  ["glimvord", "hestria"],
+  ["jexmora", "klintra"],
+  ["limvostre", "mendrex"],
+  ["norvixel", "pardune"],
+  ["osklep", "vortune"],
+  ["pivendrax", "quelmor"],
+  ["ristral", "sodvex"],
+  ["trovnyk", "uldrex"],
+  ["wexmar", "yoltren"],
+];
+
+const SCALE_VERBS: readonly string[] = [
+  "compacts",
+  "replicates",
+  "drains",
+  "rebalances",
+  "snapshots",
+  "replays",
+  "shards",
+  "evicts",
+];
+
+const SCALE_OBJECTS: readonly string[] = [
+  "the quorum ledger",
+  "the write-ahead log",
+  "the segment files",
+  "the replica queue",
+  "the checkpoint markers",
+  "the partition map",
+  "the backlog pages",
+  "the cache slabs",
+];
+
+const SCALE_DETAILS: readonly string[] = [
+  "in bounded batches",
+  "under backpressure",
+  "without blocking readers",
+  "with checksum verification",
+  "across restart boundaries",
+  "before acknowledging writes",
+  "during rolling upgrades",
+  "after leader election",
+];
+
+const SCALE_GENERIC_SENTENCES: readonly string[] = [
+  "Connection pools leak when transactions stay open; always commit or rollback in a finally block.",
+  "Cache eviction under memory pressure drops hot keys first; raise the limit before thrash.",
+  "Add nullable columns first, backfill rows, then add the constraint to avoid long migration locks.",
+  "Batch scattered lookups into one query to cut tail latency on dashboards.",
+  "Never read your own writes from a lagging replica inside the same request.",
+  "Quarantine flaky pipeline tests within a day so the main branch stays green.",
+  "Short-lived tokens with rotation beat long-lived secrets for service authentication.",
+  "Keep-alive reuse across requests removes handshake overhead on busy gateways.",
+  "Virtualize long lists so scrolling never blocks the render loop.",
+  "Preload critical assets and lazy-load everything below the fold.",
+  "Liveness probes must fail fast so unhealthy containers restart before traffic piles up.",
+  "Scrape metrics on a fixed interval and alert on burn rate, not on single spikes.",
+  "Pin dependency versions and scan the lockfile on every pipeline run.",
+  "Trace identifiers must propagate across service boundaries for end-to-end debugging.",
+  "Bounded retries with jitter protect downstream services during partial outages.",
+  "Expire sessions server-side and rotate identifiers after privilege changes.",
+];
+
+const SCALE_GENERIC_TAGS: readonly string[] = [
+  "databases",
+  "cache",
+  "migrations",
+  "performance",
+  "ci",
+  "testing",
+  "auth",
+  "networking",
+  "frontend",
+  "deploy",
+  "observability",
+  "security",
+  "queues",
+  "containers",
+];
+
+export interface ScaleQuery {
+  query: string;
+  relevant: string[];
+  concepts: string[];
+}
+
+interface ScaleCorpus {
+  docs: EvalDoc[];
+  queries: ScaleQuery[];
+}
+
+/** Nonce tail pool: invented stems, disjoint from probe + generic tokens
+ * (asserted at build). 8 distinct tail words per doc keep every pair's
+ * token-set Jaccard far below the product's 0.9 merge threshold, so the
+ * scale run measures retrieval — never near-dup consolidation. */
+const SCALE_TAIL_WORDS: readonly string[] = [
+  "wumblor",
+  "yexford",
+  "zabrin",
+  "quindle",
+  "voxtrin",
+  "praxley",
+  "nimbor",
+  "thwick",
+  "ulbren",
+  "fendral",
+  "gribnox",
+  "hoskell",
+  "ibrex",
+  "janvor",
+  "kestrol",
+  "lumbrix",
+  "mivarn",
+  "nexdor",
+  "obtrindle",
+  "pexmor",
+  "quilvex",
+  "rondar",
+  "sibrel",
+  "tavrox",
+  "undrell",
+  "vexmar",
+  "wexlin",
+  "xylnor",
+  "yavrok",
+  "zendrex",
+  "blixmor",
+  "cendral",
+  "doxley",
+  "exvorn",
+  "flixnor",
+  "grendax",
+  "hixmor",
+  "ilvex",
+  "jundrex",
+  "kivorn",
+  "lixdra",
+  "movrex",
+  "nuvlex",
+  "oxdren",
+  "paxnor",
+  "quivrel",
+  "rixdor",
+  "sovrex",
+  "tuvlex",
+  "uxbren",
+  "vixdor",
+  "wovtrex",
+  "xavdren",
+  "yuvnor",
+  "zivrel",
+  "blendrex",
+  "crivox",
+  "drunvex",
+  "estribor",
+  "frondax",
+  "grivlex",
+  "hondrex",
+  "istrivor",
+  "jundex",
+  "kendrex",
+  "lostrine",
+  "mostrex",
+  "nondrix",
+  "ostrivex",
+  "prundax",
+  "restrivor",
+  "sondrex",
+  "tondrix",
+  "unstrivox",
+  "vendrix",
+  "wondrex",
+  "xondrix",
+  "yendrex",
+  "zondrix",
+];
+const SCALE_TAIL_WORDS_PER_DOC = 8;
+/** Build-time dissimilarity bar: product merges at Jaccard >= 0.9, so every
+ * checked pair must stay under 0.85 (0.05 headroom). */
+const SCALE_MAX_PAIR_JACCARD = 0.85;
+const SCALE_SAMPLE_PAIRS = 5_000;
+
+function drawTail(rng: () => number): string {
+  const pool = [...SCALE_TAIL_WORDS];
+  const tail: string[] = [];
+  for (let k = 0; k < SCALE_TAIL_WORDS_PER_DOC; k++) {
+    const idx = Math.floor(rng() * pool.length);
+    const word: string | undefined = pool.splice(idx, 1)[0];
+    if (word === undefined) fail("scale corpus: tail pool exhausted (internal bug)");
+    tail.push(word);
+  }
+  return tail.join(" ");
+}
+
+function tokenizeLower(text: string): string[] {
+  return text.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length >= 2);
+}
+
+function jaccardSets(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of a) {
+    if (b.has(token)) intersection += 1;
+  }
+  return intersection / (a.size + b.size - intersection);
+}
+
+/** Fail loudly when any checked pair could merge under the product default. */
+function assertScaleDissimilar(docs: EvalDoc[], rng: () => number): void {
+  const sets = docs.map((doc) => new Set(tokenizeLower(doc.content)));
+  const check = (i: number, j: number, context: string): void => {
+    const a: Set<string> | undefined = sets[i];
+    const b: Set<string> | undefined = sets[j];
+    if (a === undefined || b === undefined) fail("scale corpus: pair index missing");
+    const sim = jaccardSets(a, b);
+    if (sim >= SCALE_MAX_PAIR_JACCARD) {
+      fail(
+        `scale corpus: ${context} pair (${docs[i]?.id}, ${docs[j]?.id}) Jaccard ` +
+          `${sim.toFixed(3)} >= ${SCALE_MAX_PAIR_JACCARD} — would merge at runtime`,
+      );
+    }
+  };
+  const probeCount = SCALE_PROBE_TOPIC_COUNT * SCALE_PROBE_DOCS_PER_TOPIC;
+  for (let topic = 0; topic < SCALE_PROBE_TOPIC_COUNT; topic++) {
+    const base = topic * SCALE_PROBE_DOCS_PER_TOPIC;
+    for (let x = 0; x < SCALE_PROBE_DOCS_PER_TOPIC; x++) {
+      for (let y = x + 1; y < SCALE_PROBE_DOCS_PER_TOPIC; y++) {
+        check(base + x, base + y, "intra-topic");
+      }
+    }
+  }
+  for (let s = 0; s < SCALE_SAMPLE_PAIRS; s++) {
+    const i = Math.floor(rng() * docs.length);
+    let j = Math.floor(rng() * docs.length);
+    if (j === i) j = (j + 1) % docs.length;
+    check(i, j, "sample");
+  }
+}
+
+export function buildScaleCorpus(total: number, rng: () => number): ScaleCorpus {
+  if (SCALE_PROBE_PAIRS.length !== SCALE_PROBE_TOPIC_COUNT) {
+    fail(
+      `scale corpus: probe pair table has ${SCALE_PROBE_PAIRS.length} rows, ` +
+        `expected ${SCALE_PROBE_TOPIC_COUNT} (internal bug)`,
+    );
+  }
+  const probeDocCount = SCALE_PROBE_TOPIC_COUNT * SCALE_PROBE_DOCS_PER_TOPIC;
+  if (total < probeDocCount + 50) {
+    fail(`scale corpus: N=${total} too small for ${probeDocCount} probe docs + distractors`);
+  }
+  const probeTokens = new Set<string>();
+  for (const [a, b] of SCALE_PROBE_PAIRS) {
+    probeTokens.add(a);
+    probeTokens.add(b);
+  }
+  for (const sentence of SCALE_GENERIC_SENTENCES) {
+    for (const token of tokenizeLower(sentence)) {
+      if (probeTokens.has(token)) {
+        fail(`scale corpus: generic pool leaks probe token "${token}" (internal bug)`);
+      }
+    }
+  }
+
+  const docs: EvalDoc[] = [];
+  const queries: ScaleQuery[] = [];
+  let serial = 0;
+  const nextId = (): string => {
+    serial += 1;
+    return `s${String(serial).padStart(5, "0")}`;
+  };
+
+  for (let topic = 0; topic < SCALE_PROBE_PAIRS.length; topic++) {
+    const pair = SCALE_PROBE_PAIRS[topic];
+    if (pair === undefined) fail("scale corpus: probe pair missing (internal bug)");
+    const [a, b] = pair;
+    const tag = `probe-t${String(topic + 1).padStart(2, "0")}`;
+    const topicIds: string[] = [];
+    for (let k = 0; k < SCALE_PROBE_DOCS_PER_TOPIC; k++) {
+      const id = nextId();
+      const verb = pick(rng, SCALE_VERBS);
+      const object = pick(rng, SCALE_OBJECTS);
+      const detail = pick(rng, SCALE_DETAILS);
+      const generic = pick(rng, SCALE_GENERIC_SENTENCES);
+      const tail = drawTail(rng);
+      const capA = a.slice(0, 1).toUpperCase() + a.slice(1);
+      const content =
+        `${capA} ${b} ${verb} ${object} ${detail}. ${generic} [scale-note ${id} ${tail}]`;
+      docs.push({ id, content, concepts: ["scaleprobe", tag, pick(rng, SCALE_GENERIC_TAGS)] });
+      topicIds.push(id);
+    }
+    const qVerb = pick(rng, SCALE_VERBS);
+    const qObject = pick(rng, SCALE_OBJECTS);
+    queries.push({ query: `${a} ${b} ${qVerb} ${qObject}`, relevant: topicIds, concepts: [tag] });
+  }
+
+  while (docs.length < total) {
+    const id = nextId();
+    const first = pick(rng, SCALE_GENERIC_SENTENCES);
+    let second = pick(rng, SCALE_GENERIC_SENTENCES);
+    if (second === first) second = pick(rng, SCALE_GENERIC_SENTENCES);
+    const tail = drawTail(rng);
+    docs.push({
+      id,
+      content: `${first} ${second} [scale-note ${id} ${tail}]`,
+      concepts: [pick(rng, SCALE_GENERIC_TAGS), pick(rng, SCALE_GENERIC_TAGS)],
+    });
+  }
+  for (const word of SCALE_TAIL_WORDS) {
+    if (probeTokens.has(word)) fail(`scale corpus: tail pool leaks probe token "${word}"`);
+  }
+  assertScaleDissimilar(docs, rng);
+  return { docs, queries };
+}
+
+/** REST client bound to the SCALE tenant (default-path RestClient untouched). */
+class ScaleRestClient implements EvalClient {
+  async health(): Promise<void> {
+    const response = await call("GET", "memory/health", { project: SCALE_PROJECT });
+    if (response.status !== 200) {
+      throw new Error(`GET memory/health?project=${SCALE_PROJECT} -> ${response.status}`);
+    }
+    parseOrFail("scale health envelope", response.body, healthEnvelopeSchema);
+  }
+
+  async remember(doc: EvalDoc): Promise<RememberResult> {
+    const response = await callScaleWrite(`scale remember(${doc.id})`, "POST", "memory/remember", {
+      content: doc.content,
+      concepts: doc.concepts,
+      project: SCALE_PROJECT,
+      sessionId: SCALE_SESSION_ID,
+      origin: SCALE_ORIGIN,
+    });
+    if (response.status !== 201) {
+      return fail(
+        `scale remember(${doc.id}) -> ${response.status} (expected 201) — body=${brief(response.body)}`,
+      );
+    }
+    return parseOrFail(`scale remember(${doc.id})`, response.body, rememberResultSchema);
+  }
+
+  async search(query: string, limit: number): Promise<string[]> {
+    const response = await callScaleWrite("scale search", "POST", "memory/search", {
+      query,
+      project: SCALE_PROJECT,
+      limit,
+    });
+    if (response.status !== 200) {
+      return fail(`scale search -> ${response.status} (expected 200) — body=${brief(response.body)}`);
+    }
+    const envelope = parseOrFail("scale search envelope", response.body, searchEnvelopeSchema);
+    return envelope.results.map((row) => row.memoryId);
+  }
+
+  async smartSearch(query: string, concepts: string[], limit: number): Promise<string[]> {
+    const response = await callScaleWrite("scale smart-search", "POST", "memory/smart-search", {
+      query,
+      concepts,
+      project: SCALE_PROJECT,
+      limit,
+    });
+    if (response.status !== 200) {
+      return fail(
+        `scale smart-search -> ${response.status} (expected 200) — body=${brief(response.body)}`,
+      );
+    }
+    const envelope = parseOrFail("scale smart-search envelope", response.body, searchEnvelopeSchema);
+    return envelope.results.map((row) => row.memoryId);
+  }
+
+  /** Raw ids for the graph path — may contain "" (unusable hits, see above). */
+  async smartSearchRawIds(query: string, concepts: string[], limit: number): Promise<string[]> {
+    const response = await callScaleWrite("scale smart-search+concepts", "POST", "memory/smart-search", {
+      query,
+      concepts,
+      project: SCALE_PROJECT,
+      limit,
+    });
+    if (response.status !== 200) {
+      return fail(
+        `scale smart-search+concepts -> ${response.status} (expected 200) — body=${brief(response.body)}`,
+      );
+    }
+    const envelope = parseOrFail("scale smart-search+concepts envelope", response.body, scaleRawEnvelopeSchema);
+    return envelope.results.map((row) => row.memoryId);
+  }
+
+  async projectCounts(): Promise<{ memories: number; sessions: number }> {    const response = await call("GET", "memory/health", { project: SCALE_PROJECT });
+    if (response.status !== 200) {
+      return fail(`scale post-seed health -> ${response.status} (expected 200)`);
+    }
+    const envelope = parseOrFail("scale health envelope", response.body, healthEnvelopeSchema);
+    return envelope.counts;
+  }
+}
+
+interface LatencyStats {
+  n: number;
+  min: number;
+  p50: number;
+  p95: number;
+  max: number;
+}
+
+function quantileSorted(sorted: number[], q: number): number {
+  if (sorted.length === 0) fail("scale latency: no samples (internal bug)");
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((q / 100) * sorted.length) - 1));
+  const value: number | undefined = sorted[idx];
+  if (value === undefined) fail("scale latency: quantile index missing (internal bug)");
+  return value;
+}
+
+async function probeLatency(
+  run: (query: string) => Promise<unknown>,
+  queries: string[],
+): Promise<LatencyStats> {
+  for (let w = 0; w < SCALE_WARMUP; w++) {
+    const warm: string | undefined = queries[w % queries.length];
+    if (warm === undefined) fail("scale latency: warmup query missing");
+    await run(warm);
+  }
+  const samples: number[] = [];
+  for (let i = 0; i < SCALE_MEASURED; i++) {
+    const query: string | undefined = queries[i % queries.length];
+    if (query === undefined) fail("scale latency: probe query missing");
+    const start = performance.now();
+    await run(query);
+    samples.push(performance.now() - start);
+  }
+  samples.sort((a, b) => a - b);
+  const first: number | undefined = samples[0];
+  const last: number | undefined = samples[samples.length - 1];
+  if (first === undefined || last === undefined) fail("scale latency: empty sample set");
+  return {
+    n: samples.length,
+    min: first,
+    p50: quantileSorted(samples, 50),
+    p95: quantileSorted(samples, 95),
+    max: last,
+  };
+}
+
+const fmtMs = (value: number): string => `${value.toFixed(2)}ms`;
+
+async function mainScale(total: number): Promise<void> {
+  const client = new ScaleRestClient();
+  console.log(`eval-scale: target=${NORMALIZED_BASE.href} project=${SCALE_PROJECT} docs=${total} seed=${SCALE_SEED}`);
+
+  /* Identity guard — read-only, BEFORE any write (same pattern as main). */
+  const identity = await call("POST", "memory/recap", undefined, {});
+  if (identity.status === -1) {
+    fail(
+      `cannot reach ${NORMALIZED_BASE.href} (recap unreachable: ${String(identity.body)}) — ` +
+        `start OUR server first. No data was written.`,
+    );
+  }
+  if (identity.status === 401) {
+    fail(
+      `target ${NORMALIZED_BASE.href} requires bearer auth — export AGENT_MEMORY_SECRET in this ` +
+        `shell (same value as the server) and re-run. No data was written.`,
+    );
+  }
+  if (identity.status !== 200) {
+    fail(
+      `identity guard: POST memory/recap -> ${identity.status} (body=${brief(identity.body)}) — ` +
+        `expected 200 from OUR server. No data was written.`,
+    );
+  }
+  console.log("identity: POST memory/recap -> 200 (our server), proceeding");
+
+  try {
+    await client.health();
+  } catch (err) {
+    fail(`scale health gate failed at ${NORMALIZED_BASE.href} (${logSafeNote(err)})`);
+  }
+  console.log("health: gate passed (counts present)");
+
+  const rng = mulberry32(SCALE_SEED);
+  const corpus = buildScaleCorpus(total, rng);
+  console.log(
+    `corpus: ${corpus.docs.length} docs (${corpus.queries.length} probe queries), ` +
+      `deterministic seed ${SCALE_SEED}`,
+  );
+
+  /* Ingest — content dedup makes re-runs converge to the same ids. */
+  const ingestStart = performance.now();
+  const idByDoc = new Map<string, string>();
+  const seenMemoryIds = new Set<string>();
+  let done = 0;
+  for (const doc of corpus.docs) {
+    const result = await client.remember(doc);
+    if (seenMemoryIds.has(result.id)) {
+      fail(`scale corpus-content bug: duplicate remembered id ${result.id} (doc "${doc.id}")`);
+    }
+    seenMemoryIds.add(result.id);
+    idByDoc.set(doc.id, result.id);
+    done += 1;
+    if (done % SCALE_INGEST_LOG_EVERY === 0) console.log(`ingest: ${done}/${corpus.docs.length}`);
+  }
+  const ingestMs = performance.now() - ingestStart;
+  const ingestPerSec = (corpus.docs.length / ingestMs) * 1000;
+  console.log(
+    `ingest: ${corpus.docs.length} docs in ${(ingestMs / 1000).toFixed(1)}s ` +
+      `(${ingestPerSec.toFixed(1)} notes/sec)`,
+  );
+
+  /* Graph leg note: POST /v1/link operates on PARA Note nodes, not memory
+   * rows, so it cannot link scale memories. The graph branch IS exercised
+   * through the concepts path of POST /memory/smart-search (topic-tag
+   * concepts per probe query — scored and probed as hybrid+concepts below;
+   * the 40-doc scorecard documents concepts:[] as graph-INACTIVE). */
+
+  /* Row count — exactly one row per doc (re-runs dedup to the same ids). */
+  const counts = await client.projectCounts();
+  console.log(`counts: memories=${counts.memories} sessions=${counts.sessions} (project ${SCALE_PROJECT})`);
+  if (counts.memories !== corpus.docs.length) {
+    fail(
+      `project ${SCALE_PROJECT} holds ${counts.memories} rows but the scale corpus has ` +
+        `${corpus.docs.length} docs — foreign or stale rows; clear the project before re-running.`,
+    );
+  }
+
+  /* Smoke — first probe query retrievable. */
+  const firstQuery: ScaleQuery | undefined = corpus.queries[0];
+  if (firstQuery === undefined) fail("scale corpus has no queries");
+  let smokeHits: string[] = [];
+  let smokeAttempt = 0;
+  for (let attempt = 1; attempt <= SMOKE_ATTEMPTS; attempt++) {
+    smokeAttempt = attempt;
+    smokeHits = await client.search(firstQuery.query, EVAL_LIMIT);
+    if (smokeHits.length > 0) break;
+    if (attempt < SMOKE_ATTEMPTS) await sleep(SMOKE_RETRY_MS);
+  }
+  if (smokeHits.length === 0) fail(`scale smoke query returned 0 rows after ${SMOKE_ATTEMPTS} attempts`);
+  console.log(`smoke: ${smokeHits.length} rows on attempt ${smokeAttempt}/${SMOKE_ATTEMPTS}`);
+
+  /* Quality — planted qrels, three retrieval paths (graph branch via concepts). */
+  const docByMemory = new Map<string, string>();
+  for (const [docId, memoryId] of idByDoc) docByMemory.set(memoryId, docId);
+  const mapToDocIds = (memoryIds: string[], context: string): string[] => {
+    const mapped: string[] = [];
+    for (const memoryId of memoryIds) {
+      const docId = docByMemory.get(memoryId);
+      if (docId === undefined) {
+        fail(`${context} returned memoryId ${memoryId} outside the scale corpus — foreign rows`);
+      }
+      mapped.push(docId);
+    }
+    return mapped;
+  };
+  const bm25Scores: QueryScore[] = [];
+  const hybridScores: QueryScore[] = [];
+  const graphScores: QueryScore[] = [];
+  let graphUnusable = 0;
+  for (let qi = 0; qi < corpus.queries.length; qi++) {
+    const entry = corpus.queries[qi];
+    if (entry === undefined) fail("scale corpus: query missing (internal bug)");
+    const bm25Ranked = mapToDocIds(await client.search(entry.query, EVAL_LIMIT), "scale search");
+    const hybridRanked = mapToDocIds(
+      await client.smartSearch(entry.query, [], EVAL_LIMIT),
+      "scale smart-search",
+    );
+    const graphRanked = (await client.smartSearchRawIds(entry.query, entry.concepts, EVAL_LIMIT)).map(
+      (memoryId, rank) => {
+        if (memoryId !== "") {
+          const docId = docByMemory.get(memoryId);
+          if (docId !== undefined) return docId;
+          fail(
+            `scale smart-search+concepts returned memoryId ${memoryId} outside the scale corpus — foreign rows`,
+          );
+        }
+        graphUnusable += 1;
+        return `__unusable:q${qi}r${rank}`;
+      },
+    );
+    bm25Scores.push(scoreQuery(entry.query, bm25Ranked, entry.relevant));
+    hybridScores.push(scoreQuery(entry.query, hybridRanked, entry.relevant));
+    graphScores.push(scoreQuery(entry.query, graphRanked, entry.relevant));
+  }
+  const bm25 = aggregate("bm25", bm25Scores);
+  const hybrid = aggregate("hybrid", hybridScores);
+  const graph = aggregate("hybrid", graphScores);
+  console.log(`scored: ${corpus.queries.length} queries x 3 paths (graph unusable hits: ${graphUnusable})`);
+
+  /* Latency — client-measured round-trip, warmup excluded. */
+  const queryTexts = corpus.queries.map((entry) => entry.query);
+  const conceptOf = (query: string): string[] => {
+    const found = corpus.queries.find((entry) => entry.query === query);
+    return found === undefined ? [] : found.concepts;
+  };
+  const bm25Lat = await probeLatency((q) => client.search(q, EVAL_LIMIT), queryTexts);
+  /* Latency probes use the raw smart-search variant: the graph path returns
+   * rank-0 hits with empty memoryId (product bug, scored as misses above) —
+   * timing the round-trip must not fail on response content. */
+  const hybridLat = await probeLatency((q) => client.smartSearchRawIds(q, [], EVAL_LIMIT), queryTexts);
+  const graphLat = await probeLatency(
+    (q) => client.smartSearchRawIds(q, conceptOf(q), EVAL_LIMIT),
+    queryTexts,
+  );
+
+  const latRow = (label: string, s: LatencyStats): string =>
+    `| ${label} | ${s.n} | ${fmtMs(s.min)} | ${fmtMs(s.p50)} | **${fmtMs(s.p95)}** | ${fmtMs(s.max)} |`;
+
+  console.log("");
+  console.log(`eval-scale summary — ${corpus.docs.length} docs, ${corpus.queries.length} queries, project=${SCALE_PROJECT}`);
+  console.log("mode              R@5     R@10    MRR@10  nDCG@10");
+  console.log(
+    `bm25            ${fmt(bm25.recall5)}  ${fmt(bm25.recall10)}  ${fmt(bm25.mrr10)}  ${fmt(bm25.ndcg10)}`,
+  );
+  console.log(
+    `hybrid          ${fmt(hybrid.recall5)}  ${fmt(hybrid.recall10)}  ${fmt(hybrid.mrr10)}  ${fmt(hybrid.ndcg10)}`,
+  );
+  console.log(
+    `hybrid+concepts ${fmt(graph.recall5)}  ${fmt(graph.recall10)}  ${fmt(graph.mrr10)}  ${fmt(graph.ndcg10)}`,
+  );
+  console.log("");
+  console.log("| path | n | min | p50 | p95 | max |");
+  console.log("|---|---|---|---|---|---|");
+  console.log(latRow("bm25 `POST /memory/search`", bm25Lat));
+  console.log(latRow("hybrid `POST /memory/smart-search` concepts=[]", hybridLat));
+  console.log(latRow("hybrid+concepts `POST /memory/smart-search` topic tag", graphLat));
+  console.log("");
+  console.log("paste-ready scorecard block (method: nearest-rank percentiles on client round-trip, " +
+    `${SCALE_WARMUP} warmup + ${SCALE_MEASURED} measured sequential searches per path, limit=10):`);
+  console.log(`SCALE-N=${corpus.docs.length} INGEST=${ingestPerSec.toFixed(1)}notes/sec GRAPH=concepts-branch(smart-search+topic-tag)`);
+  console.log(`SCALE-BM25 R@5=${fmt(bm25.recall5)} MRR=${fmt(bm25.mrr10)} nDCG=${fmt(bm25.ndcg10)}`);
+  console.log(`SCALE-HYBRID R@5=${fmt(hybrid.recall5)} MRR=${fmt(hybrid.mrr10)} nDCG=${fmt(hybrid.ndcg10)}`);
+  console.log(`SCALE-GRAPH R@5=${fmt(graph.recall5)} MRR=${fmt(graph.mrr10)} nDCG=${fmt(graph.ndcg10)} UNUSABLE=${graphUnusable}`);
+  console.log(`SCALE-LAT-BM25 min=${fmtMs(bm25Lat.min)} p50=${fmtMs(bm25Lat.p50)} p95=${fmtMs(bm25Lat.p95)} max=${fmtMs(bm25Lat.max)}`);
+  console.log(`SCALE-LAT-HYBRID min=${fmtMs(hybridLat.min)} p50=${fmtMs(hybridLat.p50)} p95=${fmtMs(hybridLat.p95)} max=${fmtMs(hybridLat.max)}`);
+  console.log(`SCALE-LAT-GRAPH min=${fmtMs(graphLat.min)} p50=${fmtMs(graphLat.p50)} p95=${fmtMs(graphLat.p95)} max=${fmtMs(graphLat.max)}`);
+  console.log("EVAL SCALE PASS");
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 
@@ -655,7 +1427,21 @@ async function main(): Promise<void> {
   console.log("EVAL PASS");
 }
 
-main().catch((err: unknown) => {
-  console.error(`eval crashed: ${logSafeNote(err)}`);
-  process.exit(1);
-});
+async function run(): Promise<void> {
+  const scaleN = parseScaleArg(process.argv.slice(2));
+  if (scaleN !== null) {
+    await mainScale(scaleN);
+    return;
+  }
+  await main();
+}
+
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  run().catch((err: unknown) => {
+    console.error(`eval crashed: ${logSafeNote(err)}`);
+    process.exit(1);
+  });
+}
