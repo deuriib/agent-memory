@@ -345,7 +345,7 @@ Brainy exposes canonical `/v1/*` endpoints alongside deprecated `/memory/*` alia
 | `POST` | `/v1/search` | Execute hybrid RRF retrieval (vector + graph + BM25) | **Canonical** |
 | `GET` | `/v1/context/:project` | Assemble formatted markdown context for prompt injection | **Canonical** |
 | `POST` | `/v1/link` | Create typed graph edge (`REFERENCES`, `BELONGS_TO`, `RELATES_TO`) | **Canonical** |
-| `DELETE` | `/v1/notes/:id` | Permanently erase note per Ley 172-13 right to erasure | **Canonical** |
+| — | Note erasure (Ley 172-13) | Controller-executed via project-guarded store-level `forgetNote` within the ARCO SLA — no self-service REST route in v1; REST/MCP exposure deferred to the next erasure-surface change or v2 (see Data Privacy section) | *Deferred* |
 | `GET` | `/v1/livez` | Unauthenticated readiness and health probe | **Canonical** |
 | `POST` | `/memory/remember` | Legacy memory capture (transparently rewritten to `/v1/notes`) | *Deprecated (v1.x)* |
 | `POST` | `/memory/smart-search`| Legacy hybrid search (transparently rewritten to `/v1/search`) | *Deprecated (v1.x)* |
@@ -412,8 +412,8 @@ Brainy provides a high-performance stdio MCP server (`McpServer({ name: "brainy"
 Brainy is engineered with strict privacy controls aligning with Dominican Republic **Ley 172-13** on Personal Data Protection:
 
 1. **Explicit Purpose Limitation:** Stored notes are used strictly for local developer session recall and project grounding.
-2. **Deterministic Retention TTL:** All records adhere to `BRAINY_TTL_DAYS` (default: 365 days). Expired records are excluded from retrieval and purged cleanly via `scripts/purge.ts`.
-3. **Right to Erasure (Derecho al Olvido):** Deleting a note via `DELETE /v1/notes/:id` or `brainy forget` permanently purges the node, vector embeddings, and associated graph edges.
+2. **Deterministic Retention TTL:** `BRAINY_TTL_DAYS` (default: 365 days; absent/invalid/≤0 → OFF) drives `filterExpired` on the search paths only (hybrid/BM25): expired Memory rows (ISO `createdAt`) are hidden pre-return with a `ttl: hidden N expired rows` signal — never silently thinned. `scripts/purge.ts` hard-deletes expired Memory rows only (`listExpired` + `forgetMemory`, batches of 500). Note rows (epoch-ms `createdAt`), Todo rows, session listings, `/v1/context/:project` exports, recap/handoff digests, and MCP `brainy_reality_check` grounding bypass the TTL filter — see `docs/CONTRACT.md` v1.8 amendment for the per-store boundary.
+3. **Right to Erasure (Derecho al Olvido):** Memory rows are erased via `POST /memory/forget` (compat) or `POST /memory/delete {memoryId,reason}` (governed path with `{memoryId,deletedAt}` receipt — the SLA evidence path), Todo rows via `DELETE /memory/todos/:id`, and bulk-expired Memory rows via `scripts/purge.ts`. Note-row erasure is controller-executed via project-guarded store-level `forgetNote` within the ARCO SLA (acknowledge ≤5 business days, resolve ≤15 business days; owner `subero`) — there is no `DELETE /v1/notes/:id` route and no `brainy forget` subcommand in v1 (REST/MCP exposure deferred to the next erasure-surface change or v2).
 4. **Zero Prompt Harvesting:** Built-in capture hooks (`hooks/capture.mjs`) strictly filter out raw user prompts and credential-bearing payloads.
 
 ---
