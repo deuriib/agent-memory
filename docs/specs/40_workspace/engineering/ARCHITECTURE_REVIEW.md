@@ -9,6 +9,8 @@
 | Lane 3 — Todos follow-ups | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-020-todos` | 2026-09-25 | **Approved** | none, verdict only (§6) |
 | Lane 2 — P4 ops control plane | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-P4-OPS` | 2026-09-24 | **Approved-with-conditions (C1–C3)** | none, verdict only |
 | Lane 1 — F01 embedding verify (prior, preserved below) | inline orchestrator proposal | `SPEC-F01-EMB` | 2026-09-24 | Conditional | none |
+| Lane 5 — move-route delta | `PROPOSED_CHANGES.md` addendum | `SPEC-001` REQ-06 | 2026-09-25 | **Approved-with-conditions (C1–C4)** | **ADR-0003 created** |
+| **Lane 6 — SPEC-005 remediation (current)** | `legal/PROPOSED_CHANGES.md` (`a289ca0`, CDR-01..04) | `SPEC-005` REQ-LEG-01,03,04 | 2026-09-25 | **Approved-with-conditions (joint R1+R2)** | none, verdict only (§6) |
 
 ---
 
@@ -682,3 +684,66 @@ Pattern grounded on `tests/step6.test.ts:183-213,371-414` fake-store harness (no
 **Assumptions:** `MoveNoteInput` semantics (`src/store.ts:1887-1909`) unchanged; target anchor-or-create retained with `404` on empty/unknown; single-`writeBatch` move serializes in HelixDB (no new locking).
 **Residual risks:** R-MOVE-01 link-accumulated edges persist until R8 repoints (C3); R-MOVE-02 strict-body rejects workaround shape by design; R-MOVE-04 concurrent same-note moves serialize engine-side.
 **Cross-domain:** R2 gate (C1, blocking); R8 repoint (C3, coordinated); R4/R5 no action (no new PII store, no brand surface change).
+
+---
+
+# Architecture Review: SPEC-005-brainy-legal R4 remediation (CDR-01..04) — Lane 6
+
+**Reviewer:** general(vasquez) — Engineering/Architecture Owner (R1), `review-architecture` stage. Independent of the proposing R4 lane; this proposal was authored by `general(subero)`, not by R1.
+**Date:** 2026-09-25
+**Verdict:** **Approved-with-conditions (joint R1+R2)** — R2 conditions CDR-01-C1/C2, CDR-02-C1/C2, CDR-03-C1 (commit `2a6bf20`) carried in full, not waived; R1 adds acknowledgment ACK-R1-CDR-04 below. Cleared for `frame-ship:execute-spec` on these conditions; discharge at execute/quality-gate as noted per condition.
+**Packet (reference-only):** `SPEC:docs/specs/20_backlog/SPEC-005-brainy-legal.md#REQ-BRAINY-LEG-01,03,04 + SPEC-001 §Env contract / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:legal-proposal=a289ca0, R2-co-review=2a6bf20 (CDR-03 ruling (a) approved), legal-review=cf91d47 / DOMAINS:R1,R4,R2,R8,R5`
+**ADR:** none — verdict only (§6 trigger test below; ADR-0004 deliberately NOT created, reasons stated).
+
+| Input | Artifact |
+|---|---|
+| Proposal under review | `docs/specs/40_workspace/legal/PROPOSED_CHANGES.md` (commit `a289ca0`, CDR-01..CDR-04) |
+| R2 co-review (binding, not re-decided) | `docs/specs/40_workspace/engineering/SECURITY_REVIEW.md` SPEC-005 co-review section (commit `2a6bf20`: CDR-01/C2 Approved-with-conditions, CDR-03 ruling (a) approved, S-LEG-001/002, CDR-05 table, CDR-06 §) |
+| Legal review matrix | `docs/specs/40_workspace/legal/LEGAL_REVIEW.md` (commit `cf91d47`, CONDITIONAL-PASS) |
+| Canonical contract | `docs/specs/10_design/ARCHITECTURE.md` v3 (NFR Security row, §3 derived-env TTL row, §7 REST table) |
+| Specs | `docs/specs/20_backlog/SPEC-005-brainy-legal.md` (REQ-01 `:38`, REQ-03 `:44`, REQ-04 `:48`, §4.1 canonical `:92-99`) |
+| Contract facts | `docs/CONTRACT.md` §0 frozen facts, v1.4 Concept-retention declaration (`:48-59`, `:435-475`), §6.4 alias table (`:763-773`) |
+
+## 1. Independent verification (re-read, not taken on faith)
+
+- **CDR-02 gap:** `src/lifecycle.ts:117` reads **only** `readPositiveEnv("AGENT_MEMORY_TTL_DAYS")`; `grep -Rn "BRAINY_TTL" src/` → 0 hits. CLAIM HOLDS. Canonical-first pattern `src/auth.ts:20-34` (`secretFromEnv`: `BRAINY_SECRET` first, alias behind module-level warned flag, static warning, absent → `undefined`) exists as priced. Spawned-path break confirmed: `bin/brainy.mjs:1022-1031` sets `BRAINY_TTL_DAYS` in `serverEnv` but sets **no** `AGENT_MEMORY_TTL_DAYS` — so on the spawned path the legacy-only reader sees unset → TTL OFF. The proposal's rejection of a `bin` dual-set (masks the canonical-first contract) is architecturally correct; the lifecycle-side canonical read fixes all spawn paths at once. Doc comment `src/lifecycle.ts:106` names only the alias — update required as priced.
+- **CDR-04 drift:** `grep -Rn "AGENT_MEMORY_CAPTURE" hooks/ src/ bin/ scripts/` excluding `CAPTURE_PATHS` → 0 hits. Only `AGENT_MEMORY_CAPTURE_PATHS=basename` exists (`hooks/capture.mjs:111-112`, OFF by default). The SPEC-005 `:48` sentence — "**Objection / restriction:** caller may stop capture via `AGENT_MEMORY_CAPTURE off` / omit `concepts` or set `project` isolation" — describes a switch that was never built. DRIFT CONFIRMED. The real paths (store `moveNote`, `project` scoping, omit caller `concepts`, `CAPTURE_PATHS=basename` opt-in) are verified surfaces.
+- **CDR-03 boundary vs frozen REST surface:** `src/server.ts` has `POST /v1/notes/:id/distill` (`:410`), `POST /v1/notes/:id/move` (`:427`, ADR-0003 executed), `POST /memory/forget` (`:689-693`), `POST /memory/delete` (`:756+`, governed). No `DELETE /v1/notes/:id`, no per-note REST rectification route. `ARCHITECTURE.md` §7 table lists the same surface. Boundary (a) adds zero routes → holds against the frozen surface and the ARCH singleton. HOLDS.
+- **CDR-01 vs frozen CONTRACT facts:** §0 facts (probe-verified Helix mechanics) untouched by a PII declaration. v1.4 Concept-retention declaration (`CONTRACT.md:48-59`, `:435-475`) is the declared shape to mirror (purpose + TTL + deletion + honest boundary). SPEC-005 REQ-01 (`:38`) and traceability §7 name the CONTRACT amendment as the authorized proposed change — SPEC-authorized, remaining gate is reviewer verdict. The legacy `AGENT_MEMORY_TTL_DAYS` TTL-filter paragraph (`CONTRACT.md:410-414`) stays as v1.1 legacy behavior text; the new Brainy v1 amendment declares the canonical knob — no contradiction, layered declarations. HOLDS.
+
+## 2. Verdicts per item
+
+- **CDR-01 (CONTRACT Brainy v1 PII declaration + ARCO SLA home) — Approved-with-conditions (CDR-01-C1, CDR-01-C2, joint R1+R2).** Docs-only frozen-contract delta, SPEC-authorized, mirrors SPEC-005 §4.1 canonical text. Conditions carried from R2 `2a6bf20` without waiver: **[CDR-01-C1]** amendment quotes §4.1 verbatim, post-execution greps pass; owner R4 text + R1 frozen-contract delta; deadline Brainy v1 gate. **[CDR-01-C2]** SLA line names owner `subero` + orchestrator escalation; owner R4; deadline Brainy v1 gate.
+- **CDR-02 (`src/lifecycle.ts:117` canonical-first TTL) — Approved-with-conditions (CDR-02-C1, CDR-02-C2, joint R1+R2).** Minimal single-read-site wiring; zero behavior change for alias-configured operators; fail-closed OFF preserved; strict-`>` + unparseable-kept + per-call re-read frozen. Conditions carried: **[CDR-02-C1]** mirror `secretFromEnv` exactly (canonical first, module-level warned flag, static `WARN deprecated use BRAINY_TTL_DAYS`, no values); owner R1 execute lane; deadline at `execute-spec`. **[CDR-02-C2]** gate evidences both knobs + OFF fixture (CDR-07 canary); owner R1+R8; deadline Brainy v1 gate. Residual until landed: canonical TTL unenforced on spawned path (High, owner `vasquez`, expiry Brainy v1 gate).
+- **CDR-03 (ARCO boundary) — RULING (a) ACCEPTED as architecture boundary, with CDR-03-C1 carried.** R1 concurs with R2's ruling: MCP/CLI/store-only erasure/rectification in v1, docs-only boundary record, expiry Brainy v1 gate. It introduces no new API surface, no frozen-table delta, no new STRIDE surface, and is consistent with the frozen REST surface verified in §1. Condition carried: **[CDR-03-C1]** boundary record directs ARCO erasures through the governed path (`POST /memory/delete {memoryId,reason}` / `scripts/purge.ts`), `POST /memory/forget` declared compat-insufficient for SLA evidence; owner R4; deadline Brainy v1 gate. **Option (b) is explicitly NOT approved here.** Invalidation trigger (once, not re-litigated): if orchestrator or R1 rules the ARCO SLA needs an HTTP-surface per-note erasure path, or R2 rules MCP/CLI-only leaves an ungated window, (b) applies — and (b) then requires a fresh `review-architecture` + `review-security` + ADR (frozen-API delta) before implementation.
+- **CDR-04 (SPEC REQ-04 prose fix, option (i)) — Approved; R1 ACKNOWLEDGMENT RECORDED (ACK-R1-CDR-04).** R1, as Engineering Owner, acknowledges the frozen-requirements prose edit: replace the `AGENT_MEMORY_CAPTURE off` claim (SPEC-005 `:48`, quoted in §1) with the verified objection/restriction paths (`brainy move` / `moveNote`, `project` isolation, omit caller `concepts`/`tags`, `CAPTURE_PATHS=basename` opt-in OFF by default). This is the **second required signature** (orchestrator ack recorded per dispatch; this R1 ack completes the pair). Scope locked: only the REQ-04 objection clause changes; REQ/AC ids, bounds, all other prose frozen. Rationale concurred: a new global kill-switch adds env knob + 7-event bypass + STRIDE surface for zero new ARCO coverage, with fail-open misconfiguration risk. No code, no new knob.
+
+## 3. ARCHITECTURE.md table delta: NONE REQUIRED
+
+CDR-02 aligns code with already-declared contract rows; no ARCH text changes. Execute lane applies ADR-0003 rows only — it must NOT invent rows from this review. Quoted existing rows as evidence (read-only, for the record):
+
+- `ARCHITECTURE.md:82` — `| BRAINY_TTL_DAYS | TTL Note/Archive (default 365) | 365 | AGENT_MEMORY_TTL_DAYS fallback |` — canonical-first with alias fallback already declared in §3 derived-env. CDR-02 makes `src/lifecycle.ts` conform to this row; the row itself needs no edit.
+- `ARCHITECTURE.md:245` (NFR Security) — "`Note.content` PII-purpose `segundo cerebro` TTL `BRAINY_TTL_DAYS` 365 + `purge/forgetNote`" — already names the canonical knob and deletion paths; CDR-01's CONTRACT amendment mirrors (not amends) this posture. No row edit.
+
+## 4. ADR trigger test (§6) — ADR-0004 deliberately NOT created
+
+- [ ] Yes — ADR created
+- [x] **No — all four items within existing contracts (verdict only)**
+
+None of the three triggers fires: (1) no invariant broken or created — CDR-02 conforms code to the declared §3 row, CDR-01/CDR-03(a)/CDR-04 are docs-only declarations/boundary/prose with zero behavioral delta; (2) no component added — zero new routes, labels, indexes, binaries, or MCP tools in the approved (a)/(i) path (option (b) rejected for this lane); (3) no cross-domain contract changed — R2/R8/R5 contracts consumed unchanged. CDR-01's CONTRACT amendment is self-evidently a declaration mirror of SPEC-005 §4.1 (SPEC-authorized per REQ-01 + traceability §7) with no architectural trade-off. **Decision recorded: ADR-0004 skipped by rule, not by oversight.** Invalidation: if CDR-03 flips to option (b), execution STOPs and mints an ADR for the frozen-API delta (new route + table rows) before implementation.
+
+## 5. S-LEG-001 / S-LEG-002 ruling (architecture side)
+
+- **S-LEG-001** (`POST /memory/forget` audit-silent, Medium) — **R2-tracked only; no separate architecture condition.** No contract delta involved; remediation is boundary-record text (CDR-03-C1, owner `subero`), carried above by reference. R1 adds no arch-side condition.
+- **S-LEG-002** (provider-region allowlist unpopulated, Medium) — **R2-tracked only; no separate architecture condition.** Binding table is R2's `crossborder-v1` (CDR-05-C1, owners `subero`+`barrera`); no ARCH/Data Flow change until a provider-backed use is proposed, which would re-enter review. R1 adds no arch-side condition.
+
+## 6. Sign-off
+
+- [x] engineering/architecture owner (R1, `general(vasquez)`) — **Approved-with-conditions (joint R1+R2)**: CDR-01 (C1+C2), CDR-02 (C1+C2), CDR-03(a) accepted with C1, CDR-04 acked (ACK-R1-CDR-04); no ARCH delta; no ADR-0004 (verdict only, §6).
+- [x] security owner (R2, `general(barrera)`) — **carried** (`2a6bf20`: CDR-01/C2 Approved-with-conditions, CDR-03 ruling (a) approved, S-LEG-001/002 conditioned). This review does not re-decide R2; it concurs and carries.
+- [ ] legal/privacy owner (R4, `general(subero)`) — owns CDR-01 text + CDR-03-C1/CDR-04 record text in execute; countersignature at gate.
+- [ ] automation/ops owner (R8, `general(espinoza)`) — co-owns CDR-02-C2/CDR-07 harness evidence (both-knobs + OFF fixture).
+
+**Assumptions:** (A1) SPEC-005 REQ-01/traceability naming constitutes SPEC authorization for the CONTRACT doc delta. (A2) `src/auth.ts:20-34` is the accepted canonical-first pattern. (A3) Store/MCP/CLI ARCO coverage suffices for v1 absent auditor-facing HTTP-erasure requirement (stated flip condition). (A4) Single-tenant-local lawful basis unchanged. (A5) `bin/brainy.mjs` untouched once lifecycle reads canonical-first.
+**Residuals:** canonical TTL unenforced on spawned path until CDR-02 lands (High, `vasquez`, expiry v1 gate); CONTRACT Note declaration + SLA home missing until CDR-01 executes (High, `subero`+`vasquez`, expiry v1 gate); per-note REST erasure absent under boundary (a) (accepted, `subero`, expiry v1 gate).
+**Cross-domain:** R4 executes CDR-01/CDR-03-C1/CDR-04 text (R1 ack recorded); R1 execute lane owns CDR-02 wiring (CDR-02-C1); R2 owns CDR-05/C1 + CDR-06/C1 (carried, not re-litigated); R8 co-owns CDR-07 harness; R5 non-blocking CONTRACT copy review.
