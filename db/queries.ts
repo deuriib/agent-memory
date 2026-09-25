@@ -31,16 +31,29 @@ export const LABELS = {
   Memory: "Memory",
   Concept: "Concept",
   Todo: "Todo",
+  Note: "Note",
+  Project: "Project",
+  Area: "Area",
+  Resource: "Resource",
+  Archive: "Archive",
+  Agent: "Agent",
+  Context: "Context",
 } as const;
 
 /** Edge labels — CONTRACT §1. */
 export const EDGES = {
-  BELONGS_TO: "BELONGS_TO", // Memory -> Session
-  HAS_CONCEPT: "HAS_CONCEPT", // Memory -> Concept
+  BELONGS_TO: "BELONGS_TO", // Memory -> Session or Note -> PARA
+  REFERENCES: "REFERENCES", // Note -> Note
+  SUPERSEDES: "SUPERSEDES", // Note -> Note or Memory -> Memory
+  ABOUT: "ABOUT", // Memory -> Resource/Project
+  APPLIES_TO: "APPLIES_TO", // Memory -> Context
+  CAPTURED_BY: "CAPTURED_BY", // Note -> Agent
+  RELATES_TO: "RELATES_TO", // Note -> Note
+  HAS_CONCEPT: "HAS_CONCEPT", // Memory -> Concept or Note -> Concept
 } as const;
 
-/** Embedding dimension — CONTRACT §1. */
-export const EMBED_DIM = 384;
+/** Embedding dimension — CONTRACT §1 (Brainy v1 canonical 1536-dim). */
+export const EMBED_DIM = 1536;
 
 /* ------------------------------------------------------------------ *
  * Parameter schemas (CONTRACT §2). Exported so callers can build the
@@ -97,6 +110,96 @@ export const healthCountParams = defineParams({
   project: param.string(),
 });
 
+/* Brainy v1 Note & PARA parameter schemas */
+
+export const saveNoteParams = defineParams({
+  id: param.string(),
+  title: param.string(),
+  content: param.string(),
+  project: param.string(),
+  paraCategory: param.string(),
+  paraTarget: param.string(),
+  origin: param.string(),
+  createdAt: param.dateTime(),
+  updatedAt: param.dateTime(),
+  status: param.string(),
+  embedding: param.array(param.f32()),
+  dedupKey: param.string(),
+  relatedNotes: param.array(param.object()), // [{ targetId: "..." }, ...] — may be EMPTY
+  concepts: param.array(param.object()),     // [{ name: "..." }, ...] — may be EMPTY
+});
+
+export const listNotesParams = defineParams({
+  project: param.string(),
+  limit: param.i64(),
+});
+
+export const listNotesByCategoryParams = defineParams({
+  project: param.string(),
+  paraCategory: param.string(),
+  limit: param.i64(),
+});
+
+export const getNoteByIdParams = defineParams({
+  id: param.string(),
+});
+
+export const moveNoteParams = defineParams({
+  id: param.string(),
+  paraCategory: param.string(),
+  paraTarget: param.string(),
+  updatedAt: param.dateTime(),
+});
+
+export const distillNoteParams = defineParams({
+  id: param.string(),
+  title: param.string(),
+  content: param.string(),
+  project: param.string(),
+  paraCategory: param.string(),
+  embedding: param.array(param.f32()),
+  createdAt: param.dateTime(),
+  updatedAt: param.dateTime(),
+  status: param.string(),
+  supersededId: param.string(),
+});
+
+export const forgetNoteParams = defineParams({
+  id: param.string(),
+});
+
+export const graphSearchNotesParams = defineParams({
+  concepts: param.array(param.string()),
+  project: param.string(),
+  k: param.i64(),
+});
+
+export const traverseNoteGraphParams = defineParams({
+  noteId: param.string(),
+  project: param.string(),
+  limit: param.i64(),
+});
+
+export const linkNotesParams = defineParams({
+  fromId: param.string(),
+  toId: param.string(),
+  project: param.string(),
+});
+
+
+export const migrateAgentMemoryRowParams = defineParams({
+  memoryId: param.string(),
+  content: param.string(),
+  project: param.string(),
+  sessionId: param.string(),
+  origin: param.string(),
+  importance: param.f64(),
+  createdAt: param.dateTime(),
+  embedding: param.array(param.f32()),
+  dedupKey: param.string(),
+  memoryType: param.string(),
+});
+
 /* ------------------------------------------------------------------ *
  * Projections reused by the read routes (CONTRACT §2: never expose
  * `embedding`; project $score / $distance before leaving the hit stream).
@@ -115,13 +218,24 @@ const memoryRowProjection: PropertyProjection[] = [
   PropertyProjection.new("createdAt"),
 ];
 
+export const noteRowProjection: PropertyProjection[] = [
+  PropertyProjection.renamed("$id", "internalId"),
+  PropertyProjection.new("id"),
+  PropertyProjection.new("noteId"),
+  PropertyProjection.new("title"),
+  PropertyProjection.new("content"),
+  PropertyProjection.new("project"),
+  PropertyProjection.new("sessionId"),
+  PropertyProjection.new("paraCategory"),
+  PropertyProjection.new("origin"),
+  PropertyProjection.new("createdAt"),
+  PropertyProjection.new("updatedAt"),
+  PropertyProjection.new("status"),
+  PropertyProjection.new("dedupKey"),
+];
+
 /* ------------------------------------------------------------------ *
- * bootstrapIndexes — CONTRACT §2 (all 8 indexes, createIndexIfNotExists).
- *
- * #8 (memory_dedup) is a unique-equality LOOKUP index for
- * findMemoryByDedupKey. Probe3 proved the server does NOT enforce its
- * uniqueness (duplicate writes accepted) — it accelerates reads only;
- * dedup is enforced application-side in HelixStore.remember.
+ * bootstrapIndexes — CONTRACT §2 (all >= 18 indexes, createIndexIfNotExists).
  * ------------------------------------------------------------------ */
 
 export function bootstrapIndexes(): WriteBatch {
@@ -157,6 +271,10 @@ export function bootstrapIndexes(): WriteBatch {
       g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Memory, "content", "project")),
     )
     .varAs(
+      "memory_statement",
+      g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Memory, "statement", "project")),
+    )
+    .varAs(
       "memory_dedup",
       g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Memory, "dedupKey")),
     )
@@ -176,6 +294,57 @@ export function bootstrapIndexes(): WriteBatch {
       "todo_title",
       g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Todo, "title", "project")),
     )
+    // Brainy v1 Note & PARA Indexes
+    .varAs(
+      "note_id",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Note, "id")),
+    )
+    .varAs(
+      "note_project",
+      g().createIndexIfNotExists(IndexSpec.nodeEquality(LABELS.Note, "project")),
+    )
+    .varAs(
+      "note_status",
+      g().createIndexIfNotExists(IndexSpec.nodeEquality(LABELS.Note, "status")),
+    )
+    .varAs(
+      "note_embedding",
+      g().createIndexIfNotExists(
+        IndexSpec.nodeVector(LABELS.Note, "embedding", EMBED_DIM, VectorDistanceMetric.Cosine, "project"),
+      ),
+    )
+    .varAs(
+      "note_content",
+      g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Note, "content", "project")),
+    )
+    .varAs(
+      "note_title",
+      g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Note, "title", "project")),
+    )
+    .varAs(
+      "project_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Project, "name")),
+    )
+    .varAs(
+      "area_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Area, "name")),
+    )
+    .varAs(
+      "resource_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Resource, "name")),
+    )
+    .varAs(
+      "archive_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Archive, "name")),
+    )
+    .varAs(
+      "agent_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Agent, "name")),
+    )
+    .varAs(
+      "context_name",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Context, "name")),
+    )
     .returning([
       "memory_id",
       "session_id",
@@ -184,11 +353,24 @@ export function bootstrapIndexes(): WriteBatch {
       "memory_project",
       "memory_embedding",
       "memory_content",
+      "memory_statement",
       "memory_dedup",
       "todo_id",
       "todo_project",
       "todo_status",
       "todo_title",
+      "note_id",
+      "note_project",
+      "note_status",
+      "note_embedding",
+      "note_content",
+      "note_title",
+      "project_name",
+      "area_name",
+      "resource_name",
+      "archive_name",
+      "agent_name",
+      "context_name",
     ]);
 }
 
@@ -349,51 +531,65 @@ export function sessionMemories(): ReadBatch {
     .returning(["memories"]);
 }
 
-export function searchByVector(): ReadBatch {
+export function searchByVector(label: typeof LABELS.Memory | typeof LABELS.Note = LABELS.Memory): ReadBatch {
+  const isNote = label === LABELS.Note;
+  const projection = isNote ? noteRowProjection : memoryRowProjection;
   return readBatch()
     .varAs(
       "hits",
       g()
-        .nWithLabel(LABELS.Memory)
+        .nWithLabel(label)
         .where(Predicate.eqParam("project", "project"))
         .vectorSearchWith(
-          LABELS.Memory,
+          label,
           "embedding",
           PropertyInput.param("queryVector"),
           searchByVectorParams.k,
           PropertyInput.param("project"),
         )
         .project([
-          ...memoryRowProjection,
+          ...projection,
           PropertyProjection.renamed("$distance", "distance"),
         ]),
     )
     .returning(["hits"]);
 }
 
-export function searchByText(): ReadBatch {
+export function searchNotesByVector(): ReadBatch {
+  return searchByVector(LABELS.Note);
+}
+
+export function searchByText(label: typeof LABELS.Memory | typeof LABELS.Note = LABELS.Memory): ReadBatch {
+  const isNote = label === LABELS.Note;
+  const projection = isNote ? noteRowProjection : memoryRowProjection;
   return readBatch()
     .varAs(
       "hits",
       g()
-        .nWithLabel(LABELS.Memory)
+        .nWithLabel(label)
         .where(Predicate.eqParam("project", "project"))
         .textSearchWith(
-          LABELS.Memory,
+          label,
           "content",
           PropertyInput.param("q"),
           searchByTextParams.k,
           PropertyInput.param("project"),
         )
         .project([
-          ...memoryRowProjection,
+          ...projection,
           PropertyProjection.renamed("$score", "score"),
         ]),
     )
     .returning(["hits"]);
 }
 
-export function graphSearch(): ReadBatch {
+export function searchNotesByText(): ReadBatch {
+  return searchByText(LABELS.Note);
+}
+
+export function graphSearch(target: "Memory" | "Note" = "Memory"): ReadBatch {
+  const isNote = target === "Note";
+  const projection = isNote ? noteRowProjection : memoryRowProjection;
   return readBatch()
     .varAs(
       "hits",
@@ -404,9 +600,366 @@ export function graphSearch(): ReadBatch {
         .where(Predicate.eqParam("project", "project"))
         .dedup()
         .limit(graphSearchParams.k)
-        .project([...memoryRowProjection]),
+        .project([...projection]),
     )
     .returning(["hits"]);
+}
+
+export function graphSearchNotes(): ReadBatch {
+  return graphSearch("Note");
+}
+
+export function traverseNoteGraph(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "references",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "noteId"))
+        .out(EDGES.REFERENCES)
+        .where(Predicate.eqParam("project", "project"))
+        .limit(traverseNoteGraphParams.limit)
+        .project([...noteRowProjection]),
+    )
+    .varAs(
+      "relates",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "noteId"))
+        .out(EDGES.RELATES_TO)
+        .where(Predicate.eqParam("project", "project"))
+        .limit(traverseNoteGraphParams.limit)
+        .project([...noteRowProjection]),
+    )
+    .varAs(
+      "belongsTo",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "noteId"))
+        .out(EDGES.BELONGS_TO)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("name"),
+        ]),
+    )
+    .returning(["references", "relates", "belongsTo"]);
+}
+
+/* ------------------------------------------------------------------ *
+ * Brainy v1 Note & PARA Query Builders
+ * ------------------------------------------------------------------ */
+
+function relatedNoteBody(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "rel_target",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "targetId")),
+    )
+    .varAsIf(
+      "rel_link",
+      BatchCondition.varNotEmpty("rel_target"),
+      g().n(NodeRef.var("note")).addE(EDGES.RELATES_TO, NodeRef.var("rel_target"), {}),
+    );
+}
+
+function noteConceptBody(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "concept_anchor",
+      g().nWithLabel(LABELS.Concept).where(Predicate.eqParam("name", "name")),
+    )
+    .varAsIf(
+      "concept_created",
+      BatchCondition.varEmpty("concept_anchor"),
+      g().addN(LABELS.Concept, {
+        name: PropertyInput.param("name"),
+        project: PropertyInput.param("project"),
+      }),
+    )
+    .varAsIf(
+      "concept_link_existing",
+      BatchCondition.varNotEmpty("concept_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.HAS_CONCEPT, NodeRef.var("concept_anchor"), {}),
+    )
+    .varAsIf(
+      "concept_link_created",
+      BatchCondition.varEmpty("concept_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.HAS_CONCEPT, NodeRef.var("concept_created"), {}),
+    );
+}
+
+export function saveNote(paraLabel: "Project" | "Area" | "Resource" | "Archive" = "Resource"): WriteBatch {
+  return writeBatch()
+    // 1. Anchor or create PARA target node
+    .varAs(
+      "para_target_anchor",
+      g().nWithLabel(paraLabel).where(Predicate.eqParam("name", "paraTarget")),
+    )
+    .varAsIf(
+      "para_target_created",
+      BatchCondition.varEmpty("para_target_anchor"),
+      g().addN(paraLabel, {
+        name: PropertyInput.param("paraTarget"),
+      }),
+    )
+    // 2. Create Note node
+    .varAs(
+      "note",
+      g().addN(LABELS.Note, {
+        id: PropertyInput.param("id"),
+        noteId: PropertyInput.param("id"),
+        title: PropertyInput.param("title"),
+        content: PropertyInput.param("content"),
+        project: PropertyInput.param("project"),
+        paraCategory: PropertyInput.param("paraCategory"),
+        origin: PropertyInput.param("origin"),
+        createdAt: PropertyInput.param("createdAt"),
+        updatedAt: PropertyInput.param("updatedAt"),
+        status: PropertyInput.param("status"),
+        embedding: PropertyInput.param("embedding"),
+        dedupKey: PropertyInput.param("dedupKey"),
+      }),
+    )
+    // 3. Link BELONGS_TO edge
+    .varAsIf(
+      "belongs_to_existing",
+      BatchCondition.varNotEmpty("para_target_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.BELONGS_TO, NodeRef.var("para_target_anchor"), {}),
+    )
+    .varAsIf(
+      "belongs_to_created",
+      BatchCondition.varEmpty("para_target_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.BELONGS_TO, NodeRef.var("para_target_created"), {}),
+    )
+    // 4. Link concepts/tags (if any)
+    .forEachParam("concepts", noteConceptBody())
+    // 5. Link RELATES_TO to related notes (if any)
+    .forEachParam("relatedNotes", relatedNoteBody())
+    .returning(["note", "para_target_anchor", "para_target_created"]);
+}
+
+export function listNotes(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "notes",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("project", "project"))
+        .orderBy("$id", Order.Desc)
+        .limit(listNotesParams.limit)
+        .project([...noteRowProjection]),
+    )
+    .returning(["notes"]);
+}
+
+export function listNotesByCategory(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "notes",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(
+          Predicate.and([
+            Predicate.eqParam("project", "project"),
+            Predicate.eqParam("paraCategory", "paraCategory"),
+          ]),
+        )
+        .orderBy("$id", Order.Desc)
+        .limit(listNotesByCategoryParams.limit)
+        .project([...noteRowProjection]),
+    )
+    .returning(["notes"]);
+}
+
+export function getNoteById(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "note",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "id"))
+        .limit(1)
+        .project([...noteRowProjection]),
+    )
+    .varAs(
+      "belongsTo",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "id"))
+        .out(EDGES.BELONGS_TO)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("name"),
+        ]),
+    )
+    .varAs(
+      "supersedes",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "id"))
+        .out(EDGES.SUPERSEDES)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("noteId"),
+          PropertyProjection.new("title"),
+        ]),
+    )
+    .varAs(
+      "supersededBy",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "id"))
+        .in(EDGES.SUPERSEDES)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("noteId"),
+          PropertyProjection.new("title"),
+        ]),
+    )
+    .varAs(
+      "relatesTo",
+      g()
+        .nWithLabel(LABELS.Note)
+        .where(Predicate.eqParam("id", "id"))
+        .out(EDGES.RELATES_TO)
+        .project([
+          PropertyProjection.renamed("$id", "id"),
+          PropertyProjection.new("noteId"),
+          PropertyProjection.new("title"),
+        ]),
+    )
+    .returning(["note", "belongsTo", "supersedes", "supersededBy", "relatesTo"]);
+}
+
+export function moveNote(targetLabel: "Project" | "Area" | "Resource" | "Archive" = "Resource"): WriteBatch {
+  return writeBatch()
+    // 1. Anchor note
+    .varAs(
+      "note",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "id")),
+    )
+    // 2. Update note properties
+    .varAsIf(
+      "note_updated",
+      BatchCondition.varNotEmpty("note"),
+      g()
+        .n(NodeRef.var("note"))
+        .setProperty("paraCategory", PropertyInput.param("paraCategory"))
+        .setProperty("updatedAt", PropertyInput.param("updatedAt")),
+    )
+    // 3. Drop existing BELONGS_TO edges
+    .varAsIf(
+      "drop_belongs_to",
+      BatchCondition.varNotEmpty("note"),
+      g().n(NodeRef.var("note")).outE(EDGES.BELONGS_TO).drop(),
+    )
+    // 4. Anchor or create new target PARA node
+    .varAs(
+      "target_anchor",
+      g().nWithLabel(targetLabel).where(Predicate.eqParam("name", "paraTarget")),
+    )
+    .varAsIf(
+      "target_created",
+      BatchCondition.varEmpty("target_anchor"),
+      g().addN(targetLabel, {
+        name: PropertyInput.param("paraTarget"),
+      }),
+    )
+    // 5. Link new BELONGS_TO edge
+    .varAsIf(
+      "link_existing",
+      BatchCondition.varNotEmpty("target_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.BELONGS_TO, NodeRef.var("target_anchor"), {}),
+    )
+    .varAsIf(
+      "link_created",
+      BatchCondition.varEmpty("target_anchor"),
+      g().n(NodeRef.var("note")).addE(EDGES.BELONGS_TO, NodeRef.var("target_created"), {}),
+    )
+    .returning(["note", "target_anchor", "target_created"]);
+}
+
+export function distillNote(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "original_note",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "supersededId")),
+    )
+    .varAs(
+      "distilled_note",
+      g().addN(LABELS.Note, {
+        id: PropertyInput.param("id"),
+        noteId: PropertyInput.param("id"),
+        title: PropertyInput.param("title"),
+        content: PropertyInput.param("content"),
+        project: PropertyInput.param("project"),
+        paraCategory: PropertyInput.param("paraCategory"),
+        createdAt: PropertyInput.param("createdAt"),
+        updatedAt: PropertyInput.param("updatedAt"),
+        status: PropertyInput.param("status"),
+        embedding: PropertyInput.param("embedding"),
+      }),
+    )
+    .varAsIf(
+      "supersedes_link",
+      BatchCondition.varNotEmpty("original_note"),
+      g().n(NodeRef.var("distilled_note")).addE(EDGES.SUPERSEDES, NodeRef.var("original_note"), {}),
+    )
+    .returning(["distilled_note", "original_note"]);
+}
+
+export function forgetNote(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "target",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "id")),
+    )
+    .varAsIf(
+      "forgotten",
+      BatchCondition.varNotEmpty("target"),
+      g().n(NodeRef.var("target")).drop(),
+    )
+    .returning(["target", "forgotten"]);
+}
+
+export function linkNotes(edgeType: "REFERENCES" | "BELONGS_TO" | "RELATES_TO" = "REFERENCES"): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "from_note",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "fromId")).where(Predicate.eqParam("project", "project")),
+    )
+    .varAs(
+      "to_note",
+      g().nWithLabel(LABELS.Note).where(Predicate.eqParam("id", "toId")).where(Predicate.eqParam("project", "project")),
+    )
+    .varAsIf(
+      "edge_created",
+      BatchCondition.varNotEmpty("from_note"),
+      g().n(NodeRef.var("from_note")).addE(EDGES[edgeType], NodeRef.var("to_note"), {}),
+    )
+    .returning(["from_note", "to_note"]);
+}
+
+
+export function migrateAgentMemoryRow(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "memory",
+      g().addN(LABELS.Memory, {
+        memoryId: PropertyInput.param("memoryId"),
+        content: PropertyInput.param("content"),
+        statement: PropertyInput.param("content"),
+        project: PropertyInput.param("project"),
+        sessionId: PropertyInput.param("sessionId"),
+        origin: PropertyInput.param("origin"),
+        importance: PropertyInput.param("importance"),
+        createdAt: PropertyInput.param("createdAt"),
+        embedding: PropertyInput.param("embedding"),
+        dedupKey: PropertyInput.param("dedupKey"),
+        memory_type: PropertyInput.param("memoryType"),
+      }),
+    )
+    .returning(["memory"]);
 }
 
 export function forgetMemory(): WriteBatch {
