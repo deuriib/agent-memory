@@ -381,3 +381,122 @@ This delta review cites allowlisted references only: file paths, line numbers, g
 - [ ] **Legal/Privacy Owner (R4) — `general(subero)`:** consumed as-is (no new PII store; Ley 172-13 posture carried over).
 
 **Packet:** `SPEC:docs/specs/20_backlog/SPEC-004-brainy-security.md#REQ-BRAINY-SEC + SPEC-001#REQ-BRAINY-ENG-06,AC-06,AC-12 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:architecture=Approved-with-conditions C1..C4 (C1 = R2 approval required before execute) / DOMAINS:R2,R1,R8,R4,R5`
+
+---
+
+# Security Review: SPEC-005-brainy-legal R4 remediation co-review (CDR-01..03) + CDR-05 cross-border table + CDR-06 incident § — R2 deliverable
+
+**Reviewer:** `general(barrera)` — Security Owner (R2), per `frame-ship:review-security` (`references/security-review-template.md` + `references/threat-model.md`)
+**Date:** 2026-09-25
+**Verdict:** **Conditional (CDR-01 Approved-with-conditions · CDR-02 Approved-with-conditions · CDR-03 RULING: (a) approved as accepted boundary with conditions)** — CDR-05 table and CDR-06 incident § delivered below; R4 proposal cleared for `review-architecture` + execute subject to the conditions in §6.
+**Methodology:** STRIDE (delta review — reuses the Lane 4 `Conditional (C1–C8)` threat model above; only new surfaces are analyzed here)
+**GATE at review time:** `legal-review=CONDITIONAL-PASS cf91d47`, `legal-proposal=a289ca0` pending R2 co-review (this review), `security-move-route=4626695`
+
+**Packet (reference-only):**
+`SPEC:docs/specs/20_backlog/SPEC-005-brainy-legal.md#REQ-BRAINY-LEG-05,06,07,08,09 + SPEC-004 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:legal-review=CONDITIONAL-PASS cf91d47, legal-proposal=a289ca0 pending-R2-co-review, security-move-route=4626695 / DOMAINS:R2,R4,R1,R8,R5`
+
+## 1. Scope & inputs
+
+| Input | Artifact | Role |
+|---|---|---|
+| R4 remediation proposal under co-review | `docs/specs/40_workspace/legal/PROPOSED_CHANGES.md` (commit `a289ca0`, CDR-01..CDR-04) | Change rows ruled on in §2 (CDR-01/02/03 only; CDR-04 is R4/R1 business, noted) |
+| Legal review matrix | `docs/specs/40_workspace/legal/LEGAL_REVIEW.md` (commit `cf91d47`, CONDITIONAL-PASS, CDR-01..CDR-07) | Gap evidence this co-review verifies against code |
+| DPIA baseline | `docs/specs/40_workspace/legal/DPIA-BRAINY.md` (`dpia-v1`, PASS-with-conditions) | Transfer/DPIA refs cited by the CDR-05 table |
+| Primary specs | `docs/specs/20_backlog/SPEC-005-brainy-legal.md#REQ-BRAINY-LEG-05,06,07,08,09` + `SPEC-004-brainy-security.md` | REQ/AC anchors for CDR-05 (§4.4) and CDR-06 (§4.5) |
+| Code grounding (read-only) | `src/lifecycle.ts:31,95,106-137` · `src/auth.ts:20-34` · `src/server.ts:620-709` (`/memory/forget` vs `/memory/delete`) · `src/mcp.ts:444-453` (MCP governance line) | TTL-reader claim verification; erasure-path gating/logging verification |
+| Scan posture | `gitleaks` absent (`not-installed`); grep-fallback heuristics executed this lane | Evidence hygiene statement (§8) |
+
+Out of scope (carried over, not re-litigated): Lane 4 C1–C8, move-route SC-MOVE-01..05, CDR-04 SPEC-prose edit (R4 owner `subero` + R1 `vasquez` ack), CDR-07 live harnesses (R1+R8, Step 11). Zero implementation edits in this lane — one markdown file only.
+
+## 2. R2 co-review of the R4 remediation proposal (`a289ca0`)
+
+### CDR-01 — CONTRACT Brainy v1 `Note.content`/`Memory.statement` PII declaration — **Approved-with-conditions**
+
+The proposed amendment mirrors SPEC-005 §4.1 canonical text (purpose `segundo cerebro personal CODE/PARA`; legal basis `consent + legitimate interest`, single-tenant local, caller-supplied `tags`/`concepts` verbatim = caller's responsibility; minimization text-only MVP with `title 1..500` / `content 1..200k` / `tags string[64] 1..200` strict zod / `concepts ≤8`; TTL `BRAINY_TTL_DAYS` default `365` with alias + OFF-declared rule; two-half deletion (a) per-note/memory governed paths + purge, (b) operator orphan-Concept 3-step, honest boundary on still-referenced `Concept.name`; ARCO SLA home ACK ≤5 business days / resolve ≤15 business days, owner `subero`, delay escalates to orchestrator). As security co-reviewer I rule the declaration **complete enough to be enforceable**: purpose limitation is stated as single-purpose (capture→organize→distill→express→hybrid retrieval, no secondary use without fresh consent + DPIA per REQ-02); TTL fail-closed semantics are declared (absent/invalid/≤0 → OFF declared, strict-`>` expiry, unparseable `createdAt` kept — matching `src/lifecycle.ts:128-134` behavior); both deletion halves are named with concrete procedures. No secret/PII-in-docs risk: the proposal cites evidence by path + line refs + grep counts only, with placeholders (`<note-id>`, `<area-name>`) — verified by reading.
+
+Conditions: **[CDR-01-C1]** amendment text MUST quote SPEC-005 §4.1 verbatim (no paraphrase drift on purpose/TTL/deletion numbers); post-execution `grep -n "Note.content\|Memory.statement" docs/CONTRACT.md` → ≥2 and `grep -n "BRAINY_TTL_DAYS" docs/CONTRACT.md` → ≥1. **Owner:** R4 `subero` (text) + R1 `vasquez` (frozen-contract delta via `review-architecture`). **Deadline:** Brainy v1 gate. **[CDR-01-C2]** the ARCO SLA line MUST name owner `subero` + orchestrator-escalation explicitly (closes the AC-04 SLA-doc-line gap; `grep` for `5 business|15 business` → 0 hits today per LEGAL_REVIEW §3). **Owner:** R4 `subero`. **Deadline:** Brainy v1 gate.
+
+### CDR-02 — `src/lifecycle.ts:117` canonical-first `BRAINY_TTL_DAYS` — **Approved-with-conditions**
+
+Claim verified by reading. `src/lifecycle.ts:117` reads **only** `readPositiveEnv("AGENT_MEMORY_TTL_DAYS")`; the canonical Brainy knob is unread in-process (consistent with LEGAL_REVIEW's `grep -Rn "BRAINY_TTL" src/` → 0 hits). `src/auth.ts:20-34` (`secretFromEnv`) is the accepted canonical-first + single-static-warning-via-module-flag pattern to mirror. The priced fix (replace the single read site with canonical-first `BRAINY_TTL_DAYS` → alias `AGENT_MEMORY_TTL_DAYS` fallback + one `WARN deprecated` on stderr; absent/invalid/≤0 → `undefined` → TTL OFF declared returning all rows; strict-`>` + unparseable-kept + per-call re-read preserved; doc comment `:106` updated; no change to `src/search.ts`/`src/store.ts` call sites or `bin/brainy.mjs` dual-set rejected) is minimal, correct, and introduces **no secret exposure** (a TTL day-count is not a credential; the warning MUST be a static string with no values — same rule as C2). TTL-OFF **cannot be silent** under the proposal: OFF remains the declared `undefined` branch, and ON/OFF observability is preserved downstream (`filterExpired` callers in `src/search.ts` emit `ttl: hidden N expired rows` signals when N>0; AC-03 proves both fixtures).
+
+Conditions: **[CDR-02-C1]** implementation MUST mirror `secretFromEnv` exactly (canonical first; alias behind a module-level warned flag; static warning text `WARN deprecated use BRAINY_TTL_DAYS` with no values). **Owner:** R1 execute lane. **Deadline:** at `execute-spec`. **[CDR-02-C2]** quality-gate MUST evidence both knobs (`BRAINY_TTL_DAYS=1` canary hidden + `signals` line; alias same + single warning on stderr; absent/invalid/≤0 → OFF declared, canary returned). **Owner:** R1 `vasquez` + R8 `espinoza` (CDR-07). **Deadline:** Brainy v1 gate. Residual until landed: canonical TTL unenforced on the spawned path (High, owner `vasquez`, expiry Brainy v1 gate).
+
+### CDR-03 — per-note REST erasure/rectification boundary — **CDR-03 RULING: (a) approved**
+
+**CDR-03 RULING: (a) approved** — ARCO erasure/rectification stays MCP/CLI/store-only in Brainy v1, recorded as an accepted boundary (owner `subero`, expiry Brainy v1 gate).
+
+Rationale (verified against code, read-only): there is **no ungated window** — every erasure path sits below the dual-bearer guard (`isBearerAuthorized` REST / `isMetaAuthorized` MCP `handle()`; only `livez` exempt; loopback-open-when-unset is the declared dev-mode residual R-SEC-01, unchanged). There is **no unverifiable window provided the governed path is used**: `POST /memory/delete {memoryId,reason}` emits the allowlisted governance line (`src/server.ts:704-706` `memoryId=… reason=… at=…`, CWE-117 collapsed) with a `200 {deleted:true, receipt:{memoryId,deletedAt}}` receipt (reason omitted by design); the MCP delete path emits its governance line (`src/mcp.ts:453`); `scripts/purge.ts` emits plan/progress/governance allowlist lines. Access for verification exists (`GET /v1/notes/:id` + `POST /v1/search` project-scoped). Rectification/contest exists at store/CLI level (`updateMemoryContent` / `moveNote` + CLI `brainy move` + `distillNote` + `SUPERSEDES` lineage). A new destructive HTTP route would add frozen-API delta + STRIDE surface + harness scope for coverage the gated surfaces already provide.
+
+Caveat filed as finding S-LEG-001 (Medium, §5): `POST /memory/forget` (`src/server.ts:630-643`) performs erasure with **no governance line** — bearer-gated but audit-silent. The boundary record MUST therefore direct ARCO erasures through the governed path. Condition **[CDR-03-C1]**: the CONTRACT/LEGAL_REVIEW boundary record MUST state that ARCO erasure requests are served via `POST /memory/delete {memoryId,reason}` (or `scripts/purge.ts` bulk path) with governance-line + receipt evidence, and that `POST /memory/forget` is a compat path not sufficient for SLA-bound erasure evidence. **Owner:** R4 `subero` (record text). **Deadline:** Brainy v1 gate. Invalidation condition (stated once, not re-litigated): if the orchestrator or R1 rules the ARCO SLA requires an HTTP-surface per-note erasure path for enforceability/auditability, the default falls and option (b) (`DELETE /v1/notes/:id` + rectification, frozen-table rows, mandatory `review-architecture` + `review-security` before implementation) applies.
+
+## 3. CDR-05 — Cross-border allowlist table (R2 deliverable, versioned, §4.4-aligned)
+
+**Table `crossborder-v1` — 2026-09-25 — owner `subero` (allowlist) + `barrera` (this R2 table). Next review: Brainy v1 gate or before any provider-backed `distill`/remote-embedding use, whichever is first. Any addition/removal is a written `subero` amendment with justification + expiry. Default posture: local-only.**
+
+| Destination | Data element | Legal basis | DPIA ref | Approval state | Owner |
+|---|---|---|---|---|---|
+| Local HelixDB `storage=disk` under `$HOME`/`/tmp` (`helix.toml [local.dev]`, `HELIX_URL http://127.0.0.1:6969`, `BRAINY_URL http://127.0.0.1:3111`) | `Note.content` slice + embedding vector (at rest, `project`-tenanted) | Consent + legitimate interest (single-tenant local) | `dpia-v1` baseline (non-transfer, in scope as negative case) | **Approved — NOT a transfer** | `subero` |
+| Remote embeddings provider (`text-embedding-3-small` via Helix providers) | Minimized `Note.content` slice only (never full vault) | Explicit consent or contractual necessity (recorded per deployment) | `dpia-v1` + transfer-specific DPIA amendment (trigger REQ-06(a)) | **Blocked until:** destination on adequate-protection list + DPIA PASS + `subero` written approval + remediation plan with deadline | `subero` (approval) + `barrera` (DPIA co-sign) |
+| `BRAINY_LLM_PROVIDER` `openai\|gemini\|anthropic` for `brainy distill` | Minimized summary slice (`content 1..200k` needed for the provider call only) | Explicit consent or contractual necessity (recorded per deployment) | `dpia-v1` + transfer-specific DPIA amendment (ARCH Data Flow 3) | **Blocked until:** destination region on adequate-protection list + DPIA PASS + `subero` written approval + remediation plan with deadline | `subero` (approval) + `barrera` (DPIA co-sign) |
+| `brainy export --format markdown` local vault write (`vault/<Project>/<title>.md`, frontmatter allowlist `project/tags`, per-file `0600`) | Owner's own `Note.content` (local file) | Same as store (consent + legitimate interest) | `dpia-v1` trigger (d) noted as local-only | **Approved — NOT a transfer** (by construction: `bin/brainy.mjs` writes local files only) | `vasquez` (export surface) |
+| Operator push of the exported vault to remote git/S3 (incl. any S3 bucket region outside the approved set) or any MCP cross-host relay moving `Note.content` cross-border | Full vault (`Note.content` + embeddings where present) | Explicit consent or contractual necessity (recorded) + prior approval | Transfer-specific DPIA amendment required | **Operator responsibility — same gate as a transfer:** prior `subero` written approval + remediation plan with deadline; gate CLOSED without it; residual explicit, no silent PASS | Operator + `subero` |
+
+Adequate-protection list status: no third-country/provider-region entries are populated in `crossborder-v1` — any `BRAINY_LLM_PROVIDER` or non-local embedding use before population is unapproved-transfer risk (High, owner `subero`, expiry before any provider-backed use). Negative test for the gate: configuring a non-allowlisted provider region → `GATE: CLOSED` without written approval + remediation deadline + explicit residual.
+
+## 4. CDR-06 — Incident/breach § (R2 deliverable)
+
+**Severity mapping (Shared Foundation):** Critical (exploitable / prod impact / data loss / legal or financial exposure — includes any confirmed or suspected breach involving `Note.content`/`Memory.statement`/embeddings: exfil via logs/exports/prompts, bearer bypass, unapproved cross-border, vector-store dump) → Block, fix immediately, **same-session notification** with severity + evidence + owner. High (probable impact, e.g. PII in a log line detected pre-exfil) → fix before next release/cycle, same-session notification. Medium → fix within sprint. Low → backlog. Critical/High surface same session — no batching, no silent PASS.
+
+**Owner assignment:** `barrera` (security — containment, evidence, remediation tracking) + `subero` (legal — authority/subject notification, ledger) + `vasquez` (engineering — code-level fix). On-call detection: `espinoza`/`barrera`.
+
+**Evidence rules:** allowlisted only — file paths, line numbers, grep counts, error codes, `sha256(content)` commitments, `[REDACTED]` placeholders. Never raw `Note.content`/`Memory.statement`, never secrets/tokens/credentials/sessions (placeholders `***` / `$BRAINY_SECRET` only). Governance-line example (redacted shape): `[agentmemory] delete governance memoryId=[REDACTED] reason=[REDACTED] at=<iso>` — single-line CWE-117 collapsed. Operators must not place PII/secrets in `reason` (bounded `1..1000` + bearer auth).
+
+**Notification clock:** **within 72 hours** to the competent authority and to affected data subjects where required, per the incident runbook (this § + `docs/CONTRACT.md` governance-log section + SPEC-005 §4.5). The 72h clock starts at confirmation (or strong suspicion — suspicion suffices to open the incident).
+
+**Governance-log posture (existing, referenced):** delete/purge audit lines live on process `stdout/stderr` only — no durable PII store for them (retention = host log rotation; operators apply host masking/rotation). Sources: `src/server.ts:704-706` (delete), `src/mcp.ts:453` (MCP delete), `scripts/purge.ts:380-382` (+ `status=partial` on failed runs). Access log stays `METHOD PATH STATUS DURATIONms` only.
+
+**Accepted-risk ledger requirements:** every accepted risk is recorded with owner + justification + expiry (ledger shape per `ROADMAP.md §1.3`-style). Carried rows: `VERIFY-SESSION-NODES`, `RL-001-QUEUE`, `DAT-001`, `BRAINY-CROSS-BORDER`, R-SEC-01..04 (this file), S-004-005/S-004-006, S-020-001..003, S-LEG-001/002 (this review).
+
+**Drill / redacted log location:** the breach drill (injected PII-exfil canary → Critical escalation + incident entry) and its redacted log live with the Step 11 verification pass (owners R1 `vasquez` + R8 `espinoza`, CDR-07); the incident entry format is defined by this §. Until the drill is evidenced, AC-08 stays procedural-GAP (owner `vasquez`+`espinoza`, expiry Brainy v1 gate).
+
+## 5. New findings (this review)
+
+| ID | Severity | Finding | Evidence | Owner | Remediation |
+|---|---|---|---|---|---|
+| S-LEG-001 | **Medium** | **Audit-silent erasure path:** `POST /memory/forget` hard-deletes with no governance log line, unlike `POST /memory/delete` (governance line + receipt). An ARCO erasure served only via `/memory/forget` leaves no audit evidence. | `src/server.ts:630-643` (no log) vs `:691-709` (governance line + receipt) | R4 (`subero`, boundary text) | **Condition CDR-03-C1:** ARCO erasures MUST use the governed path (§2). Accepted residual for compat use. |
+| S-LEG-002 | **Medium** | **Provider-region allowlist unpopulated:** no adequate-protection jurisdiction entries exist for remote embeddings or `BRAINY_LLM_PROVIDER` regions; any provider-backed `distill`/embedding use before population is an unapproved transfer. | SPEC-005 §4.4 initial text only; zero-hit grep on `SECURITY_REVIEW.md` for cross-border pre-this-review (LEGAL_REVIEW §3 scan table); `crossborder-v1` §3 above | R4 (`subero`, allowlist) + R2 (`barrera`, DPIA co-sign) | **Blocked until** conditions in §3 table met. Expiry: before any provider-backed use; review at Brainy v1 gate regardless. |
+
+Counts this delta: 0 Critical · 0 High · 2 Medium (both conditioned, neither blocking the R4 proposal itself) · 0 Low.
+
+## 6. Conditions consolidated (owner + deadline each)
+
+- **[CDR-01-C1]** CONTRACT amendment quotes SPEC-005 §4.1 verbatim; post-execution greps pass (Note ≥2, TTL ≥1). **Owner:** `subero` + `vasquez` (`review-architecture`). **Deadline:** Brainy v1 gate.
+- **[CDR-01-C2]** ARCO SLA line names `subero` + orchestrator-escalation. **Owner:** `subero`. **Deadline:** Brainy v1 gate.
+- **[CDR-02-C1]** TTL wiring mirrors `secretFromEnv` exactly (canonical-first, single static warning, OFF-declared). **Owner:** R1 execute lane. **Deadline:** at `execute-spec`.
+- **[CDR-02-C2]** Quality-gate evidences both knobs + OFF fixture (CDR-07). **Owner:** `vasquez` + `espinoza`. **Deadline:** Brainy v1 gate.
+- **[CDR-03-C1]** Boundary record directs ARCO erasures through the governed path. **Owner:** `subero`. **Deadline:** Brainy v1 gate.
+- **[CDR-05-C1]** `crossborder-v1` (§3) is the binding table; any provider-backed embedding/distill use requires destination-allowlisted + DPIA PASS + `subero` written approval + remediation deadline. **Owner:** `subero` + `barrera`. **Deadline:** before any provider-backed use; re-review at Brainy v1 gate.
+- **[CDR-06-C1]** Incident § (§4) is the binding runbook; breach drill + redacted log evidenced at Step 11 (CDR-07). **Owner:** `vasquez` + `espinoza`. **Deadline:** Brainy v1 gate.
+
+## 7. Residual risk additions (this review)
+
+| # | Residual Risk | Likelihood | Impact | Owner | Expiry / Re-review |
+|---|---|---|---|---|---|
+| R-LEG-01 | Canonical TTL unenforced on spawned path until CDR-02 executes. | Medium | High | R1 (`vasquez`) | Brainy v1 gate |
+| R-LEG-02 | Per-note REST erasure absent under boundary (a); auditors preferring HTTP-surface erasure must use governed compat paths. | Low | Medium | R4 (`subero`) | Brainy v1 gate (invalidation condition §2) |
+| R-LEG-03 | CONTRACT Note declaration + SLA home missing until CDR-01 executes. | Medium | High | R4 (`subero`) + R1 (`vasquez`) | Brainy v1 gate |
+| R-LEG-04 | Provider-region allowlist empty; premature provider use = unapproved transfer. | Low | High | R4 (`subero`) | Before any provider-backed use |
+
+## 8. Evidence hygiene statement
+
+No secrets, credentials, tokens, or sessions appear in this review (placeholders only). No raw PII appears in evidence (paths + line numbers + grep counts + `[REDACTED]`/`sha256` only). Secret scan: `gitleaks` = **not-installed** (no binary on PATH); grep fallback executed this lane — literal-secret heuristic matches are only `s3cr3t` harness descriptions inside SPEC-004/005 AC text (test-value documentation, not credentials) plus scanner-script patterns; **zero real assignments**. Live log-capture grep (`s3cr3t` → 0 across REST/MCP/export) belongs to the R1/R8 container lane (CDR-07), not claimed here. Containers never started/stopped; ports 3111/3112/3113 untouched.
+
+## 9. Sign-off
+
+- [x] **Security Owner (R2) — `general(barrera)`:** **Conditional** per §2 verdicts (CDR-01/02 Approved-with-conditions; CDR-03 (a) approved with CDR-03-C1); CDR-05 table (§3) and CDR-06 incident § (§4) delivered. R4 proposal cleared for `review-architecture` + execute subject to §6; all conditions validated at `quality-gate`.
+- [ ] **Legal/Privacy Owner (R4) — `general(subero)`:** required countersignature (owner of CDR-01 text, SLA home, boundary record, `crossborder-v1` allowlist).
+- [ ] **Engineering Owner (R1) — `general(vasquez)`:** required countersignature (owner of CDR-02 wiring, frozen-contract/API verdicts via `review-architecture`, drill evidence via CDR-07).
+- [ ] **Automation/Ops Owner (R8) — `general(espinoza)`:** required countersignature (CDR-07 harness + drill ownership; pre-push scan gate).
+
+**Packet:** `SPEC:docs/specs/20_backlog/SPEC-005-brainy-legal.md#REQ-BRAINY-LEG-05,06,08 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:legal-review=CONDITIONAL-PASS cf91d47, legal-proposal=a289ca0 pending-R2-co-review, security-move-route=4626695 / DOMAINS:R2,R4,R1,R8,R5`
