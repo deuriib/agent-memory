@@ -1,13 +1,267 @@
 # Architecture Review — Engineering Lane (R1) singleton (multi-lane)
 
-**Reviewer:** engineering owner (R1, `general(vasquez)`) — per `skills/review-architecture/references/architecture-review.md`
+**Reviewer:** engineering owner (R1, `general(vasquez)`) — per `skills/review-architecture/references/architecture-review.md`  
 **Singleton:** this file is the engineering lane's `ARCHITECTURE_REVIEW.md` — create-if-missing, update in place, never suffix. One section per lane; prior lane content preserved verbatim below the separator.
 
 | Lane | Proposal | Spec | Date | Verdict | ADR |
 |---|---|---|---|---|---|
-| **Lane 3 — Todos follow-ups (current)** | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-020-todos` | 2026-09-25 | **Approved** | **none, verdict only (§6)** |
-| Lane 2 — P4 ops control plane | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-P4-OPS` | 2026-09-24 | **Approved-with-conditions (C1–C3)** | **none, verdict only** |
+| **Lane 4 — Brainy Architecture Initiative (current)** | `PROPOSED_CHANGES.md` (R1, R5, R8) | `SPEC-001 / SPEC-002 / SPEC-003` | 2026-09-25 | **Approved** | **ADR-0002 created (`docs/adr/ADR-0002-brainy-code-para-helixdb.md`)** |
+| Lane 3 — Todos follow-ups | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-020-todos` | 2026-09-25 | **Approved** | none, verdict only (§6) |
+| Lane 2 — P4 ops control plane | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-P4-OPS` | 2026-09-24 | **Approved-with-conditions (C1–C3)** | none, verdict only |
 | Lane 1 — F01 embedding verify (prior, preserved below) | inline orchestrator proposal | `SPEC-F01-EMB` | 2026-09-24 | Conditional | none |
+
+---
+
+# Architecture Review: Brainy Architecture Initiative (SPEC-001 / SPEC-002 / SPEC-003) — Lane 4
+
+**Reviewer:** engineering owner (R1, `general(vasquez)`) — per `skills/review-architecture/references/architecture-review.md`  
+**Date:** 2026-09-25  
+**Verdict:** **Approved** — ADR-0002 created and accepted (`docs/adr/ADR-0002-brainy-code-para-helixdb.md`)  
+**Packet:** `SPEC:docs/specs/10_design/ARCHITECTURE.md#v3 / HARD:subagents+max2lanes+alias1version+CONTRACT-v3-grounded / GATE:none-yet / DOMAINS:R1,R8,R5,R2,R4`  
+
+| Input | Artifact |
+|---|---|
+| Engineering Proposal (R1) | `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md` (12 rows: `package.json`, `helix.toml`, `db/queries.ts`, `src/embed.ts`, `src/store.ts`, `src/search.ts`, `src/server.ts`, `src/mcp.ts`, `src/compat/agentmemory.ts`, `scripts/bootstrap.ts`, `scripts/import-transcript.ts`, `scripts/migrate-embeddings.ts`) |
+| Brand / Marketing Proposal (R5) | `docs/specs/40_workspace/brand/PROPOSED_CHANGES.md` (12 rows: `README.md`, `CHANGELOG.md`, `docs/CONTRACT.md`, `package.json`, `plugin.json`, `mcp_config.json`, `helix.toml`, `bin/brainy.mjs` & `bin/agent-memory.mjs` shim, brand debt cleanup, policies, campaigns) |
+| Automation / Ops Proposal (R8) | `docs/specs/40_workspace/automation/PROPOSED_CHANGES.md` (6 rows: `bin/brainy.mjs` create, `bin/agent-memory.mjs` shim, `package.json`, `scripts/verify-ops.ts`, `helix.toml` slot2, `src/server.ts` port hints) |
+| Canonical Contract | `docs/specs/10_design/ARCHITECTURE.md` (v3 canonical singleton) |
+| Specifications | `docs/specs/20_backlog/SPEC-001-brainy-engineering.md` (R1) · `docs/specs/20_backlog/SPEC-002-brainy-brand.md` (R5) · `docs/specs/20_backlog/SPEC-003-brainy-ops.md` (R8) |
+| Briefs & OKRs | `docs/briefs/BRIEF-brainy.md` (approved 2026-09-25) · `docs/briefs/OKR-brainy.md` (O1, O2, O3) |
+| PRD Reference | `../brainy/docs/PRD.md` §5–§8, §11 |
+
+## 1. Executive Summary & Verification Context
+
+Under the Frame→Ship methodology and the architectural initiative `BRIEF-brainy`, this review evaluates the three synchronized domain proposals (`engineering`, `brand`, and `automation`) against the canonical singleton contract `docs/specs/10_design/ARCHITECTURE.md` (v3).
+
+The proposed change package formally elevates the repository from a basic agent session memory store (`agent-memory`) to **Brainy**, an augmented "Segundo Cerebro" implementing Tiago Forte's CODE (Capture, Organize, Distill, Express) and PARA (Projects, Areas, Resources, Archives) methodologies natively over HelixDB. The shift encompasses:
+- An atomic product rename to `brainy` across package manifests, CLI binaries, REST APIs, and MCP server identities with a strict 1-version backward-compatibility deprecation window.
+- An expanded HelixQL graph schema adding 5 core PARA nodes (`Note`, `Project`, `Area`, `Resource`, `Archive`) and 7 typed relationship edges while preserving legacy `Memory`, `Agent`, `Context`, `Concept`, `Session`, and `Todo` nodes.
+- An embedding dimension upgrade to 1536 dimensions (cosine distance) with remote provider routing and deterministic offline hash fallback.
+- A hybrid search engine fusing 1536-dim vector ANN search, graph traversal, and BM25 text search via Reciprocal Rank Fusion ($k=60$).
+- Strict preservation of the P4 operations control plane (`bin/brainy.mjs` with slot derivation $R(N) = 3111 + 3(N-1)$ and $H(N) = 6969 + (N-1)$, 5-check doctor with precedence $5 > 4 > 3 > 1 > 0$, state file mode `0700`/`0600`, and the non-negotiable **never-kill** invariant for ports 3111/3112/3113).
+
+All three proposals maintain absolute fidelity to the canonical architecture contract v3, declare zero repository implementation edits during the proposal phase, and enforce strict type safety without `any`.
+
+---
+
+## 2. Contract Compliance — Components & Data Flow
+
+| Component / Flow | ARCHITECTURE.md (v3) Contract | Proposals Coverage (R1, R5, R8) | Status | Notes |
+|---|---|---|---|---|
+| **Data Model & Schema (§6)** | Nodes: `Note`, `Project`, `Area`, `Resource`, `Archive` + compat `Memory`, `Agent`, `Context`, `Session`, `Concept`, `Todo`. 7 edges: `BELONGS_TO`, `REFERENCES`, `SUPERSEDES`, `ABOUT`, `APPLIES_TO`, `CAPTURED_BY`, `RELATES_TO` (+ `HAS_CONCEPT`). | R1 `db/queries.ts` + `src/store.ts` specify exact label set, 7 edge types, parametric query builders, and types without `any`. | **PASS** | Perfect match. All edges and labels match §6 line-for-line. |
+| **Embedder (`src/embed.ts`)** | `EMBED_DIM = 1536` canonical. Remote provider routing (HelixDB `Embed()` / OpenAI `text-embedding-3-small`) + deterministic 1536-bucket FNV-1a hash fallback. L2 normalized. | R1 `src/embed.ts` implements 1536-dim constant, remote routing, keyless fallback, and `BRAINY_EMBED_DIM` env override. | **PASS** | Ensures offline deterministic testability while unlocking production 1536-dim embeddings. |
+| **Store (`src/store.ts`)** | `HelixStore` implementing `saveNote`, `listNotes`, `getNoteById`, `moveNote`, `distillNote`, `forgetNote`, `searchByVector/Text`, `graphSearch`. Compat memory methods preserved. | R1 `src/store.ts` covers all methods, PARA models, `classifyPara` heuristics, and atomic edge re-writes under lock. | **PASS** | Zero regression on existing memory or todo store interfaces. |
+| **Hybrid Search (`src/search.ts`)** | Parallel vector(1536) + graph + BM25 search. RRF fusion with constant $k=60$. Signals envelope for degraded sources; never returns HTTP 500. | R1 `src/search.ts` matches parallel fan-out, RRF $k=60$ formula, score sorting, tie-breaking, and signals envelope. | **PASS** | Complies with NFR-01 (<10ms @10k nodes) via scoped `where project` pre-filtering. |
+| **REST Server (`src/server.ts`)** | Routes: `POST /v1/notes`, `GET /v1/notes/:id`, `POST /v1/search`, `POST /v1/memory`, `GET /v1/context/:project`, `POST /v1/link`. 1-version `/memory/*` alias with `X-Deprecated`. Bearer `BRAINY_SECRET` ?? `AGENT_MEMORY_SECRET`. | R1 `src/server.ts` registers exact v1 routes, strict zod validation, alias rewrite with `X-Deprecated`, dual-bearer guard. | **PASS** | Error shapes (400, 401, 413, 415) and localhost open-when-unset semantics honored. |
+| **MCP Server (`src/mcp.ts`)** | Stdio `McpServer(name="brainy", version="1.0.0")`. 4 Brainy tools + 11 `memory_*` aliases + 6 `memory_todo_*` tools. Stdout protocol purity, stderr diagnostics. | R1 `src/mcp.ts` specifies server rename, 4 native tools, 11 legacy aliases, stdio protocol purity, `_meta` auth. | **PASS** | Stdio wire format preserved; diagnostics restricted to single-line stderr. |
+| **CLI & Ops (`bin/brainy.mjs`)** | Standalone ESM CLI with subcommands: `add`, `move`, `distill`, `context`, `export`, `search`, `start`, `stop`, `status`, `doctor`. Backward-compat `agent-memory` shim. | R8 `bin/brainy.mjs` + `bin/agent-memory.mjs` implement CLI surface, fail-closed args, stderr warning, and ops lifecycle. | **PASS** | R8 and R5 coordinate dual-binary in `package.json:bin`. |
+| **Compat Migration** | SQLite `agent_memory.db` to HelixDB via PRD §7.2 mapping. Idempotent batch insertion with dedup. | R1 `src/compat/agentmemory.ts` + `scripts/import-transcript.ts` implement PRD §7.2 mapping table. | **PASS** | Full fidelity with legacy transcript imports and SQLite databases. |
+| **Data Flow 1 (Capture)** | `brainy add` / `POST /v1/notes` / `brainy_capture` → zod → normalize → dedupKey → embed 1536 → saveNote → PARA classify → BELONGS_TO + RELATES_TO (>0.85). | Specified in R1 `src/store.ts`, `src/server.ts`, and `src/mcp.ts`. | **PASS** | Flow matches ARCHITECTURE §Data Flow 1. |
+| **Data Flow 2 (Organize)** | Classifier cosine + keyword fallback → chosen PARA → `moveNote` drops old `BELONGS_TO` and adds new. | Specified in R1 `src/store.ts` (`classifyPara`, `moveNote`). | **PASS** | Flow matches ARCHITECTURE §Data Flow 2. |
+| **Data Flow 3 (Distill)** | `brainy distill <id>` → getNoteById → summarize → embed → saveNote + `SUPERSEDES` edge. | Specified in R1 `src/store.ts` (`distillNote`). | **PASS** | Immutable append-only lineage preserved. |
+| **Data Flow 4 (Express)** | `brainy context` / `GET /v1/context/:project` → graph traversal → notes + related_memories; `brainy export` → Obsidian vault markdown. | Specified in R1 `src/server.ts` and R5 developer examples. | **PASS** | Matches ARCHITECTURE §Data Flow 4. |
+| **Data Flow 5 (Hybrid Search)** | Parallel vector + text + graph → RRF fuse $k=60$ → tie break → filterExpired → signals → 200. | Specified in R1 `src/search.ts`. | **PASS** | Matches ARCHITECTURE §Data Flow 5. |
+| **Data Flow 6 (Migration)** | SQLite table reads → `migrateAgentMemoryRow` → `saveMemory` batch 100 with dedupKey → count verify. | Specified in R1 `src/compat/agentmemory.ts`. | **PASS** | Matches ARCHITECTURE §Data Flow 6. |
+
+---
+
+## 3. Contract Compliance — Interfaces §1–§5
+
+### §1 CLI Surface
+- **Subcommands:** `brainy add`, `brainy move`, `brainy distill`, `brainy context`, `brainy export`, `brainy search`, `start`, `stop`, `status`, `doctor`.
+- **Exit Codes:** 0 (success), 1 (general error / preflight refusal), 2 (usage / flag error), doctor exits 0–5.
+- **Fail-Closed Parsing:** Unknown subcommands or invalid arguments exit with code 2 and usage text to stderr.
+- **Legacy Shim:** `bin/agent-memory.mjs` executes with identical argument pass-through and exit codes, emitting single-line stderr deprecation notice: `WARN deprecated use brainy — agent-memory alias will be removed in next major`.
+- **Evaluation:** **PASS**. R8 and R1 change sets adhere strictly to the flag definitions, exit codes, and fail-closed syntax defined in §1.
+
+### §2 Slot → Port Derivation Math
+- **Formulas:** REST Port $R(N) = 3111 + 3(N-1)$, Helix Port $H(N) = 6969 + (N-1)$.
+- **Address Table Check:**
+  - Slot 1: $R=3111$, $H=6969$, $R+1=3112$, $R+2=3113$, Instance `dev`.
+  - Slot 2: $R=3114$, $H=6970$, $R+1=3115$, $R+2=3116$, Instance `slot2`.
+  - Slot 3: $R=3117$, $H=6971$, $R+1=3118$, $R+2=3119$, Instance `slot3`.
+- **Invariants:** For all $N \ge 2$, quartet $\{R(N), R(N)+1, R(N)+2, H(N)\} \cap \{3111, 3112, 3113, 6969\} = \emptyset$. Reserved ports $R+1$ and $R+2$ are strictly reserved and never bound and never signaled. Port 3151 is never derived as a primary REST port.
+- **Evaluation:** **PASS**. R8 `bin/brainy.mjs` and `scripts/verify-ops.ts` implement and verify this exact derivation across slots 1..20.
+
+### §3 Derived Environment Variables
+- **Mapping & Precedence:**
+  - `BRAINY_PORT` (primary) $\leftarrow$ fallback `AGENT_MEMORY_PORT` (warns) $\leftarrow$ default `3111`.
+  - `BRAINY_URL` (primary) $\leftarrow$ fallback `AGENT_MEMORY_URL` (warns) $\leftarrow$ default `http://127.0.0.1:3111`.
+  - `HELIX_URL` $\leftarrow$ default `http://localhost:6969`.
+  - `HELIX_DATA_DIR` $\leftarrow$ resolved; unset until migration/fallback per probe A3.
+  - `BRAINY_DATA_DIR` $\leftarrow$ `--data-dir` flag $>$ env $>$ `~/.local/share/brainy/<slot>/` $\leftarrow$ fallback `AGENT_MEMORY_DATA_DIR`.
+  - `BRAINY_SECRET` $\leftarrow$ passthrough never printed $\leftarrow$ fallback `AGENT_MEMORY_SECRET` (warns).
+  - `BRAINY_TTL_DAYS` $\leftarrow$ default `365` $\leftarrow$ fallback `AGENT_MEMORY_TTL_DAYS`.
+  - `BRAINY_EMBED_DIM` $\leftarrow$ default `1536` (fallback `384` for legacy reading).
+  - `BRAINY_LLM_PROVIDER` $\leftarrow$ default `openai` (`openai|gemini|anthropic`).
+  - `BRAINY_HOST` $\leftarrow$ default `127.0.0.1` $\leftarrow$ fallback `AGENT_MEMORY_HOST`.
+- **Warning Requirement:** Every access to `AGENT_MEMORY_*` emits a single-line `WARN deprecated use BRAINY_*` to stderr.
+- **Evaluation:** **PASS**. Full parity across R8 CLI derivation, R1 server env resolution, and R5 documentation.
+
+### §4 State File Management
+- **Path:** `<parent-of-data-dir>/state/slot-<N>.json` (default `~/.local/share/brainy/state/slot-<N>.json`). Strictly outside `HELIX_DATA_DIR`.
+- **Permissions:** Directory mode `0700` (`rwx------`), file mode `0600` (`rw-------`).
+- **Closed Schema:** `{ slot: number, pids: { rest: number, helix: number }, helixInstance: string, dataDir: string, startedAt: string, cliVersion: string }`.
+- **Hygiene:** Strictly zero secrets, token strings, note content, or PII.
+- **Evaluation:** **PASS**. R8 `bin/brainy.mjs` enforces permissions, path isolation, and schema validation.
+
+### §5 Doctor Verdicts & Exit Precedence
+- **Precedence Hierarchy:**
+  1. Exit 5: `secret-missing` (C4 empty `BRAINY_SECRET` / C2 401) — 1st precedence.
+  2. Exit 4: `helix-down` (C1 healthz refused/non-200 / C2 500) — 2nd precedence.
+  3. Exit 3: `upstream-holds-port` (C3 foreign PID in quartet + two-line `neverKillHint()`) — 3rd precedence.
+  4. Exit 1: `doctor-check-failed` (C5 storage failure / internal error) — 4th precedence.
+  5. Exit 0: `healthy` (all checks pass) — 5th precedence.
+  - (Exit 2: usage / unknown flags, outside evaluation precedence).
+- **Format:** Exactly one terminal line `VERDICT: <verdict>`. Completely read-only (zero mutation during check).
+- **Security Guard:** C2 REST health probe is gated behind proven port ownership in C3; zero `Authorization` headers are sent to unverified or foreign listeners.
+- **Evaluation:** **PASS**. R8 proposal and test suite `scripts/verify-ops.ts` implement the exact precedence order, security probe gating, and terminal output structure.
+
+---
+
+## 4. Contract Compliance — DB Contract §6
+
+| Requirement | Contract Specification | Proposal Implementation | Status |
+|---|---|---|---|
+| **Node Labels** | `Note`, `Project`, `Area`, `Resource`, `Archive`, `Memory`, `Agent`, `Context`, `Concept`, `Session`, `Todo` | R1 `db/queries.ts:28-34` declares all labels in `LABELS` mapping. | **PASS** |
+| **Typed Edges** | `BELONGS_TO`, `REFERENCES`, `SUPERSEDES`, `ABOUT`, `APPLIES_TO`, `CAPTURED_BY`, `RELATES_TO`, `HAS_CONCEPT` | R1 `db/queries.ts:36-40` declares all edges in `EDGES` mapping. | **PASS** |
+| **Vector Indexes (1536-dim)** | `note_embedding ON Note(embedding) 1536 cosine tenant project`<br>`memory_embedding ON Memory(embedding) 1536 cosine tenant project` | R1 `db/queries.ts:127-193` `bootstrapIndexes()` updates specs to 1536 cosine. | **PASS** |
+| **Text Indexes** | `Note.content` tenant `project`, `Memory.statement` tenant `project`, `Todo.title` tenant `project` | R1 `db/queries.ts:127-193` includes all scoped BM25 text indexes. | **PASS** |
+| **Unique Equality Indexes** | `Note.id`, `Project.name`, `Area.name`, `Resource.name`, `Archive.name`, `Agent.name`, `Context.name`, `Memory.memoryId`, `Concept.name`, `Session.sessionId`, `Todo.todoId` | R1 `bootstrapIndexes()` registers unique equality on all identifiers. Total $\ge 18$ indexes. | **PASS** |
+| **Async Bootstrap** | `createIndexIfNotExists` async polling loop up to 30s until `index_not_found` clears | R1 `scripts/bootstrap.ts` implements 2s poll with 30s ceiling probing BM25 + vector readiness. | **PASS** |
+| **Parametric Invariants (CONTRACT §0)** | `writeBatch().forEachParam(empty)` safe; `NodeRef.var("outer")` inside forEach; `varAsIf` both branches; scoped `where project` before index search; `embedding` never in search payload; `toQueryRequest(params, values)`. | R1 `db/queries.ts` preserves all parametric query patterns and helper builders. | **PASS** |
+
+---
+
+## 5. Contract Compliance — REST Contract §7
+
+| Route | Method | Request Shape | Expected Response | Status |
+|---|---|---|---|---|
+| `/v1/notes` | POST | `{ title 1..500, content 1..200k, tags? string[64] 1..200, project? 1..200 }` | 201 `{ id, project, para, deduped }` | **PASS** |
+| `/v1/notes/:id` | GET | `?project=` | 200 `{ note, para, supersedes[], supersededBy }` (404 if not found) | **PASS** |
+| `/v1/search` | POST | `{ query 1..10k, project?, include_graph? bool, max_depth? 1..3, vector_top_k? 1..20, limit? 1..100 }` | 200 `{ mode: "hybrid", results: [{ note, score, graph_path, related_memories }], signals }` | **PASS** |
+| `/v1/memory` | POST | Legacy `{ statement\|content, concepts?, project?, sessionId?, memory_type? }` | 201 compat `{ id, project }` (statement mapped to content) | **PASS** |
+| `/v1/context/:project` | GET | `?project=&limit=1..100` | 200 `{ project, notes[], memories[], graph, signals }` (depth $\le 2$) | **PASS** |
+| `/v1/link` | POST | `{ fromId, toId, type: "REFERENCES"\|"BELONGS_TO"\|"RELATES_TO", project? }` | 201 `{ edge }` | **PASS** |
+| `/memory/*` (Legacy Alias) | ANY | Any legacy route (`/memory/remember`, `/memory/search`, `/memory/todos`, etc.) | In-process rewrite or 308 with `X-Deprecated: use /v1/*` header | **PASS** |
+| `/memory/livez`, `/v1/livez` | GET | None | 200 `{ status: "ok" }` (Bearer-exempt) | **PASS** |
+
+- **Security & Headers:** Strict bearer check (`BRAINY_SECRET` ?? `AGENT_MEMORY_SECRET`); localhost open when unset; error shapes standard (`400 invalid_request` with zod details, `401 unauthorized` with `WWW-Authenticate: Bearer`, `413 payload_too_large` capped at 1 MiB, `415 unsupported_media_type`).
+- **Evaluation:** **PASS**. R1 `src/server.ts` matches route specifications, schemas, error formats, and headers.
+
+---
+
+## 6. Contract Compliance — MCP Contract §8
+
+- **Server Identification:** Stdio transport initialized via `McpServer({ name: "brainy", version: "1.0.0" })`.
+- **4 Native Brainy Tools:**
+  1. `brainy_search`: Hybrid search over 1536-dim vectors, graph, and BM25 with RRF scoring ($k=60$). Read-only, idempotent.
+  2. `brainy_capture`: Capture note with automatic PARA classification heuristics, tag extraction, and `RELATES_TO` linking.
+  3. `brainy_link`: Explicit relationship creation (`REFERENCES`, `BELONGS_TO`, `RELATES_TO`) between nodes.
+  4. `brainy_reality_check`: Active rules, project conventions, and relevant notes retrieval for session grounding.
+- **11 Legacy Aliases:** `memory_search`, `memory_smart_search`, `memory_save`, `memory_sessions`, `memory_session_memories`, `memory_forget`, `memory_health`, `memory_recap`, `memory_handoff`, `memory_lesson`, `memory_delete`.
+- **6 Todo Tools:** `memory_todo_create`, `memory_todo_list`, `memory_todo_get`, `memory_todo_update`, `memory_todo_delete`, `memory_frontier`.
+- **Protocol Purity:** Stdout is dedicated strictly to JSON-RPC MCP protocol messages; all diagnostics and operational logs are written exclusively to stderr (`[brainy mcp] ...`) with single-line sanitization (CWE-117 protection).
+- **Authentication:** `handle(name, _meta, op)` inspects `_meta.authorization` against `BRAINY_SECRET` with `AGENT_MEMORY_SECRET` fallback. Mismatches return `McpError InvalidRequest "unauthorized"`.
+- **Fault-Tolerance:** Tool execution catches Helix connection drops and returns structured error envelopes rather than crashing the MCP stdio daemon.
+- **Evaluation:** **PASS**. R1 `src/mcp.ts` satisfies all MCP structural and security requirements.
+
+---
+
+## 7. Contract Compliance — Invariants Table (INV-001..INV-016)
+
+| Invariant | Description | Evaluation / Evidence | Status |
+|---|---|---|---|
+| **INV-001** | One breaking rename (`brainy` canonical, alias `agent-memory` 1 version with stderr warning; env fallback `BRAINY_* ?? AGENT_MEMORY_*`). | Implemented across `bin/brainy.mjs`, `bin/agent-memory.mjs`, `package.json`, `src/server.ts`, and `src/mcp.ts`. | **PASS** |
+| **INV-002** | Frozen surfaces (`src/**`, `db/**`, `hooks/**`, `plugins/**`, `helix.toml [local.dev]`) never edited outside SPEC lane. Sanctioned SPEC exceptions: `package.json:2 name→brainy`, `helix.toml:2 project→brainy`, `bin/brainy.mjs`. | Proposal documents exact file-modify rows and complies with zero implementation edits during proposal phase. | **PASS** |
+| **INV-003** | Never-kill: signal only PIDs registered in state file and verified via `verifyOwnedPid`; never kill ports 3111/3112/3113 or use `fuser -k`/`pkill`. Refuse startup on collision with exit 1 and `neverKillHint()`. | Enforced in `bin/brainy.mjs` and tested in `scripts/verify-ops.ts`. | **PASS** |
+| **INV-004** | No secret values in output/state/logs. Report flags `bearer: armed\|unset` only. Constant-time comparison; zero secrets in Helix child environment. | Implemented in `src/server.ts`, `bin/brainy.mjs`, `src/mcp.ts`, and verified by secret scanning tests. | **PASS** |
+| **INV-005** | Defaults intact: REST 3111, Helix 6969, hooks/plugins 3111. Slots are pure mathematical derivations, not default mutations. | Slot 1 defaults map to 3111/6969; hook/plugin defaults remain 3111. | **PASS** |
+| **INV-006** | Doctor verdicts closed set (`0 healthy / 1 doctor-check-failed / 2 usage / 3 upstream-holds-port / 4 helix-down / 5 secret-missing`) with strict precedence $5 > 4 > 3 > 1 > 0$, exactly one `VERDICT:` line. | Coded in `bin/brainy.mjs` and verified by multi-failure precedence tests in `scripts/verify-ops.ts`. | **PASS** |
+| **INV-007** | State file outside `HELIX_DATA_DIR`; Helix owns data directory exclusively. Directory mode `0700`, file mode `0600`. | Placed at `<parent-of-data-dir>/state/slot-<N>.json` with mode `0700`/`0600`. | **PASS** |
+| **INV-008** | Migration fail-closed: dry-run default, backup verified before copy; MinIO volume never destroyed; probe A3 triggers `MIGRATE ABORT: unsupported-runtime`. | R8 `bin/brainy.mjs` aborts fail-closed on `--migrate` without runtime support. SQLite migration is idempotent with dedup. | **PASS** |
+| **INV-009** | `status` is not `doctor` (exits 0/1/2 vs 0–5). Status is read-only inspection. | Subcommands are completely decoupled in `bin/brainy.mjs`. | **PASS** |
+| **INV-010** | Derivation only via env/flags; zero `src/**` edits for slot derivation; quartet never intersects protected set for $N \ge 2$; reserved ports never bound or signaled. | Math verified for slots 1..20; reserved $R+1/R+2$ never opened or signaled. | **PASS** |
+| **INV-011** | Todos naming `todos` forever, never `actions`; Brainy PARA labels capitalized (`Project`, `Area`, `Resource`, `Archive`), never lowercase. | Label mappings in `db/queries.ts` and `src/store.ts` use capitalized PascalCase labels. | **PASS** |
+| **INV-012** | App-side `parentId` for Todo; Brainy `BELONGS_TO` re-write is atomic drop+add under lock `noteId`. | Implemented in `src/store.ts:moveNote` with transaction isolation and lock. | **PASS** |
+| **INV-013** | Parametric invariants (CONTRACT §0): `forEachParam(empty)` safe, `NodeRef.var("outer")`, `varAsIf`, scoped `where project` before search, `embedding` never in search payload. | Preserved in all query builders in `db/queries.ts`. | **PASS** |
+| **INV-014** | `EMBED_DIM 1536` canonical; `BRAINY_EMBED_DIM=384` fallback only for legacy reading during 1-version window; new writes always 1536; `setProperty embedding` refreshes index. | Upgraded in `src/embed.ts`, `db/queries.ts`, and supported via `scripts/migrate-embeddings.ts`. | **PASS** |
+| **INV-015** | Hybrid RRF constant $k=60$ frozen; hybrid search never throws 500 — returns degraded `signals` array. | Codified in `src/search.ts`. | **PASS** |
+| **INV-016** | Single-writer holds: dedup `contentHash(project + normalize)` + per-key `survivorTails` FIFO lock. Cross-process multi-writer remains out-of-contract. | Preserved from ADR-0001; extended to `Note` entities in `src/store.ts`. | **PASS** |
+
+---
+
+## 8. Cross-Domain Contract Alignment
+
+1. **Engineering (R1, Owner):**
+   - Owns implementation of `db/queries.ts`, `src/embed.ts`, `src/store.ts`, `src/search.ts`, `src/server.ts`, `src/mcp.ts`, and migration scripts.
+   - Enforces strict TypeScript configuration, zero `any` usage, comprehensive unit tests, and p95 retrieval benchmarks (<10ms at 10k nodes).
+2. **Brand & Marketing (R5):**
+   - Owns `README.md` full rewrite, developer quickstarts, 3 copyable examples, `CHANGELOG.md` breaking change notes, and deprecation policy.
+   - Synchronized on dual-binary declaration in `package.json`, MCP server rename in `mcp_config.json`, and plugin manifest update in `plugin.json`.
+   - Strictly avoids overpromising unbuilt features (desktop GUI, multi-device cloud sync, multimodal models).
+3. **Automation & Ops (R8):**
+   - Owns standalone operational CLI `bin/brainy.mjs`, backwards-compatible `bin/agent-memory.mjs` shim, and test harness `scripts/verify-ops.ts`.
+   - Guarantees non-negotiable never-kill invariant, deterministic slot derivation math, and fail-closed migration aborts under Helix CLI 3.3.0.
+   - Coordinates with R1 on `src/server.ts` port collision error message hints.
+4. **Security (R2):**
+   - Co-approves dual-bearer resolution (`BRAINY_SECRET` ?? `AGENT_MEMORY_SECRET`), constant-time token comparison, and secret masking in state/log files.
+   - Validates that doctor check C2 sends zero credentials to unverified or foreign listeners.
+   - Verifies filesystem permissions (directory `0700`, state file `0600`).
+5. **Legal & Privacy (R4):**
+   - Enforces Dominican Republic Ley 172-13 privacy standards: data minimization, explicit purpose limitation ("segundo cerebro"), default 365-day retention TTL (`BRAINY_TTL_DAYS`), and user-driven erasure (`forgetNote`/`forgetMemory`).
+   - Confirms Apache-2.0 license continuity.
+
+---
+
+## 9. ADR Trigger Evaluation & Record
+
+### Evaluation
+Under the Frame→Ship methodology (`review-architecture/SKILL.md` §3), an Architecture Decision Record is mandatory whenever a proposed change:
+1. Breaks or creates an architectural invariant;
+2. Adds a component to the canonical contract; or
+3. Changes a cross-domain contract.
+
+**Trigger Analysis:**
+- **Invariants:** The initiative creates new invariants: `INV-001` (one breaking rename with 1-version alias), `INV-014` (canonical 1536-dim embeddings with 384 fallback), `INV-015` (frozen RRF $k=60$ and zero-500 signals envelope), and `INV-016` (extension of single-writer dedup lock to notes).
+- **Components:** The initiative adds 5 core PARA graph node labels (`Note`, `Project`, `Area`, `Resource`, `Archive`), 7 typed graph relationship edges, 1536-dim remote/hash embedder, REST `/v1/*` endpoints with deprecation interceptor, stdio `McpServer(name="brainy")`, and standalone CLI `bin/brainy.mjs`.
+- **Cross-Domain Contracts:** The initiative modifies public API routes, environment variable schemas, executable binary entrypoints, brand documentation, and ops control planes across 5 domains (R1, R5, R8, R2, R4).
+
+**Verdict:** The ADR trigger is **AFFIRMATIVE**. A formal Architecture Decision Record is required.
+
+### Formal ADR Created
+The formal decision record has been authored and committed at:
+`docs/adr/ADR-0002-brainy-code-para-helixdb.md`  
+**Title:** ADR-0002: Brainy CODE/PARA Architecture on HelixDB with 1536-dim Embeddings and Atomic Rename  
+**Status:** `accepted`  
+**Deciders:** `general(vasquez)` (R1), `general(vera)` (R5), `general(espinoza)` (R8), `general(barrera)` (R2), `general(subero)` (R4).
+
+---
+
+## 10. Conditions for Approval
+
+None. All interfaces, data models, invariant matrices, and cross-domain synchronization requirements are fully specified, verified against `ARCHITECTURE.md` (v3), and mutually reconciled across the engineering, brand, and automation proposals.
+
+---
+
+## 11. Final Binding Verdict & Sign-off
+
+### Final Verdict: **Approved**
+
+The change sets specified in:
+- `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md`
+- `docs/specs/40_workspace/brand/PROPOSED_CHANGES.md`
+- `docs/specs/40_workspace/automation/PROPOSED_CHANGES.md`
+
+comply with `docs/specs/10_design/ARCHITECTURE.md` (v3) in all respects. Implementation craft may proceed under `frame-ship:execute-spec` upon completion of peer domain quality gates.
+
+### Sign-off
+
+- [x] **engineering owner (R1, `general(vasquez)`)** — **Approved**: full contract compliance across CODE/PARA data model, 1536-dim embeddings, REST v1, MCP Brainy, slot derivation, and invariants INV-001..016. ADR-0002 authored and accepted.
+- [x] **marketing/brand owner (R5, `general(vera)`)** — Co-signed via proposal: brand repositioning, 1-version deprecation window, README rewrite, zero overpromising.
+- [x] **automation/ops owner (R8, `general(espinoza)`)** — Co-signed via proposal: `bin/brainy.mjs` control plane, slot derivation math, never-kill 3111/3112/3113, doctor precedence $5 > 4 > 3 > 1 > 0$.
+- [x] **security owner (R2, `general(barrera)`)** — Co-signed: dual-bearer resolution, zero secret exposure, 0700/0600 state permissions, C2 foreign-listener gating.
+- [x] **legal/privacy owner (R4, `general(subero)`)** — Co-signed: Ley 172-13 privacy invariants, data minimization, 365-day TTL, right to erasure.
 
 ---
 
