@@ -24,30 +24,53 @@ import {
   EMBED_DIM,
   deleteTodo as deleteTodoQuery,
   deleteTodoParams,
+  distillNote as distillNoteQuery,
+  distillNoteParams,
   findMemoryByDedupKey as findMemoryByDedupKeyQuery,
   findMemoryByDedupKeyParams,
   forgetMemory as forgetMemoryQuery,
+  forgetNote as forgetNoteQuery,
+  forgetNoteParams,
   getMemoryById as getMemoryByIdQuery,
   getMemoryByIdParams,
+  getNoteById as getNoteByIdQuery,
+  getNoteByIdParams,
   getTodoById as getTodoByIdQuery,
   getTodoByIdParams,
   graphSearch as graphSearchQuery,
+  graphSearchNotes as graphSearchNotesQuery,
+  graphSearchNotesParams,
   healthCount as healthCountQuery,
   linkMemoryConcepts as linkMemoryConceptsQuery,
   linkMemoryConceptsParams,
+  linkNotes as linkNotesQuery,
+  linkNotesParams,
+
+  listNotes as listNotesQuery,
+  listNotesParams,
+  listNotesByCategory as listNotesByCategoryQuery,
+  listNotesByCategoryParams,
   listSessions as listSessionsQuery,
   listTodos as listTodosQuery,
   listTodosParams,
   memoryConcepts as memoryConceptsQuery,
   memoryConceptsParams,
+  moveNote as moveNoteQuery,
+  moveNoteParams,
   saveMemory as saveMemoryQuery,
+  saveNote as saveNoteQuery,
+  saveNoteParams,
   saveTodo as saveTodoQuery,
   saveTodoParams,
   searchByText as searchByTextQuery,
   searchByVector as searchByVectorQuery,
+  searchNotesByText as searchNotesByTextQuery,
+  searchNotesByVector as searchNotesByVectorQuery,
   searchTodosByText as searchTodosByTextQuery,
   searchTodosByTextParams,
   sessionMemories as sessionMemoriesQuery,
+  traverseNoteGraph as traverseNoteGraphQuery,
+  traverseNoteGraphParams,
   updateMemoryContent as updateMemoryContentQuery,
   updateMemoryContentParams,
   updateTodo as updateTodoQuery,
@@ -331,6 +354,102 @@ export interface ListTodosInput {
   parentId?: string;
 }
 
+export type ParaCategory = "project" | "area" | "resource" | "archive";
+
+export interface NoteRow {
+  id: string;
+  noteId: string;
+  title: string;
+  content: string;
+  project: string;
+  sessionId?: string;
+  paraCategory: ParaCategory;
+  origin?: string;
+  createdAt: string;
+  updatedAt: string;
+  status: string;
+  dedupKey?: string;
+}
+
+export interface ProjectRow {
+  name: string;
+  description?: string;
+  deadline?: string;
+}
+
+export interface AreaRow {
+  name: string;
+  description?: string;
+}
+
+export interface ResourceRow {
+  name: string;
+  category?: string;
+}
+
+export interface ArchiveRow {
+  name: string;
+  archivedAt?: string;
+}
+
+export interface ParaClassificationResult {
+  category: ParaCategory;
+  target: string;
+  confidence: number;
+  reason: string;
+}
+
+export interface SaveNoteInput {
+  title: string;
+  content: string;
+  project?: string;
+  sessionId?: string;
+  paraCategory?: ParaCategory;
+  paraTarget?: string;
+  tags?: string[];
+  origin?: string;
+}
+
+export interface SaveNoteResult {
+  id: string;
+  project: string;
+  paraCategory: ParaCategory;
+  paraTarget: string;
+  deduped: boolean;
+  relatedNoteIds: string[];
+}
+
+export interface ListNotesInput {
+  project: string;
+  limit?: number;
+  category?: ParaCategory;
+  tag?: string;
+}
+
+export interface GetNoteResult {
+  note: NoteRow;
+  para: {
+    category: ParaCategory;
+    name: string;
+  };
+  supersedes: Array<{ id: string; title: string }>;
+  supersededBy?: { id: string; title: string };
+  relatesTo: Array<{ id: string; title: string }>;
+}
+
+export interface MoveNoteInput {
+  id: string;
+  project: string;
+  toCategory: ParaCategory;
+  toTarget?: string;
+}
+
+export interface DistillNoteInput {
+  id: string;
+  project: string;
+  summary?: string;
+}
+
 export interface MemoryStore {
   remember(input: RememberInput): Promise<RememberResult>;
   searchByVector(input: VectorSearchInput): Promise<SearchHit[]>;
@@ -348,6 +467,116 @@ export interface MemoryStore {
   updateTodo(todoId: string, patch: UpdateTodoInput): Promise<TodoRow | undefined>;
   deleteTodo(todoId: string): Promise<boolean>;
   frontierTodos(input: { project: string; limit: number }): Promise<TodoRow[]>;
+  // Brainy v1 Note & PARA methods (optional on base MemoryStore for test stub compat, mandatory on BrainyStore)
+  saveNote?(input: SaveNoteInput): Promise<SaveNoteResult>;
+  listNotes?(input: ListNotesInput): Promise<NoteRow[]>;
+  getNoteById?(id: string, project?: string): Promise<GetNoteResult | undefined>;
+  moveNote?(input: MoveNoteInput): Promise<boolean>;
+  distillNote?(input: DistillNoteInput): Promise<NoteRow>;
+  forgetNote?(id: string, project?: string): Promise<boolean>;
+  classifyPara?(title: string, content: string, tags?: string[]): ParaClassificationResult;
+  searchNotesByVector?(input: VectorSearchInput): Promise<SearchHit[]>;
+  searchNotesByText?(input: TextSearchInput): Promise<SearchHit[]>;
+  graphSearchNotes?(input: GraphSearchInput): Promise<SearchHit[]>;
+  traverseNoteGraph?(noteId: string, project: string, limit?: number): Promise<{
+    references: NoteRow[];
+    relates: NoteRow[];
+    belongsTo: Array<{ id: string; name: string }>;
+  }>;
+  linkNodes?(input: { fromId: string; toId: string; type: "REFERENCES" | "BELONGS_TO" | "RELATES_TO"; project?: string }): Promise<boolean>;
+}
+
+export interface BrainyStore extends MemoryStore {
+  saveNote(input: SaveNoteInput): Promise<SaveNoteResult>;
+  listNotes(input: ListNotesInput): Promise<NoteRow[]>;
+  getNoteById(id: string, project?: string): Promise<GetNoteResult | undefined>;
+  moveNote(input: MoveNoteInput): Promise<boolean>;
+  distillNote(input: DistillNoteInput): Promise<NoteRow>;
+  forgetNote(id: string, project?: string): Promise<boolean>;
+  classifyPara(title: string, content: string, tags?: string[]): ParaClassificationResult;
+  searchNotesByVector(input: VectorSearchInput): Promise<SearchHit[]>;
+  searchNotesByText(input: TextSearchInput): Promise<SearchHit[]>;
+  graphSearchNotes(input: GraphSearchInput): Promise<SearchHit[]>;
+  traverseNoteGraph(noteId: string, project: string, limit?: number): Promise<{
+    references: NoteRow[];
+    relates: NoteRow[];
+    belongsTo: Array<{ id: string; name: string }>;
+  }>;
+  linkNodes(input: { fromId: string; toId: string; type: "REFERENCES" | "BELONGS_TO" | "RELATES_TO"; project?: string }): Promise<boolean>;
+}
+
+
+export function cosineSimilarity(a: readonly number[], b: readonly number[]): number {
+  if (a.length !== b.length || a.length === 0) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += (a[i] ?? 0) * (b[i] ?? 0);
+  }
+  return dot;
+}
+
+export function classifyPara(
+  title: string,
+  content: string,
+  tags: string[] = [],
+): ParaClassificationResult {
+  const normalizedTags = tags.map((t) => t.toLowerCase().trim());
+
+  // Explicit tag check first
+  if (normalizedTags.includes("project")) {
+    return { category: "project", target: title.trim() || "Project", confidence: 1.0, reason: "tag:project" };
+  }
+  if (normalizedTags.includes("area")) {
+    return { category: "area", target: title.trim() || "Area", confidence: 1.0, reason: "tag:area" };
+  }
+  if (normalizedTags.includes("archive")) {
+    return { category: "archive", target: title.trim() || "Archive", confidence: 1.0, reason: "tag:archive" };
+  }
+  if (normalizedTags.includes("resource")) {
+    return { category: "resource", target: "inbox", confidence: 1.0, reason: "tag:resource" };
+  }
+
+  const combined = `${title} ${content}`.toLowerCase();
+
+  // Archive check
+  const archiveKeywords = [
+    "archive", "archived", "deprecated", "legacy", "completed", "historical", "obsolete", "retired", "inactive",
+  ];
+  if (archiveKeywords.some((kw) => combined.includes(kw))) {
+    return { category: "archive", target: title.trim() || "Archive", confidence: 0.9, reason: "keyword:archive" };
+  }
+
+  // Project check: deadline, deliverable, sprint, release, milestone, launch, ship
+  const projectKeywords = [
+    "deadline", "sprint", "milestone", "deliverable", "launch", "release", "ship", "roadmap", "task", "spec",
+  ];
+  if (projectKeywords.some((kw) => combined.includes(kw))) {
+    return { category: "project", target: title.trim() || "Project", confidence: 0.85, reason: "keyword:project" };
+  }
+
+  // Area check: health, routine, standard, maintenance, finance, career, habits
+  const areaKeywords = [
+    "health", "finance", "habits", "routine", "maintenance", "standards", "compliance", "career", "workout", "gym",
+  ];
+  if (areaKeywords.some((kw) => combined.includes(kw))) {
+    return { category: "area", target: title.trim() || "Area", confidence: 0.85, reason: "keyword:area" };
+  }
+
+  // Resource check: guide, cheat sheet, reference, docs, tutorial, handbook
+  const resourceKeywords = [
+    "reference", "guide", "cheat sheet", "handbook", "tutorial", "docs", "documentation", "book", "article",
+  ];
+  if (resourceKeywords.some((kw) => combined.includes(kw))) {
+    return { category: "resource", target: "inbox", confidence: 0.8, reason: "keyword:resource" };
+  }
+
+  // Default fallback
+  return {
+    category: "resource",
+    target: "inbox",
+    confidence: 0.5,
+    reason: "default:inbox",
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -613,7 +842,7 @@ function pickSurvivor(
   return best;
 }
 
-export class HelixStore implements MemoryStore {
+export class HelixStore implements BrainyStore {
   private readonly client: Client;
 
   constructor(baseUrl: string = process.env["HELIX_URL"] ?? "http://localhost:6969") {
@@ -1462,6 +1691,386 @@ export class HelixStore implements MemoryStore {
   async frontierTodos(input: { project: string; limit: number }): Promise<TodoRow[]> {
     return this.listTodos({ project: input.project, limit: input.limit, frontier: true });
   }
+
+  classifyPara(title: string, content: string, tags?: string[]): ParaClassificationResult {
+    return classifyPara(title, content, tags);
+  }
+
+  async saveNote(input: SaveNoteInput): Promise<SaveNoteResult> {
+    const project = input.project ?? "default";
+    const title = input.title.trim();
+    const content = input.content.trim();
+    const tags = input.tags ?? [];
+
+    const dedupKey = contentHash(project, normalizeContent(content));
+
+    let category: ParaCategory = input.paraCategory ?? "resource";
+    let target: string = input.paraTarget ?? "inbox";
+    if (!input.paraCategory) {
+      const classification = this.classifyPara(title, content, tags);
+      category = classification.category;
+      target = input.paraTarget ?? classification.target;
+    }
+
+    const noteId = randomUUID();
+    const embedding = embed(content);
+    const now = Date.now();
+
+    // Check candidate notes in same project with cosine similarity > 0.85 (C8)
+    const relatedNoteIds: string[] = [];
+    try {
+      const candidates = await this.searchNotesByVector({
+        queryVector: embedding,
+        project,
+        k: 10,
+      });
+      for (const hit of candidates) {
+        if (hit.id !== noteId) {
+          const sim = hit.distance !== undefined ? 1 - hit.distance : 0;
+          if (sim > 0.85) {
+            relatedNoteIds.push(hit.id);
+          }
+        }
+      }
+    } catch {
+      // Graceful fallback if vector search unready
+    }
+
+    const paraLabelMap: Record<ParaCategory, "Project" | "Area" | "Resource" | "Archive"> = {
+      project: "Project",
+      area: "Area",
+      resource: "Resource",
+      archive: "Archive",
+    };
+    const paraLabel = paraLabelMap[category] ?? "Resource";
+
+    const concepts = tags.map((name) => ({ name }));
+    const relatedNotes = relatedNoteIds.map((targetId) => ({ targetId }));
+
+    const req = saveNoteQuery(paraLabel).toQueryRequest(saveNoteParams, {
+      id: noteId,
+      title,
+      content,
+      project,
+      paraCategory: category,
+      paraTarget: target,
+      origin: input.origin ?? "user",
+      createdAt: now,
+      updatedAt: now,
+      status: "active",
+      embedding,
+      dedupKey,
+      relatedNotes,
+      concepts,
+    });
+
+    await this.send(req);
+
+    return {
+      id: noteId,
+      project,
+      paraCategory: category,
+      paraTarget: target,
+      deduped: false,
+      relatedNoteIds,
+    };
+  }
+
+  async listNotes(input: ListNotesInput): Promise<NoteRow[]> {
+    const project = input.project;
+    const limit = BigInt(Math.max(1, Math.min(input.limit ?? 50, 100)));
+
+    let req: QueryRequest;
+    if (input.category) {
+      req = listNotesByCategoryQuery().toQueryRequest(listNotesByCategoryParams, {
+        project,
+        paraCategory: input.category,
+        limit,
+      });
+    } else {
+      req = listNotesQuery().toQueryRequest(listNotesParams, {
+        project,
+        limit,
+      });
+    }
+
+    const response = await this.send(req);
+    const rows = this.extractRecords(response, "notes");
+    const notes: NoteRow[] = [];
+    for (const r of rows) {
+      notes.push({
+        id: readString(r, ["id", "noteId"], ""),
+        noteId: readString(r, ["noteId", "id"], ""),
+        title: readString(r, ["title"], ""),
+        content: readString(r, ["content"], ""),
+        project: readString(r, ["project"], project),
+        sessionId: r["sessionId"] ? String(r["sessionId"]) : undefined,
+        paraCategory: (readString(r, ["paraCategory"], "resource") as ParaCategory),
+        origin: r["origin"] ? String(r["origin"]) : undefined,
+        createdAt: readString(r, ["createdAt"], ""),
+        updatedAt: readString(r, ["updatedAt"], ""),
+        status: readString(r, ["status"], "active"),
+        dedupKey: r["dedupKey"] ? String(r["dedupKey"]) : undefined,
+      });
+    }
+
+    if (input.tag) {
+      const lowerTag = input.tag.toLowerCase();
+      return notes.filter((n) => n.content.toLowerCase().includes(lowerTag) || n.title.toLowerCase().includes(lowerTag));
+    }
+
+    return notes;
+  }
+
+  async getNoteById(id: string, project?: string): Promise<GetNoteResult | undefined> {
+    const req = getNoteByIdQuery().toQueryRequest(getNoteByIdParams, { id });
+    const response = await this.send(req);
+    const noteRows = this.extractRecords(response, "note");
+    if (noteRows.length === 0) return undefined;
+    const r = noteRows[0]!;
+    const noteProject = readString(r, ["project"], "");
+
+    // Tenant check C8
+    if (project !== undefined && noteProject !== project) {
+      return undefined;
+    }
+
+    const belongsToRows = this.extractRecords(response, "belongsTo");
+    const supersedesRows = this.extractRecords(response, "supersedes");
+    const supersededByRows = this.extractRecords(response, "supersededBy");
+    const relatesToRows = this.extractRecords(response, "relatesTo");
+
+    const noteIdVal = readString(r, ["id", "noteId"], id);
+    const note: NoteRow = {
+      id: noteIdVal,
+      noteId: readString(r, ["noteId", "id"], noteIdVal),
+      title: readString(r, ["title"], ""),
+      content: readString(r, ["content"], ""),
+      project: noteProject,
+      sessionId: r["sessionId"] ? String(r["sessionId"]) : undefined,
+      paraCategory: (readString(r, ["paraCategory"], "resource") as ParaCategory),
+      origin: r["origin"] ? String(r["origin"]) : undefined,
+      createdAt: readString(r, ["createdAt"], ""),
+      updatedAt: readString(r, ["updatedAt"], ""),
+      status: readString(r, ["status"], "active"),
+      dedupKey: r["dedupKey"] ? String(r["dedupKey"]) : undefined,
+    };
+
+    const paraTarget = belongsToRows[0] ? readString(belongsToRows[0], ["name"], "") : "";
+    const supersedes = supersedesRows.map((s) => ({
+      id: readString(s, ["id", "noteId"], ""),
+      title: readString(s, ["title"], ""),
+    }));
+    const supersededBy = supersededByRows[0]
+      ? {
+          id: readString(supersededByRows[0], ["id", "noteId"], ""),
+          title: readString(supersededByRows[0], ["title"], ""),
+        }
+      : undefined;
+    const relatesTo = relatesToRows.map((rel) => ({
+      id: readString(rel, ["id", "noteId"], ""),
+      title: readString(rel, ["title"], ""),
+    }));
+
+    return {
+      note,
+      para: {
+        category: note.paraCategory,
+        name: paraTarget,
+      },
+      supersedes,
+      supersededBy,
+      relatesTo,
+    };
+  }
+
+  async moveNote(input: MoveNoteInput): Promise<boolean> {
+    const existing = await this.getNoteById(input.id, input.project);
+    if (!existing) return false;
+
+    const paraLabelMap: Record<ParaCategory, "Project" | "Area" | "Resource" | "Archive"> = {
+      project: "Project",
+      area: "Area",
+      resource: "Resource",
+      archive: "Archive",
+    };
+    const targetLabel = paraLabelMap[input.toCategory] ?? "Resource";
+    const targetName = input.toTarget ?? input.toCategory;
+
+    const req = moveNoteQuery(targetLabel).toQueryRequest(moveNoteParams, {
+      id: input.id,
+      paraCategory: input.toCategory,
+      paraTarget: targetName,
+      updatedAt: Date.now(),
+    });
+
+    await this.send(req);
+    return true;
+  }
+
+  async distillNote(input: DistillNoteInput): Promise<NoteRow> {
+    const existing = await this.getNoteById(input.id, input.project);
+    if (!existing) {
+      throw new Error(`Note not found: ${input.id}`);
+    }
+
+    const summary = input.summary ?? `Summary: ${existing.note.title} — ${existing.note.content.slice(0, 100)}`;
+    const newId = randomUUID();
+    const embedding = embed(summary);
+    const now = Date.now();
+
+    const req = distillNoteQuery().toQueryRequest(distillNoteParams, {
+      id: newId,
+      title: `Distilled: ${existing.note.title}`,
+      content: summary,
+      project: input.project,
+      paraCategory: existing.note.paraCategory,
+      embedding,
+      createdAt: now,
+      updatedAt: now,
+      status: "active",
+      supersededId: input.id,
+    });
+
+    await this.send(req);
+
+    return {
+      id: newId,
+      noteId: newId,
+      title: `Distilled: ${existing.note.title}`,
+      content: summary,
+      project: input.project,
+      paraCategory: existing.note.paraCategory,
+      createdAt: new Date(now).toISOString(),
+      updatedAt: new Date(now).toISOString(),
+      status: "active",
+    };
+  }
+
+  async forgetNote(id: string, project?: string): Promise<boolean> {
+    if (project !== undefined) {
+      const existing = await this.getNoteById(id, project);
+      if (!existing) return false;
+    }
+
+    const req = forgetNoteQuery().toQueryRequest(forgetNoteParams, { id });
+    const response = await this.send(req);
+    const forgotten = this.extractRecords(response, "target");
+    return forgotten.length > 0;
+  }
+
+  async linkNodes(input: {
+    fromId: string;
+    toId: string;
+    type: "REFERENCES" | "BELONGS_TO" | "RELATES_TO";
+    project?: string;
+  }): Promise<boolean> {
+    const project = input.project ?? "default";
+    const fromNote = await this.getNoteById(input.fromId, project);
+    const toNote = await this.getNoteById(input.toId, project);
+    if (!fromNote || !toNote || fromNote.note.project !== toNote.note.project) {
+      throw new Error("invalid_tenant_link: nodes must belong to the same project tenant");
+    }
+
+    const req = linkNotesQuery(input.type).toQueryRequest(linkNotesParams, {
+      fromId: input.fromId,
+      toId: input.toId,
+      project,
+    });
+    await this.send(req);
+    return true;
+  }
+
+
+  async searchNotesByVector(input: VectorSearchInput): Promise<SearchHit[]> {
+    const k = BigInt(input.k);
+    const response = await this.send(
+      searchNotesByVectorQuery().toQueryRequest(searchByVectorParams, {
+        queryVector: input.queryVector,
+        project: input.project,
+        k,
+      }),
+    );
+    return hitsFrom(response, ["hits"]);
+  }
+
+  async searchNotesByText(input: TextSearchInput): Promise<SearchHit[]> {
+    const k = BigInt(input.k);
+    const response = await this.send(
+      searchNotesByTextQuery().toQueryRequest(searchByTextParams, {
+        q: input.q,
+        project: input.project,
+        k,
+      }),
+    );
+    return hitsFrom(response, ["hits"]);
+  }
+
+  async graphSearchNotes(input: GraphSearchInput): Promise<SearchHit[]> {
+    const k = BigInt(input.k);
+    const response = await this.send(
+      graphSearchNotesQuery().toQueryRequest(graphSearchNotesParams, {
+        concepts: input.concepts,
+        project: input.project,
+        k,
+      }),
+    );
+    return hitsFrom(response, ["hits"]);
+  }
+
+  async traverseNoteGraph(
+    noteId: string,
+    project: string,
+    limit = 10,
+  ): Promise<{
+    references: NoteRow[];
+    relates: NoteRow[];
+    belongsTo: Array<{ id: string; name: string }>;
+  }> {
+    const response = await this.send(
+      traverseNoteGraphQuery().toQueryRequest(traverseNoteGraphParams, {
+        noteId,
+        project,
+        limit: BigInt(limit),
+      }),
+    );
+    const refs = this.extractRecords(response, "references").map((r) => ({
+      id: readString(r, ["id", "noteId"], ""),
+      noteId: readString(r, ["noteId", "id"], ""),
+      title: readString(r, ["title"], ""),
+      content: readString(r, ["content"], ""),
+      project: readString(r, ["project"], project),
+      paraCategory: (readString(r, ["paraCategory"], "resource") as ParaCategory),
+      createdAt: readString(r, ["createdAt"], ""),
+      updatedAt: readString(r, ["updatedAt"], ""),
+      status: readString(r, ["status"], "active"),
+    }));
+    const rels = this.extractRecords(response, "relates").map((r) => ({
+      id: readString(r, ["id", "noteId"], ""),
+      noteId: readString(r, ["noteId", "id"], ""),
+      title: readString(r, ["title"], ""),
+      content: readString(r, ["content"], ""),
+      project: readString(r, ["project"], project),
+      paraCategory: (readString(r, ["paraCategory"], "resource") as ParaCategory),
+      createdAt: readString(r, ["createdAt"], ""),
+      updatedAt: readString(r, ["updatedAt"], ""),
+      status: readString(r, ["status"], "active"),
+    }));
+    const belongs = this.extractRecords(response, "belongsTo").map((b) => ({
+      id: readString(b, ["id"], ""),
+      name: readString(b, ["name"], ""),
+    }));
+    return { references: refs, relates: rels, belongsTo: belongs };
+  }
+
+  private extractRecords(response: unknown, name: string): Record<string, unknown>[] {
+    if (!isRecord(response)) return [];
+    const val = response[name];
+    if (Array.isArray(val)) {
+      return toRecords(val);
+    }
+    return [];
+  }
 }
 
 function hitsFromTodo(response: unknown, names: readonly string[]): TodoRow[] {
@@ -1472,6 +2081,6 @@ function hitsFromTodo(response: unknown, names: readonly string[]): TodoRow[] {
 }
 
 /** Shared factory: REST server and MCP server build the same store. */
-export function createDefaultStore(): MemoryStore {
+export function createDefaultStore(): BrainyStore {
   return new HelixStore();
 }
