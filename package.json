@@ -1,9 +1,9 @@
 {
-  "name": "agent-memory",
-  "version": "0.9.0",
+  "name": "brainy",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Persistent memory for AI coding agents, built on HelixDB (graph + vector + BM25 hybrid retrieval)",
+  "description": "Brainy — Segundo cerebro aumentado con agentes sobre HelixDB (CODE/PARA, hybrid retrieval)",
   "license": "Apache-2.0",
   "exports": {
     ".": "./plugins/opencode/plugins/agent-memory.ts"
@@ -12,12 +12,14 @@
     "./plugins/opencode/plugins/agent-memory.ts"
   ],
   "bin": {
+    "brainy": "./bin/brainy.mjs",
     "agent-memory": "./bin/agent-memory.mjs"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "scripts": {
+    "test": "tsx --test tests/**/*.test.ts",
     "bootstrap": "tsx scripts/bootstrap.ts",
     "dev": "tsx src/server.ts",
     "demo": "tsx src/demo.ts",
@@ -31,6 +33,7 @@
     "eval": "tsx scripts/eval.ts",
     "verify-skills": "tsx scripts/verify-skills.ts",
     "verify-ops": "tsx scripts/verify-ops.ts",
+    "migrate-embeddings": "tsx scripts/migrate-embeddings.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

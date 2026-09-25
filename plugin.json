@@ -1,5 +1,5 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
-  "name": "agent-memory",
-  "description": "Persistent agent memory on HelixDB (graph + vector + BM25 hybrid retrieval): MCP tools, auto-capture hooks, and a recall skill for Google Antigravity."
+  "name": "brainy",
+  "description": "Brainy — Segundo cerebro aumentado con agentes sobre HelixDB (CODE/PARA, hybrid retrieval)."
 }
