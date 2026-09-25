@@ -189,3 +189,79 @@ Documents the bounded-initiative Todos lane — Helix `Todo` node with 12-index 
 | `scripts/bootstrap.ts` | file-modify | Update bootstrap to expect/create **12** indexes (was 8) — verifies `todo_id, todo_project, todo_status, todo_title` alongside 8 memory/session/concept indexes; no new dep, HelixDB v3 only |
 
 </details>
+
+---
+
+## Addendum — REQ-BRAINY-ENG-06: REST move route
+
+**Date:** 2026-09-25
+**Author:** general(vasquez) — Engineering Owner (R1)
+**Packet (reference-only):** `SPEC:docs/specs/20_backlog/SPEC-001-brainy-engineering.md#REQ-BRAINY-ENG-06 + AC-06 + §4.3 / HARD:subagents+zero-impl-edits+no-secrets+alias1version / GATE:proposal=approved,move-route=gap / DOMAINS:R1,R5,R8,R2,R4`
+**Status:** proposal only — zero implementation files modified.
+
+### 1. Problem statement (gap re-verified, not taken on faith)
+
+- `REQ-BRAINY-ENG-06` (`docs/specs/20_backlog/SPEC-001-brainy-engineering.md:41`) requires CLI `brainy move <noteId> --to <project|area|resource|archive>` to rewrite the edge (drop old `BELONGS_TO` + add new); `AC-06` (`SPEC-001:76`) asserts it end-to-end.
+- Store/query layers for the move already exist and were shipped in approved steps 2/4: `db/queries.ts:147` (`moveNoteParams`), `db/queries.ts:834` (`export function moveNote(...)` — anchors note, `setProperty paraCategory/updatedAt`, drops existing `outE(BELONGS_TO)`, anchors-or-creates target PARA node, adds new `BELONGS_TO`); `src/store.ts:1887` (`async moveNote(input: MoveNoteInput)` delegating to `moveNoteQuery(targetLabel).toQueryRequest(...)`, `src/store.ts:58-59,474,493,1900`).
+- `src/server.ts` exposes **no** move route: grep `move` over `src/server.ts` returns 0 matches; route inventory grep `/v1/` over `src/server.ts` returns only `POST /v1/notes` (`:382`), `POST /v1/notes/:id/distill` (`:402`), `GET /v1/notes/:id` (`:419`), `POST /v1/search` (`:436`), `POST /v1/memory` (`:452`), `GET /v1/context/:project` (`:475`), `POST /v1/link` (`:498`) — no `/move`.
+- The frozen REST tables confirm the gap: `SPEC-001 §4.3` (`SPEC-001:123-132`) lists 6 routes with no move row; `ARCHITECTURE.md §7` REST table (`ARCHITECTURE.md:139-144`) lists the same 6 routes with no move row, and its CLI table (`ARCHITECTURE.md:49`) maps `brainy move` only to "rewrite `BELONGS_TO` edge" with no HTTP binding.
+- Lane R8 worked around the gap in `bin/brainy.mjs:1582-1606` (`cmdMove`): `GET /v1/notes/:id` (`:1587`) + `POST /v1/link {fromId, toId, type: BELONGS_TO}` (`:1597-1601`), with an inline comment (`bin/brainy.mjs:1594-1596`) admitting "the server has no dedicated move route" and that PARA-category targets surface as `400 invalid_tenant_link`. This proposal closes the gap at the HTTP layer so CLI `move` has a first-class target.
+- The existing body of this proposal covers `HelixStore.moveNote` at store level (Changes row `src/store.ts`, Rationale REQ-06 line 49) but proposes no HTTP exposure. This addendum adds only that exposure.
+
+### 2. Proposed changes
+
+| Target | Change Type | Description |
+|--------|-------------|-------------|
+| `src/server.ts` | file-modify | Add one route `POST /v1/notes/:id/move` after the existing `GET /v1/notes/:id` block (`src/server.ts:419-435`), before `POST /v1/search` (`:436`). Add strict zod schema `moveNoteBodySchema = z.object({ to: z.enum(["project","area","resource","archive"]), name: z.string().trim().min(1).max(500), project: projectSchema.optional() }).strict()` beside `linkNodesBodySchema` (`src/server.ts:236-243`) and `distillNoteBodySchema` (`:245-250`); reuse existing `projectSchema`, `decodeSegment`, `parseOr400`, `HttpError`, bearer guard (`:364-380`, only `livez` exempt), and `sendJson`. Handler: decode `:id`, parse body (400 on schema fail), resolve tenant `project` (body `project` ?? query `?project=` ?? `"default"`), call already-approved `store.moveNote({ id, toCategory: body.to, toTarget: body.name, project })` (`src/store.ts:1887-1909` → `db/queries.ts:834-874` drop+add, no new HelixQL), map `false` → `404 note_not_found`, map unknown/empty target → `404 para_target_not_found`, map cross-tenant note/target mismatch → `400 invalid_tenant_link` (Security C8), success → `200 { id, para: { label, name } }`. Grounded: `src/server.ts:236-250,364-380,419-436,498-513`; `src/store.ts:1887-1909`; `db/queries.ts:147,834-874`. |
+| `tests/step-move-route.test.ts` (new; or extend `tests/step6.test.ts`) | file-create (preferred) or file-modify | Add REST move-route coverage following the `tests/step6.test.ts:183-213,371-414` request-harness pattern (fake store with `moveNote`, bearer on/off, strict-body 400 probe). Cases: `POST /v1/notes/:id/move` 200 rewrites `BELONGS_TO` (assert single edge to new target via `getNoteById`); 404 unknown note; 404 unknown/empty target; 400 strict-zod reject (`replace`, empty `name`, unknown `to`); 400 `invalid_tenant_link` cross-tenant; 401 without bearer. No HelixDB container required (fake store, same as step6/7: `tests/step6.test.ts:74`, `tests/step7.test.ts:121`). Grounded: `tests/step6.test.ts:74,183-213,371-414`; `tests/step7.test.ts:121-127`. |
+| `docs/specs/10_design/ARCHITECTURE.md` §7 REST table | doc-modify (contract delta, owner R1) | Add one row after the `GET /v1/notes/:id` row (`ARCHITECTURE.md:140`): `POST /v1/notes/:id/move` with strict `{to: project\|area\|resource\|archive, name: 1..500, project?}` → `200 {id, para:{label,name}}`, drop+add `BELONGS_TO` via `HelixStore.moveNote`, 404/400 tenant. No other §7 text changes. Grounded: `ARCHITECTURE.md:139-144`; `SPEC-001:123-132`. |
+| `docs/specs/20_backlog/SPEC-001-brainy-engineering.md` §4.3 table | doc-modify (contract delta, owner R1 — ONLY this table row) | Add one row after the `GET /v1/notes/:id` row (`SPEC-001:128`): `POST /v1/notes/:id/move` with strict `{to, name 1..500, project?}` → `200 {id,para}`, drop+add `BELONGS_TO`, 404/400. REQ/AC prose (`SPEC-001:41,76`) stays frozen and untouched. Grounded: `SPEC-001:41,76,123-132`. |
+
+### 3. Contract shape (normative for implementation lane)
+
+- **Method/route:** `POST /v1/notes/:id/move` (`:id` = note id, URL-decoded via existing `decodeSegment`).
+- **Body (strict zod, unknown keys rejected):** `{ to: "project" | "area" | "resource" | "archive", name: string(trimmed, 1..500), project?: string }`. Tenant may also arrive via `?project=` query; precedence: body `project` ?? query `?project=` ?? `"default"`.
+- **Auth:** existing dual bearer — `BRAINY_SECRET ?? AGENT_MEMORY_SECRET`, constant-time compare, `401 unauthorized` + `WWW-Authenticate: Bearer` on mismatch; only `livez` exempt (`src/server.ts:364-380` pattern).
+- **Tenant isolation (Security C8):** both the note and the PARA target must belong to the same `project` tenant; mismatch → `400 invalid_tenant_link` (same code the CLI workaround already surfaces, now enforced server-side before any edge write).
+- **Semantics:** delegate to the already-approved `HelixStore.moveNote` (`src/store.ts:1887`) → `moveNote` query (`db/queries.ts:834`): drop previous `BELONGS_TO`, add new edge to anchored-or-created target. No new HelixQL beyond what step 2 shipped.
+- **Responses:** `200 { id, para: { label, name } }` (`label` = `Project|Area|Resource|Archive`, `name` = target name); `404 note_not_found` (unknown `:id`); `404 para_target_not_found` (unknown/empty target); `400 invalid_request` (zod schema fail) / `400 invalid_tenant_link` (cross-tenant); `401 unauthorized`; error envelope = existing `{ error, details? }` shape.
+- **Example (placeholders only, no PII/secrets):** `POST /v1/notes/<note-id>/move` `{ "to": "area", "name": "<area-name>" }` → `200 { "id": "<note-id>", "para": { "label": "Area", "name": "<area-name>" } }`.
+
+### 4. Blast radius & affected REQs/ACs
+
+- **Fixes:** REQ-BRAINY-ENG-06 / AC-06 — gives CLI `brainy move` (R8) a real HTTP binding that drops + re-adds `BELONGS_TO` instead of link-add-only.
+- **Touched:** REQ-BRAINY-ENG-12 / AC-12 (REST route table gains one row — contract delta, see §5); Security C4 (zod caps: `to` enum, `name` 1..500, strict reject) and C8 (same-tenant check, `400 invalid_tenant_link`); no other REQ/AC changes.
+- **NFR:** none (move is a single scoped write; p95/perf harness unaffected; no new index, no dimension change).
+- **Blast radius:** one additive route + two one-row doc deltas; no schema change, no existing route behavior change, no MCP/bin change in this lane (R8 repoints CLI `move` to the new route in its own lane).
+
+### 5. Contract-delta declaration (for review-architecture — ADR required, not written here)
+
+- This addendum adds exactly **one row** to the frozen REST surface (`SPEC-001 §4.3` + `ARCHITECTURE.md §7`): `POST /v1/notes/:id/move`.
+- Per methodology (contract change → ADR), an **ADR/delta record is required before implementation**. This lane does **not** write the ADR; the architecture reviewer lane owns the verdict and records the delta.
+- Implementation lane is blocked on that verdict; `GATE:proposal=approved,move-route=gap` stays until the reviewer approves.
+
+### 6. Test plan (REQ-ID → test → artifact) and risks/assumptions
+
+**Test plan:**
+
+| REQ/AC | Test | Artifact / assertion |
+|--------|------|----------------------|
+| AC-06 move rewrites edge | `POST /v1/notes/:id/move {to:"area", name:"<n>"}` on a note with existing `BELONGS_TO` | 200 `{id, para:{label:"Area",name}}`; `GET /v1/notes/:id` shows exactly one `BELONGS_TO` to the new target |
+| AC-06 404 | move unknown `:id` | `404 note_not_found` |
+| AC-12 route table | move route registered alongside §4.3 table | request harness hits `POST /v1/notes/:id/move` (not `/v1/link`); ARCH/SPEC one-row deltas present |
+| C4 caps | strict body probes (`{replace}`, `name:""`, `to:"foo"`, oversize `name`) | `400 invalid_request` with zod details; unknown keys rejected |
+| C8 tenant | note in project A → target in project B | `400 invalid_tenant_link`, no edge write |
+
+**Risks/assumptions:**
+
+- R-MOVE-01: `/v1/link` cannot express a move — `linkNodesBodySchema` (`src/server.ts:236-243`) + handler (`:498-513`) only *adds* edges (`store.linkNodes`); it never drops the previous `BELONGS_TO`, so repeated CLI `move` calls accumulate edges and PARA-category targets fail tenant checks (`bin/brainy.mjs:1594-1603`). Assumption: reviewers accept that link-add-only is insufficient and a dedicated drop+add route is the minimal fix (reuses approved query, no new HelixQL).
+- R-MOVE-02: strict zod rejects the R8 workaround payload shape (`{fromId,toId,type}`) on the new route by design; R8 must repoint CLI `move` to `{to,name}` in its own lane — coordinated, not done here.
+- R-MOVE-03: target auto-create (anchor-or-create in `db/queries.ts:857-867`) is retained; empty/unknown target maps to `404`, never to silent creation of a garbage node. Assumption: `MoveNoteInput` semantics in `src/store.ts:1887-1909` are unchanged.
+- R-MOVE-04: no concurrency change — single-note move is one `writeBatch`; concurrent moves to the same note serialize in HelixDB; no new locking proposed.
+
+### 7. Out of scope (explicit)
+
+- No schema changes (no new nodes/edges/indexes beyond step 2 shipped).
+- No new dependencies.
+- No changes to `bin/` (R8 repoints CLI separately), no MCP tool changes, no `src/store.ts` / `db/queries.ts` changes (reuse as-is).
+- No ADR authorship (reviewer lane owns it); no REQ/AC prose edits (only the §4.3 table row).
