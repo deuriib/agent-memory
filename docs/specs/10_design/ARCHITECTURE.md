@@ -1,209 +1,268 @@
-# Architecture Contract: P4 Ops Control Plane + Todos
+# Architecture Contract: Brainy — Segundo Cerebro CODE/PARA sobre HelixDB
 
 **Owner:** general(vasquez) — Engineering Owner (R1)
-**Version:** v2
+**Version:** v3
 **Last Updated:** 2026-09-25
-**Domains-Touched:** engineering (R1, owner) · automation/ops (R8 — doctor/migrate operational contract + evidence, consumed by name) · security (R2 — output-hygiene cross-cut) · todos (R1, bounded-initiative)
-
-**Singleton:** canonical for this lane — create-if-missing, UPPER_SNAKE, never suffix; update in
-place, never `ARCHITECTURE-*.md`. Interfaces/API shapes live in the tables below (no separate
-`API_CONTRACTS.md`).
-
-**Scope & grounding:** P4 ops control plane (brief P4.1/P4.3/P4.4) + Todos follow-ups (BRIEF-todos). Every claim cites
-`docs/specs/20_backlog/SPEC-P4-OPS.md` (`REQ-P4-OPS-*` / `NFR-P4-OPS-*`, abbreviated REQ/NFR) or
-`docs/specs/20_backlog/SPEC-P4-OPS-RUNBOOK.md` (`REQ-OPS-RUN-*`, abbreviated RUN-REQ) or
-`docs/specs/20_backlog/SPEC-020-todos.md` (`REQ-TODO-*` / `NFR-TODO-*`). Format per
-frame-ship `review-architecture/references/architecture-template.md`.
+**Domains-Touched:** engineering (R1, owner) · marketing/brand (R5 — rename alias 1 versión) · automation/ops (R8 — bin/brainy slots) · security (R2 — secrets/PII STRIDE) · legal/privacy (R4 — Ley 172-13 TTL) · todos (R1, bounded) · p4-ops (R1/R8, foundation preserved)
+**Singleton:** canonical — create-if-missing, UPPER_SNAKE, never suffix; update in place, never `ARCHITECTURE-*.md`. Interfaces/API shapes live in tables below (no separate `API_CONTRACTS.md`).
+**Scope & grounding:** Brainy architectural-initiative (BRIEF-brainy approved 2026-09-25) — rename agent-memory→Brainy + CODE/PARA HelixQL + hybrid RRF + MCP Brainy + compat migration. Grounds `docs/specs/20_backlog/SPEC-001-brainy-engineering.md` (REQ-BRAINY-ENG-01..12, NFR-01..04) over PRD §5-§8. Prior foundation P4 ops + Todos preserved (v2) and cited inline. Format per `review-architecture/references/architecture-template.md`.
 
 ## Overview
 
-One Node ≥20 ESM binary, `bin/agent-memory.mjs`, with **zero new dependencies** adds
-`start|stop|status|doctor` over the existing dev instance and over derived multi-instance slots
-(REQ-01). All per-slot variability — REST port, Helix port, data dir, URLs — is derived at the CLI
-edge and projected through env/flags only; the frozen server/store code keeps its defaults
-(REQ-06, NFR-C). The doctor verdict/exit contract is canonical in the R8 runbook (RUN-REQ-01/02,
-§4a) and consumed verbatim by this lane (REQ-05). Two things never move: the frozen source
-surfaces (§Invariants, INV-002) and the never-kill scope (NFR-A).
+Brainy es el segundo cerebro activo CODE (Capture/Organize/Distill/Express) sobre PARA (Projects/Areas/Resources/Archives) con HelixDB como motor unificado grafo+vector+BM25 y persistencia ACID en object storage (MinIO/S3). Un único breaking change renombra `agent-memory` → `brainy` (`package.json:2`, `helix.toml:2`, `bin/brainy.mjs`) con alias/symlink `agent-memory` + env `BRAINY_*` alias `AGENT_MEMORY_*` una versión (BRIEF Scope, REQ-01). El esquema HelixQL añade `Note/Project/Area/Resource/Archive` + compat `Memory/Agent/Context` (7 edges). Capture vía `brainy add` / `POST /v1/notes` / `brainy_capture`; Organize auto-clasifica 100% notas en PARA y crea `RELATES_TO >0.85`; Distill versiona `SUPERSEDES`; Express expone `context` + `export markdown` (Obsidian). Búsqueda híbrida `vector(1536)+grafo+BM25` fusiona RRF `1/(60+rank)` en `POST /v1/search` con compat `POST /v1/memory`. MCP Brainy stdio expone `brainy_search/capture/link/reality_check` + alias `memory_*`. P4 ops (`start|stop|status|doctor`, quartet slots, never-kill 3111) y Todos (`Todo` entity, frontier) quedan como sub-sistemas foundation sin regresión (v2 citations below).
 
-Todos lane (SPEC-020-todos, BRIEF-todos bounded-initiative) adds a single-process follow-up entity `Todo` with 3 creation paths (MCP `memory_todo_create`, REST `POST /memory/todos` + alias `/agentmemory/todos`, Hooks auto-extract) over the same Helix v3 instance with **zero new dependencies** and **no src/db freeze break** beyond the 4 Todo indexes (total 12). Name everywhere `todos`, never `actions` (upstream Actions model is out-of-scope). Frontier = `pending ∪ active` priority-ordered; graph/leases/signals are explicitly out-of-scope for P4.3.
+**No-secret posture:** `BRAINY_SECRET` vault/env only, nunca en código/logs/examples; PII store `Note.content`/`Memory.statement` con propósito/TTL/borrado (Ley 172-13) y allowlist en logs/exports.
 
 ## Components
 
 | Component | Responsibility | Interface |
 |-----------|---------------|-----------|
-| Arg parser (`bin/agent-memory.mjs`) | Fail-closed parsing of subcommand + flags in the style of `src/server.ts:479-481`; unknown subcommand/flag or invalid `--slot` → usage on stderr, exit 2 | CLI surface — Interfaces §1 (REQ-01, REQ-06, AC-01/06) |
-| Slot derivation | Pure function `N → quartet + Helix instance name`, no I/O; projects the quartet into env | Interfaces §2 (slot→port) + §3 (derived env); REQ-06, §4.2/§4.3; quartet formula A1 accepted by orchestrator 2026-09-24 |
-| Spawn manager (start/stop lifecycle) | `start`: pre-flight quartet occupancy (refuse + "NEVER kill" hint, no signal, exit 1), spawn slot Helix instance + `npx tsx src/server.ts` with §4.3 env (never `--persist`), readiness gate, record state. `stop`: SIGTERM→SIGKILL **tracked PIDs only** + `helix stop <instance>`, remove state, idempotent | `start`/`stop` rows of Interfaces §1; REQ-02/REQ-03, NFR-A |
-| State file | Per-slot record of process ownership; the **sole authority** any signal path may consult | Interfaces §4 (schema); REQ-03/REQ-07, §4.4 |
-| Doctor checker | Runs check list C1–C5 on every invocation; prints one `PASS\|FAIL\|INFO <check-id> — <detail>` line per check, then exactly one terminal `VERDICT: <name>` line; read-only — no signal path reachable | Interfaces §5 (verdict/exit contract); REQ-05 + RUN-REQ-01..04 |
-| Migrator (`doctor --migrate`) | Dry-run plan by default (zero writes); `--migrate --apply --yes` = pre-flight → backup → copy → verify; fail-closed abort; MinIO volume never destroyed | Interfaces §1 doctor row + Data Flow §4; REQ-08 + RUN-REQ-05..08 |
-| Todo node (`db/queries.ts` + `src/store.ts`) | Follow-up entity `Todo {todoId,title,description,priority, status,project,sessionId,createdAt,updatedAt,parentId?}`; 4 indexes `todo_id(todoId unique)`, `todo_project(project)`, `todo_status(status)`, `todo_title(title text, tenant project)` → total 12 with the 8 memory/session/concept indexes; `todoRowProjection` + 6 query builders | ARCH §6 (DB contract) — REQ-TODO-01, SPEC-020-todos §4.1; `db/queries.ts:32-34,127-193,727-862` |
-| REST /memory/todos + /memory/frontier (`src/server.ts` → `src/store.ts`) | CRUD: `POST /memory/todos 201`, `GET /memory/todos` filtered+sorted, `GET /memory/todos/:id`, `PATCH /memory/todos/:id` (parentId:null clears), `DELETE /memory/todos/:id`, `GET /memory/frontier {frontier,count}`; alias `/agentmemory/todos*` → `/memory/todos*` before bearer guard; search BM25+substring fallback + `filterTodos` priority sort | ARCH §7 (REST contract) — REQ-TODO-02/03/04/06, SPEC-020-todos §4.3; `src/server.ts:136-177,268-283,470-560` |
-| MCP memory_todo_* (`src/mcp.ts`) | 6 tools `memory_todo_create/list/get/update/delete`, `memory_frontier` over same MemoryStore, bearer via `_meta.authorization`, stdio handle() | ARCH §8 (MCP contract) — REQ-TODO-05, SPEC-020-todos §4.4; `src/mcp.ts:113-147,411-536` |
-| Plugin memory/todo_* + frontier (`plugins/opencode/plugins/agent-memory.ts`) | 6 tools `memory/todo_create|list|get|update|delete`, `memory/frontier` (total `memory/*` = 11), parentId `string|null`, `recallCache.clear()` on mutate | ARCH §9 (Plugin contract) — REQ-TODO-07, SPEC-020-todos §4.6; `plugins/opencode/plugins/agent-memory.ts:108-111,924-1097` |
-| Hook capture extract (`hooks/capture.mjs`) | Auto-extract ≤3 todos from bodies ≥400 (Stop|SessionEnd|PreCompact|PostToolUse) with heuristic `TODO/FIXME/HACK/decision/revisit/inspect/blocked` → medium else `should/need to/must/blocked/revisit` long line → low; fire-and-forget `POST /memory/todos` 1.5s each, never blocks, never logs prompt | ARCH §10 (Hook contract) — REQ-TODO-07, SPEC-020-todos §4.5; `hooks/capture.mjs:209-286` |
+| **Brainy data model** (`db/queries.ts` + `src/store.ts`) | Nodos `Note{id,title,content,embedding[1536],created_at,updated_at,status}`, `Project{name,description,deadline}`, `Area{name,description}`, `Resource{name,category}`, `Archive{name,archived_at}` + compat `Memory{statement,memory_type,embedding[1536]}`, `Agent{name,instance_id}`, `Context{name,type}`; edges `BELONGS_TO(Note→P/A/R/Ar)`, `REFERENCES(Note→Note)`, `SUPERSEDES`, `ABOUT(Memory→Resource|Project)`, `APPLIES_TO(Memory→Context)`, `CAPTURED_BY(Note→Agent)`, `RELATES_TO(auto>0.85)`, legacy `HAS_CONCEPT` preserved | ARCH §6 (DB contract) — REQ-BRAINY-ENG-03/04; `db/queries.ts:28-193`, `src/store.ts:18-55` |
+| **Bootstrap & indexes** (`db/queries.ts:bootstrapIndexes`, `scripts/bootstrap.ts`) | `createIndexIfNotExists` async (kind:accepted) con poll hasta `index_not_found` clear; vectores `note_embedding`/`memory_embedding` 1536 cosine tenant `project`, textos `Note.content`/`Memory.content` tenant `project`, uniqueEquality `Note.id`, `Memory.memoryId`, `Project.name`, etc.; compat indexes intactos | ARCH §6; CONTRACT §0 async fact; `db/queries.ts:127-193` |
+| **Embedder** (`src/embed.ts`) | Determinístico 1536-dim (antes 384) — `text-embedding-3-small` remoto configurable vía Helix providers o hash bag-of-words fallback; `Math.fround` round-trip 1e-6 para verify; `writeBatch forEachParam empty` safe (CONTRACT §0) | ARCH §6; `src/embed.ts:16`, `src/store.ts:embeddingsEqual` |
+| **Store — Brainy** (`src/store.ts` HelixStore) | `saveNote`, `listNotes`, `getNoteById`, `moveNote`, `distillNote`, `searchByVector/Text` (scoped `where project` antes de `vectorSearchWith/textSearchWith`), `graphSearch` (traversal BELONGS_TO/REFERENCES/RELATES_TO depth≤max_depth), `forgetNote`, health; alias compat `remember`/`saveMemory` preservado; `setProperty embedding` refresca vector index (probe4 verdict A) | ARCH §6-§7; `src/store.ts:623-1233`, `db/queries.ts:243-301` |
+| **Hybrid search** (`src/search.ts`) | `bm25Search` degradado + `hybridSearch` RRF `Σ 1/(60+rank)` sobre vector+grafo+BM25, sorted desc, tie-break `decayedImportance→recallBoost→createdAt→memoryId`; TTL `filterExpired` pre-return + `signals` | ARCH §7; `src/search.ts:1-264` |
+| **REST Brainy v1** (`src/server.ts`) | `POST /v1/notes 201`, `GET /v1/notes/:id 200`, `POST /v1/search 200 {results:[{note,score,graph_path,related_memories}],signals}`, `POST /v1/memory 201 compat`, `GET /v1/context/:project 200`, `POST /v1/link 201`; legacy `/memory/*` alias 1 versión con `X-Deprecated` header; bearer `BRAINY_SECRET` alias `AGENT_MEMORY_SECRET`; localhost open when unset; `EMBED_DIM 1536` | ARCH §7; `src/server.ts:26-31,136-560` |
+| **MCP Brainy** (`src/mcp.ts`) | Stdio `McpServer(name=brainy)` tools `brainy_search` (híbrida), `brainy_capture`, `brainy_link`, `brainy_reality_check` + compat alias `memory_*` (11 tools); `handle(_meta)` bearer via `_meta.authorization`; stdout = protocol only, diagnostics stderr `oneLine` + heal lines; `handle` nunca crashea en Helix down | ARCH §8; `src/mcp.ts:162-535`, `src/mcp.ts:538-545` |
+| **CLI Brainy** (`bin/brainy.mjs`) | `brainy add "text" --title --tags --project`, `brainy move <id> --to <para>`, `brainy distill <id> [--provider]`, `brainy context --project`, `brainy export --format markdown --out ./vault`; wraps `POST /v1/*` con `BRAINY_PORT=3111`/`BRAINY_URL`/`HELIX_URL`; symlink `agent-memory→brainy` + deprecation warning stderr; quartet never-kill preserved | ARCH §1; `bin/agent-memory.mjs`→`bin/brainy.mjs`; `src/server.ts:653-661` never-kill hint |
+| **Compat migration** (`brainy.compat.agentmemory`, `scripts/import-transcript.ts`) | Lee SQLite legacy → HelixDB mapeo PRD §7.2 `memories.statement→Memory.statement`, `type→memory_type`, `objects.name→Resource.name`, `contexts.name→Context.name`, `links.about→ABOUT`, `links.context→APPLIES_TO`; `POST /v1/memory` payload legacy; idempotente con `dedupKey` first-wins | ARCH §9; `src/compat/agentmemory.ts`, `scripts/import-transcript.ts` |
+| Arg parser (`bin/brainy.mjs`) | Fail-closed `subcommand+flags` estilo `src/server.ts:479-481`; unknown → usage stderr exit 2 | CLI §1 (REQ-BRAINY-ENG-01,12; NFR invariants) |
+| Slot derivation | Pure `N → quartet + instance name` no I/O; env projection only | Interfaces §2; quartet A1 |
+| Spawn manager | `start` pre-flight quartet occupancy (refuse+NEVER-kill hint exit 1) → `helix start dev/slotN` + `npx tsx src/server.ts` never `--persist`, readiness Helix `/healthz`+`/v1/livez` 30s, record state | `start`/`stop` §1; REQ-P4-OPS-02/03 |
+| State file | `<parent-of-data-dir>/state/slot-<N>.json` con `slot,pids{rest,helix},helixInstance,dataDir,startedAt,cliVersion`; nunca secret/PII/content | Interfaces §4 |
+| Doctor checker | C1-helix-healthz, C2-rest-health, C3-ports, C4-secret-presence(flag only), C5-storage; una línea por check + `VERDICT:` terminal; read-only | Interfaces §5 |
+| Migrator | Dry-run default; `--migrate --apply --yes` pre-flight→backup→copy→verify; MinIO volume nunca destruido | Data Flow §4 |
+| Todo node (`db/queries.ts` + `src/store.ts`) | `Todo{todoId,title,description,priority,status,project,sessionId,createdAt,updatedAt,parentId?}`; 4 indexes `todo_id/title/project/status` → total ≥16 con Brainy+legacy (8+4+≥4 Brainy) | ARCH §6 Todo; `db/queries.ts:32-34,727-862` |
+| REST todos/frontier | `POST /memory/todos 201`, `GET /memory/todos` filtered+sorted, `GET /:id`, `PATCH /:id`, `DELETE /:id`, `GET /frontier`; alias `/agentmemory/todos*`; BM25+fallback + `filterTodos` priority | ARCH §7 Todo |
+| MCP todos | `memory_todo_create/list/get/update/delete`, `memory_frontier` vía `registerTools` + `handle(_meta)` | ARCH §8 Todo |
+| Hook capture | `hooks/capture.mjs` auto-extract ≤3 todos + ≤3 capture compat; bodies≥400 heurística TODO/FIXME; fire-and-forget 1.5s, exit 0, never logs prompt | ARCH §10 |
 
-`status` is a read-only rendering mode of the same binary (no verdicts, no side effects) — its
-own 0/1/2 contract lives in Interfaces §1 and REQ-04; it is **not** `doctor` (INV-009).
+`status` es modo read-only separado de `doctor` — exits 0/1/2 vs 0-5 (INV-009).
 
 ## Interfaces
 
-### §1 CLI surface (REQ-01, §4.1)
+### §1 CLI surface — Brainy
 
-| Subcommand | Flags | Side effects | Exit codes |
-|---|---|---|---|
-| `start` | `--slot N` (default 1), `--data-dir PATH` | spawn Helix instance + server, readiness gate, write state | 0 started · 1 refused/failed · 2 usage |
-| `stop` | `--slot N`, `--data-dir PATH` | SIGTERM→SIGKILL tracked PIDs, `helix stop <instance>`, remove state | 0 stopped/idempotent · 1 own-process failed to die · 2 usage |
-| `status` | `--slot N` | none (read-only probes) | 0 healthy · 1 degraded/down · 2 usage |
-| `doctor` | `--slot N`, `--data-dir PATH`, `--migrate`, `--apply`, `--yes`, `--backup-dir PATH` | checks only; `--migrate` = dry-run plan; `--migrate --apply --yes` = backup → migrate → verify | 0/1/2/3/4/5 per §5 below |
+| Subcommand | Flags / Args | Side effects | Exit | Notes |
+|---|---|---|---|---|
+| `brainy add` | `"text" --title T --tags a,b --project P` | `POST /v1/notes` → `Note` + `BELONGS_TO` | 0/1/2 | fail-closed zod 1..200k |
+| `brainy move` | `<noteId> --to <project|area|resource|archive>:<name>` | rewrite `BELONGS_TO` edge | 0/1/2 | 404 if not found |
+| `brainy distill` | `<noteId> [--provider openai|gemini|anthropic]` | `SUPERSEDES` version | 0/1/2 | LLM via `BRAINY_LLM_PROVIDER` |
+| `brainy context` | `--project P [--limit N]` | `GET /v1/context/:project` | 0/1/2 | graph_path ≤depth2 |
+| `brainy export` | `--format markdown --out PATH --project P` | write vault `.md` + frontmatter `[[links]]` | 0/1/2 | Obsidian compat |
+| `brainy search` | `"query" --project P --limit N --include-graph` | `POST /v1/search` | 0/1/2 | RRF output |
+| Legacy | `agent-memory ...` (symlink) | proxy to `brainy` + `WARN deprecated` stderr | 0/1/2 | alias 1 versión (REQ-01) |
+| `start` | `--slot N --data-dir PATH` | spawn Helix+server, readiness gate, state | 0/1/2 | never-kill preflight |
+| `stop` | `--slot N` | SIGTERM→SIGKILL tracked PIDs + `helix stop`, remove state | 0/1/2 | idempotent |
+| `status` | `--slot N` | none (probes) | 0/1/2 | read-only |
+| `doctor` | `--slot N --migrate --apply --yes --backup-dir` | checks; migrate backup→copy→verify | 0-5 | §5 verdicts |
 
-Shared: `--help` → usage, exit 0; `--apply` without `--migrate` or `--migrate --apply` without
-`--yes` → exit 2 (REQ-01, §4.1).
+Shared `--help` → usage exit 0; `--apply` sin `--migrate` o `--migrate --apply` sin `--yes` → exit 2.
 
-### §2 Slot → port derivation table (REQ-06, §4.2 — A1 accepted by orchestrator 2026-09-24)
+### §2 Slot → port derivation (REQ-P4-OPS-06, A1)
 
-| Slot | REST `R(N) = 3111 + 3(N−1)` | Helix `H(N) = 6969 + (N−1)` | Reserved 1 `R+1` | Reserved 2 `R+2` | Helix instance |
+| Slot | REST `R(N)=3111+3(N-1)` | Helix `H(N)=6969+(N-1)` | R+1 | R+2 | Instance |
 |---|---|---|---|---|---|
-| 1 | `3111` (default parity, untouched) | `6969` | `3112` | `3113` | `dev` (existing) |
+| 1 | `3111` | `6969` | `3112` | `3113` | `dev` (brainy) |
 | 2 | `3114` | `6970` | `3115` | `3116` | `slot2` |
-| 3 | `3117` | `6971` | `3118` | `3119` | `slot3` |
-| N | `3111 + 3(N−1)` | `6969 + (N−1)` | `R+1` | `R+2` | `slotN` (N≥2) |
+| N | `3111+3(N-1)` | `6969+(N-1)` | R+1 | R+2 | `slotN` |
 
-Invariants: `N` integer ≥ 1 else exit 2; slot N≥2 ⇒ quartet ∩ `{3111,3112,3113,6969}` = ∅;
-reserved ports reserve address space only — never bound, never signaled (§4.2).
+Inv: `N≥1` int else 2; `N≥2` quartet ∩ `{3111,3112,3113,6969}=∅`; reservas nunca bound/signal.
 
-### §3 Derived env contract, slot N (REQ-06/REQ-07, §4.3)
+### §3 Derived env — Brainy (RECONCILED)
 
-| Variable | Value for slot N | Slot-1 default (unchanged) |
-|---|---|---|
-| `AGENT_MEMORY_PORT` | `R(N)` | `3111` |
-| `AGENT_MEMORY_URL` | `http://127.0.0.1:R(N)` | `http://127.0.0.1:3111` |
-| `HELIX_URL` | `http://127.0.0.1:H(N)` | `http://localhost:6969` |
-| `HELIX_DATA_DIR` | resolved data dir | unset for dev until migration/fallback |
-| `AGENT_MEMORY_DATA_DIR` | `--data-dir` > env > `~/.local/share/agent-memory/<slot>/` | `…/1/` |
-| `AGENT_MEMORY_SECRET` | inherited, passthrough only — never printed | unset = open |
-| `AGENT_MEMORY_HOST` | `127.0.0.1` | `127.0.0.1` |
+| Variable | Slot N | Default slot 1 | Legacy alias (1 versión) |
+|---|---|---|---|
+| `BRAINY_PORT` | `R(N)` | `3111` | `AGENT_MEMORY_PORT` fallback |
+| `BRAINY_URL` | `http://127.0.0.1:R(N)` | `http://127.0.0.1:3111` | `AGENT_MEMORY_URL` fallback |
+| `HELIX_URL` | `http://127.0.0.1:H(N)` | `http://localhost:6969` | — |
+| `HELIX_DATA_DIR` | resolved | unset until migrate/fallback | — |
+| `BRAINY_DATA_DIR` | `--data-dir` > env > `~/.local/share/brainy/<slot>/` | `…/1/` | `AGENT_MEMORY_DATA_DIR` fallback |
+| `BRAINY_SECRET` | inherited passthrough never printed | unset=open | `AGENT_MEMORY_SECRET` fallback + warning |
+| `BRAINY_TTL_DAYS` | TTL Note/Archive (default 365) | `365` | `AGENT_MEMORY_TTL_DAYS` fallback |
+| `BRAINY_EMBED_DIM` | `1536` (default) / `384` fallback | `1536` | — |
+| `BRAINY_LLM_PROVIDER` | `openai|gemini|anthropic` | `openai` | — |
+| `BRAINY_HOST` | `127.0.0.1` | `127.0.0.1` | `AGENT_MEMORY_HOST` fallback |
 
-### §4 State file schema (REQ-03/REQ-07, §4.4)
+Every `AGENT_MEMORY_*` read emits single-line `WARN deprecated use BRAINY_*` stderr (REQ-01).
 
-Path: `<parent-of-data-dir>/state/slot-<N>.json` (default
-`~/.local/share/agent-memory/state/slot-<N>.json`) — sibling of the data dir, **never inside
-`HELIX_DATA_DIR`**. Fields: `slot`, `pids {rest, helix}`, `helixInstance`, `dataDir`,
-`startedAt`, `cliVersion`. Never a secret, never memory content, never PII (NFR-B, NFR-F).
+### §4 State file (REQ-P4-OPS-03/07)
 
-### §5 Doctor verdict / exit contract (canonical: RUNBOOK §4a / RUN-REQ-01, RUN-REQ-02; consumed by REQ-05)
+Path `<parent-of-data-dir>/state/slot-<N>.json` (default `~/.local/share/brainy/state/slot-<N>.json` para Brainy; legacy `agent-memory/state` alias migrado). Sibling of data dir, never inside `HELIX_DATA_DIR`. Fields `slot, pids{rest,helix}, helixInstance, dataDir, startedAt, cliVersion`. Never secret/content/PII.
 
-| Exit | Verdict | Triggering check(s) | Precedence |
-|------|---------|---------------------|------------|
-| 0 | `healthy` | all checks PASS (C2 may be `INFO not-running` pre-start) | 5th |
-| 1 | `doctor-check-failed` | C5 storage/data-dir FAIL; unexpected internal error | 4th |
-| 2 | usage | bad/unknown flags | n/a |
-| 3 | `upstream-holds-port` | C3 foreign PID on any slot-quartet port (+ `NEVER kill 3111/3112/3113` + `AGENT_MEMORY_PORT=3151` hint) | 3rd |
-| 4 | `helix-down` | C1 healthz refused/non-200; C2 REST 500 (Helix unreachable via server) | 2nd |
-| 5 | `secret-missing` | C4 empty `AGENT_MEMORY_SECRET`; C2 REST 401 (bearer mismatch) | 1st (wins) |
+### §5 Doctor verdict / exit (canonical RUNBOOK §4a / RUN-REQ-01/02)
 
-Checks (RUN-REQ-01): **C1** `helix-healthz`, **C2** `rest-health` (presence-conditional),
-**C3** `ports`, **C4** `secret-presence` (flag only, value never read), **C5**
-`storage-data-dir` (table-scoped `helix.toml` parse). All checks run and print before the verdict
-is chosen; one terminal `VERDICT: <name>` line; exit code equals this table. The three KR1
-verdicts map to `healthy` (0), `upstream-holds-port` (3), `helix-down` (4); `secret-missing` (5)
-and `doctor-check-failed` (1) complete the full closed set.
+| Exit | Verdict | Trigger | Prec |
+|------|---------|---------|------|
+| 0 | `healthy` | all PASS (C2 may be INFO not-running) | 5th |
+| 1 | `doctor-check-failed` | C5 FAIL; internal error | 4th |
+| 2 | usage | bad/unknown flags | — |
+| 3 | `upstream-holds-port` | C3 foreign PID quartet + NEVER kill hint `BRAINY_PORT=3151` | 3rd |
+| 4 | `helix-down` | C1 healthz refused/non-200; C2 500 | 2nd |
+| 5 | `secret-missing` | C4 empty `BRAINY_SECRET`; C2 401 | 1st wins |
 
-### §6 Todos DB contract (SPEC-020-todos REQ-TODO-01, `db/queries.ts` + `src/store.ts`)
+Checks C1 helix-healthz, C2 rest-health (only if listener verified slot-owned), C3 ports, C4 secret-presence flag only, C5 storage-data-dir. Precedence `5>4>3>1>0`.
 
-Node `Todo {todoId,title,description,priority, status,project,sessionId,createdAt,updatedAt,parentId?}`; `bootstrapIndexes()` → 12 indexes (8 memory/session/concept + 4 todo: `todo_id` uniqueEquality `todoId`, `todo_project` equality `project`, `todo_status` equality `status`, `todo_title` text `title` tenant `project`). Query builders: `saveTodo`, `listTodos`, `getTodoById`, `updateTodo`, `searchTodosByText`, `deleteTodo`. No edges, no leases.
+### §6 DB contract — Brainy + legacy + Todos
 
-### §7 Todos REST contract (SPEC-020-todos REQ-TODO-02/03/04/06, `src/server.ts` → `src/store.ts`)
+```
+Node Note { noteId uniqueEquality, title text tenant project, content text tenant project,
+            project equality, sessionId, embedding vector 1536 cosine tenant project,
+            createdAt dateTime, updatedAt dateTime, status equality, paraType }
+Node Project { name uniqueEquality, description, deadline }
+Node Area { name uniqueEquality, description }
+Node Resource { name uniqueEquality, category }
+Node Archive { name uniqueEquality, archivedAt dateTime }
+Node Memory { memoryId uniqueEquality, content text tenant project, project equality, sessionId equality,
+              origin, importance f64, createdAt dateTime, embedding vector 1536, dedupKey uniqueEquality, memory_type }
+Node Concept { name uniqueEquality, project }
+Node Agent { name uniqueEquality, instance_id }
+Node Context { name uniqueEquality, type }
+Node Session { sessionId uniqueEquality, project equality, startedAt, updatedAt }
+Node Todo { todoId uniqueEquality, project equality, status equality, title text tenant project,
+            description, priority, sessionId, createdAt, updatedAt, parentId }
+Edges: BELONGS_TO, REFERENCES, SUPERSEDES, ABOUT, APPLIES_TO, CAPTURED_BY, RELATES_TO, HAS_CONCEPT
+Indexes total: 8 legacy + 4 Todo + ≥6 Brainy (Note id/project/embedding/content/status, Project name, Area name, Resource name, Archive name, paraType) = ≥18
+Query exports: bootstrapIndexes, saveNote, listNotes, getNoteById, moveNote, distillNote, searchByVector, searchByText, graphSearch, graphSearchNotes, forgetNote, healthCount,
+              saveMemory, listSessions, sessionMemories, searchByVector/Text, graphSearch, forgetMemory, findMemoryByDedupKey, listExpired, listProjects, getMemoryById, memoryConcepts, linkMemoryConcepts, updateMemoryContent, migrateAgentMemoryRow,
+              saveTodo, listTodos, getTodoById, updateTodo, searchTodosByText, deleteTodo
+```
+
+Parametric invariants (CONTRACT §0, preserved): `writeBatch().forEachParam(empty)` commits fine; `NodeRef.var("outer")` inside forEach usable; `varAsIf varEmpty/varNotEmpty` both directions; `createIndexIfNotExists` async poll 30s; scoped `where project` before `textSearchWith/vectorSearchWith` + `$score`/`$distance` projection; `embedding` never in search payload; `toQueryRequest(params,values)` → `client.query(req).send()`; `PropertyInput.value` (no `.val`); `IndexSpec.nodeVector(label,prop,dim,metric,tenant)`.
+
+### §7 REST contract — Brainy v1 + Todos + legacy
+
+**Brainy v1:**
+
+| Method | Route | Body / query | Success | Bearer | Notes |
+|---|---|---|---|---|---|
+| POST | `/v1/notes` | `{title 1..500, content 1..200k, tags? string[64] 1..200, project? 1..200}` strict | 201 `{id,project,para,deduped}` | except `livez` | derive embed 1536, auto BELONGS_TO |
+| GET | `/v1/notes/:id` | `?project=` | 200 `{note,para,supersedes[],supersededBy}` | yes | 404 |
+| POST | `/v1/search` | `{query 1..10k, project?, include_graph? bool, max_depth? 1..3 default2, vector_top_k? 1..20 default10, limit?1..100 default10}` | 200 `{mode:hybrid, results:[{note,score,graph_path,related_memories}],signals}` | yes | RRF 60, TTL filter, never 500 |
+| POST | `/v1/memory` | legacy `{statement|content, concepts?, project?, sessionId?, memory_type?}` | 201 compat | yes | alias statement→content |
+| GET | `/v1/context/:project` | `?project=&limit=1..100` | 200 `{project, notes[],memories[],graph,signals}` | yes | traversal depth2 |
+| POST | `/v1/link` | `{fromId,toId,type:REFERENCES|BELONGS_TO|RELATES_TO, project?}` | 201 `{edge}` | yes | strict enum |
+
+Legacy alias 1 versión: `POST /memory/remember|search|smart-search` → `POST /v1/notes|search|search` 308 with `X-Deprecated: use /v1/*`; `GET /memory/health|livez` preserved. Error shape `400 invalid_request` with zod details, `415 unsupported_media_type`, `413 payload_too_large` (1 MiB), `401 unauthorized` with `www-authenticate: Bearer`.
+
+**Todos (preserved):**
 
 | Method | Route | Body / query | Success | Notes |
 |---|---|---|---|---|
-| POST | `/memory/todos` | `{title 1..500, description 0..5000?, priority low\|medium\|high?, status pending\|active\|done\|blocked?, project?, sessionId?, parentId?}` strict | 201 `{todo}` | 400 `parent todo not found`, bearer except `livez` |
-| GET | `/memory/todos` | `?project=&limit=1..100&status=&priority=&search=&frontier=&parentId=` | 200 `{todos}` | searchBM25+fallback, sort high→low |
+| POST | `/memory/todos` | `{title 1..500, description 0..5000?, priority, status, project?, sessionId?, parentId?}` | 201 `{todo}` | alias `/agentmemory/todos*` |
+| GET | `/memory/todos` | `?project=&limit=&status=&priority=&search=&frontier=&parentId=` | 200 `{todos}` | BM25+fallback |
 | GET | `/memory/todos/:id` | — | 200 `{todo}` | 404 |
-| PATCH | `/memory/todos/:id` | `{title?,description?,priority?,status?,parentId?:string\|null}` strict | 200 `{todo}` | `parentId:null` clears, 400 self/404 |
+| PATCH | `/memory/todos/:id` | `{title?,description?,priority?,status?,parentId?:string\|null}` | 200 `{todo}` | null clears |
 | DELETE | `/memory/todos/:id` | — | 200 `{deleted:true}` | 404 |
-| GET | `/memory/frontier` | `?project=&limit=1..100` | 200 `{frontier,count}` | pending∪active priority-ordered |
+| GET | `/memory/frontier` | `?project=&limit=` | 200 `{frontier,count}` | pending∪active |
+| GET | `/memory/livez` | — | 200 `{status:ok}` | bearer-exempt |
+| GET | `/memory/health` | `?project=` | 200 `{status:ok,counts:{memories,sessions}}` | bearer if secret |
 
-Alias: `isAgentMemoryAlias` rewrites `/agentmemory/todos*` and `/agentmemory/frontier*` → `/memory/*` before bearer check (screenshot `POST http://localhost:3111/agentmemory/todos`). Validation 400 for `parent todo not found`/`cannot be its own parent`/`title is required`. Frontier filter + sort shared via `filterTodos` (`status/priority/parentId/frontier` → priorityRank→updatedAt→todoId). `listTodos` over-fetches `max(limit*4,100)` then slices.
+### §8 MCP contract — Brainy + Todos + legacy
 
-### §8 Todos MCP contract (SPEC-020-todos REQ-TODO-05, `src/mcp.ts`)
+Stdio `McpServer(name=brainy, version:1.0.0)` via `@modelcontextprotocol/sdk`, `registerTools(mcp, store, secret)` + `handle(name,_meta,op)` auth barrier (`_meta.authorization Bearer <BRAINY_SECRET>` alias `AGENT_MEMORY_SECRET`, mismatch→`McpError InvalidRequest unauthorized`). Tools:
 
-6 tools via `registerTools` + `handle(_meta)` barrier: `memory_todo_create` (title required), `memory_todo_list` (filters), `memory_todo_get` (todoId), `memory_todo_update` (todoId+patch, `parentId null` clears), `memory_todo_delete`, `memory_frontier` (project,limit). All isError on fail, stdout is MCP protocol only.
+| Tool | Input | Ann. | Store call |
+|---|---|---|---|
+| `brainy_search` | `{query 1..10k, project?, limit?, include_graph? bool, max_depth?}` | ro:true idem:true | `hybridSearch({query,project,limit})` + graph branch when include_graph |
+| `brainy_capture` | `{content 1..200k, title? 1..500, project?, tags?}` | ro:false | `saveNote` (embed+classify) |
+| `brainy_link` | `{fromId,toId,type:REFERENCES|BELONGS_TO|RELATES_TO}` | ro:false | `linkNotes` |
+| `brainy_reality_check` | `{project?}` | ro:true | `context + rules` (active memories) |
+| Alias `memory_search` | `{query,project?,limit?}` | ro:true | `bm25Search` |
+| Alias `memory_smart_search` | `{query,concepts?,project?,limit?}` | ro:true | `hybridSearch` |
+| Alias `memory_save` | `{content,concepts?,project?,sessionId?,origin?,importance?}` | ro:false | `remember` |
+| Alias `memory_sessions`, `memory_session_memories`, `memory_forget`, `memory_health`, `memory_recap|handoff|lesson|delete` | per schema | mixed | preserved 1:1 |
+| `memory_todo_create/list/get/update/delete`, `memory_frontier` | per Todo schema (title required, parentId null clears) | mixed | `createTodo/listTodos/...` |
 
-### §9 Plugin Todos contract (SPEC-020-todos REQ-TODO-07, `plugins/opencode/plugins/agent-memory.ts`)
+Stdout = MCP protocol only; diagnostics on stderr (`[brainy mcp] name: logSafeNote`), heal lines `heal survivor=<id> ...` oneLine CWE-117.
 
-6 tools `memory/todo_create|list|get|update|delete` + `memory/frontier` (namespace `memory`, codemode, total `memory/*` = 11 = 5 existing + 6 todos); bounds `MAX_TODO_TITLE 500`, `MAX_TODO_DESC 5000`, `MAX_TODO_ID 200`; `parentId` `string|null` handling mirrors REST; `call()` bearer; `recallCache.clear()` on mutate.
+### §9 Plugin hook contracts
 
-### §10 Hook Todos extract contract (SPEC-020-todos REQ-TODO-07, `hooks/capture.mjs`)
+`plugins/opencode/plugins/brainy.ts` (legacy `agent-memory.ts` alias): 6 todo tools + 4 brainy tools + 11 memory tools = 21 total under namespace `memory`+`brainy` (codemode). `call()` bearer `Authorization: Bearer <BRAINY_SECRET>`. `recallCache.clear()` on mutate. Captured ops: `prompt→brainy_reality_check`, `context→brainy_search`, `compaction→brainy distill`, `tool.execute.before/after` capture.
 
-Events `Stop|SessionEnd|PreCompact|PostToolUse` only; `collectBody` candidates `transcript,session_body,body,content,prompt.text,tool_output,result` or array join or JSON fallback; `body.length<400` → 0; lines 12..200 chars; heuristic `^(TODO|FIXME|HACK|decision|revisit|inspect|blocked on|follow-?up)` → medium else `should|need to|must|blocked|revisit` long → low; dedup case-insensitive title, cap 5 → `slice(0,3)` fire-and-forget `POST /memory/todos` 1.5s each, `.catch(()=>undefined)`, always exit 0, never logs prompt/secret.
+`hooks/capture.mjs`: supports 7 events `SessionStart, PostToolUse, Stop, PostToolUseFailure, PreCompact, SessionEnd, UserPromptSubmit` allowlist; `PostToolUse` with edit-like tool → `file edited via <tool>[: <basename>]` (`BRAINY_CAPTURE_PATHS=basename` opt-in); always exit 0, stdin JSON, `BRAINY_URL` default `http://127.0.0.1:3111`, no payload logging.
 
 ## Data Flow
 
-1. **Start lifecycle (REQ-02):** parse args (usage → exit 2) → derive quartet + §3 env → resolve
-   data dir precedence (REQ-07) → pre-flight: any quartet port held by a PID we do not own →
-   report occupant + "NEVER kill" hint, exit 1, occupant never signaled → slot 1: `helix start
-   dev`; slot N≥2: one-time `helix add local --name slotN --port H(N)` then `helix start slotN`
-   (never `--persist`) → spawn `npx tsx src/server.ts` with §3 env → readiness: Helix `/healthz` +
-   our `/memory/livez` within a bounded 30 s → write state file → exit 0.
-2. **Stop lifecycle (REQ-03):** parse → load state file; absent → "not running", exit 0
-   (idempotent) → SIGTERM tracked PIDs (server drains, `src/server.ts:544-549`) → bounded grace →
-   SIGKILL → `helix stop <instance>` → remove state file. Foreign quartet holders reported,
-   never touched; exit 1 only if one of our own processes refuses to die.
-3. **Doctor verdict flow (REQ-05, RUN-REQ-01/02/04):** parse → run C1–C5 (every check prints one
-   line) → fold failures through fixed precedence `5 > 4 > 3 > 1 > 0` → exactly one terminal
-   `VERDICT: <name>` line → exit per Interfaces §5. Read-only: no stop/signal path is reachable
-   from `doctor`.
-4. **Migration flow (REQ-08, RUN-REQ-05..08):** `doctor --migrate` = dry-run plan (source label,
-   target dir, counts, checksums), zero writes, exit 0 → `--apply --yes`: pre-flight (C1/C4 PASS,
-   our slot server stopped, target empty) → inline dry-run re-run → verified backup to
-   `--backup-dir` (no verified backup → ABORT) → copy → verify counts + canary round-trip →
-   report old MinIO volume retained. Any error → `MIGRATE ABORT: <step>`, exit non-zero, source +
-   backup byte-identical, no adoptable partial target.
-5. **Todos lifecycle (REQ-TODO-01..07):** `POST /memory/todos` (`createTodo` → validate parent via `getTodo` fail-closed 400 → `saveTodo` → return row) or alias `/agentmemory/todos` or MCP `memory_todo_create` or plugin `memory/todo_create` or hook `extractTodos` fire-and-forget (≤3, 1.5s each) → `GET /memory/todos` branches on `search` (BM25 `searchTodosByText` filtered → fallback substring over `rawListTodos` → `filterTodos` → slice) else `rawListTodos` → `filterTodos(status/priority/parentId/frontier)` → sort `priorityRank→updatedAt→todoId` → slice; `GET /memory/frontier` = `listTodos({frontier:true})`; `PATCH/DELETE` re-validate parentId (null clears, self 400, missing 400). All `/memory/*` + `/agentmemory/todos|frontier` bearer-guarded except `livez`.
+1. **Brainy Capture (REQ-05):** `brainy add` or `POST /v1/notes` or `brainy_capture` → `zod` validate → `normalize(project,content)` → `dedupKey sha256` → `findMemoryByDedupKey` lock → if hit return existing else `embed 1536` → `saveNote forEachParam concepts=tags|extractConcepts` → upsert `Project/Area/Resource` if not exist → `BELONGS_TO` edge + `CAPTURED_BY→Agent` + `RELATES_TO` candidates `>0.85` via `vectorSearch` → 201 `{id,para}`.
+2. **Organize (REQ-06):** classifier `cosine(noteEmbedding, paraDescriptionEmbeddings)` + keyword fallback → chosen `PARA` → `moveNote` drops old `BELONGS_TO` adds new; `RELATES_TO` batch computed post-insert.
+3. **Distill (REQ-07):** `brainy distill <id>` → `getNoteById` → LLM prompt `summarize to 1 line` → `embed(summary)` → `saveNote(summary)` + `addE SUPERSEDES new→old` → return `{id,supersedes}`.
+4. **Express (REQ-08):** `brainy context`/`GET /v1/context/:project` → anchor `Project/Area` → `graphSearchNotes(max_depth)` (BELONGS_TO→Notes, REFERENCES transitive) → project `Note` rows + `related_memories` via `linked Memory` traversal; `brainy export` → iterate notes → write `vault/<Project>/<title>.md` with `---\nproject: X\ntags: [..]\n---\n` + `[[REFERENCES]]`.
+5. **Hybrid search (REQ-09):** `POST /v1/search` → run `searchByVector(1536, project, vector_top_k)` + `searchByText(project, query)` + `graphSearch(project, concepts)` (+ PARA graph when `include_graph`) in parallel, catch per-source → RRF fuse `score=Σ1/(60+rank)` → `compareFusedAt(nowMs)` tie-break `boostedDecayedImportance→createdAt→memoryId` → `filterExpired` → attach `signals` per row + envelope → 200 (never 500).
+6. **Compat migration (REQ-11):** `brainy.compat.agentmemory` → open SQLite `agent_memory.db` → iterate `memories/objects/contexts/links` → map via `migrateAgentMemoryRow` → `saveMemory` batch 100 with `dedupKey` → verify `healthCount` == source count → `POST /v1/memory` legacy alias.
+7. **Ops start/stop/doctor** (preserved v2): §1-§4 Data Flow 1-4 v2 unchanged — derived env now `BRAINY_*` with alias fallback; readiness probes `/v1/livez` added beside `/memory/livez`.
+8. **Todos lifecycle** (preserved v2): `POST /memory/todos` validate parent→`saveTodo`→return | `GET ...?search=` `searchTodosByText`+fallback→`filterTodos`→slice; `frontier` = pending∪active priorityRank→updatedAt→todoId.
+
+## Data Model Diagram
+
+```
+[Agent] --CAPTURED_BY--> [Note] --BELONGS_TO--> [Project|Area|Resource|Archive]
+                           |--REFERENCES--> [Note]
+                           |--RELATES_TO(auto >0.85)--> [Note]
+                           |--SUPERSEDES--> [Note|Memory] (versioning)
+                           |--HAS_CONCEPT--> [Concept] (legacy graph)
+[Memory] --BELONGS_TO--> [Session] --belongs to project
+[Memory] --HAS_CONCEPT--> [Concept]
+[Memory] --SUPERSEDES--> [Memory]
+[Memory] --ABOUT--> [Resource|Project]
+[Memory] --APPLIES_TO--> [Context]
+[Todo] (no edges, app-side parentId filter)
+Indexes ≥18: uniqueEquality Note.id/Memory.memoryId/Concept.name/Project.name/Area.name/Resource.name/Archive.name/Session.sessionId/Todo.todoId;
+          equality Memory.project/Session.project/Session.sessionId/Todo.project/Todo.status/Note.project/Note.status;
+          vector Note.embedding 1536 cosine tenant project / Memory.embedding 1536;
+          text Note.content/Memory.content/Todo.title tenant project
+```
 
 ## Invariants
 
-- INV-001: Zero new dependencies; `package.json` gains only the `bin` entry + `verify-ops`
-  script; manifests and lockfile untouched (REQ-01, NFR-E).
-- INV-002: Frozen surfaces never modified by any subcommand — see list below (REQ-06, §4.6).
-- INV-003: Never-kill — signal only PIDs we spawned and recorded; forbidden: port-scan kill,
-  `fuser`, `helix prune|delete`, `docker rm|kill|volume rm`, `--persist`, any write to a holder
-  of `3111/3112/3113` (NFR-A, §4.5, RUN-REQ-13/14).
-- INV-004: No secret value (or any env value) in any output or in the state file — flags only,
-  `bearer: armed|unset` (NFR-B, NFR-F — Ley 172-13; RUN-REQ-03 allowlist).
-- INV-005: Defaults untouched — REST `3111`, Helix `6969`, hooks/plugins clients `3111`; slots
-  are derivation, not a default change (NFR-C).
-- INV-006: Doctor verdicts are the closed set of Interfaces §5 with fixed precedence
-  `5 > 4 > 3 > 1 > 0` and exactly one terminal `VERDICT: <name>` line (REQ-05 = RUN-REQ-02
-  canonical).
-- INV-007: State file lives outside `HELIX_DATA_DIR`; Helix owns its data directory exclusively
-  (REQ-07, §4.4).
-- INV-008: Migration is fail-closed — dry-run default, verified backup before any move, the old
-  MinIO volume never destroyed by any subcommand (REQ-08).
-- INV-009: `status` is NOT `doctor` — separate contracts: status exits 0/1/2 (REQ-04), doctor
-  exits 0–5 per Interfaces §5 (REQ-05).
-- INV-010: Derivation applied only via env/flags — zero `src/**`/`db/**` edits; slot N≥2 quartet
-  never intersects `{3111,3112,3113,6969}`; reserved ports never bound, never signaled
-  (REQ-06, §4.2).
-- INV-011: Todos naming `todos` everywhere, never `actions`; upstream graph `requires/unlocks/gated_by/conflicts_with`, leases, signals/routines remain out-of-scope until P4.3 (BRIEF-todos, SPEC-020-todos §5).
-- INV-012: Todo parentId filter is app-side (no dedicated parentId index); `parentId=self` and `parent todo not found` are fail-closed 400; `PATCH parentId:null` clears — validated in store + server (REQ-TODO-04).
+- INV-001 (Brainy): One breaking rename — `brainy` canonical, alias `agent-memory` 1 versión con deprecation warning cada invocación en stderr; después corte limpio. Env lectura `BRAINY_* ?? AGENT_MEMORY_*` (alias fallback) — escritura siempre `BRAINY_*`.
+- INV-002: Frozen surfaces — `src/**`, `db/**`, `hooks/**`, `plugins/**`, `helix.toml [local.dev]` (port 6969, storage=disk) nunca editados fuera de SPEC lane; additive `[local.slotN]` + `brainy` indexes = config, no source edit (same as v2). Post-migration `helix.toml project=brainy` is the ONLY frozen-file exception via SPEC.
+- INV-003: Never-kill — signal solo PIDs registrados en state file; prohibido `fuser/helix prune/docker rm/volume rm/--persist` sobre 3111/3112/3113 (NFR-A, `src/server.ts:653-661`). Brainy lane no introduce nuevos kill paths.
+- INV-004: No secret value en output/state/logs — flags `bearer: armed|unset` only; `BRAINY_SECRET` alias `AGENT_MEMORY_SECRET` same posture (NFR-B/F Ley 172-13). `grep -r BRAINY_SECRET` no match value.
+- INV-005: Defaults intactos — REST `3111`, Helix `6969`, hooks/plugins `3111`; Brainy slots derivación, no cambio default (NFR-C).
+- INV-006: Doctor verdicts closed `0 healthy /1 doctor-check-failed /2 usage /3 upstream-holds-port /4 helix-down /5 secret-missing` precedence `5>4>3>1>0`, exact one `VERDICT:` line.
+- INV-007: State file fuera de `HELIX_DATA_DIR`; Helix owns data dir exclusivo (REQ-07).
+- INV-008: Migration fail-closed — dry-run default, backup verificado antes de copy, MinIO volume nunca destruido; SQLite→HelixDB migration idempotente con dedup.
+- INV-009: `status` ≠ `doctor` (0/1/2 vs 0-5).
+- INV-010: Derivation only via env/flags — zero `src/**` edit para Brainy alias; quartet never intersects `{3111,3112,3113,6969}` for N≥2; reserved never bound.
+- INV-011: Todos naming `todos` forever, never `actions`; Brainy PARA labels `Project/Area/Resource/Archive` capitalizados, nunca lowercase `project`.
+- INV-012: App-side parentId for Todo; Brainy `BELONGS_TO` re-write is atomic drop+add bajo lock `noteId`.
+- INV-013 (CONTRACT §0 preserved): `writeBatch forEachParam(empty)` commits; `varAsIf` both branches; `createIndexIfNotExists` async poll; scoped search `where project` before `vectorSearchWith/textSearchWith`; `$score/$distance` projection; `embedding` never in search payload; `toQueryRequest` + `client.query().send()`.
+- INV-014: `EMBED_DIM 1536` canonical; `BRAINY_EMBED_DIM=384` fallback solo para lectura legacy 1 versión; new writes siempre 1536; `setProperty embedding` refreshes index (probe4 A).
+- INV-015: Hybrid RRF constant `60` frozen; hybrid never 500 — degraded `signals` only.
+- INV-016: Single-writer (§3) holds — dedup `contentHash(project+normalize)` + per-key `survivorTails` FIFO lock; cross-process writers remain out-of-contract until P4.3 (residual ledger).
 
-### Frozen surfaces (INV-002, §4.6; brief §5)
+### Frozen surfaces detail
 
-`src/**` · `db/**` · `hooks/**` · `plugins/**` · `mcp_config.json` (MCP stays **stdio** — no new
-port) · `helix.toml` `[local.dev]` · all dependency manifests + `package-lock.json`. Additive
-`[local.slotN]` tables written by the official `helix add local` are config registration, not
-source edits (REQ-06, A5). Todos lane adds 4 indexes to `helix.toml` via `bootstrapIndexes` (total 12) and reuses frozen `src/server.ts`/`src/store.ts`/`db/queries.ts` exports — no new Helix labels beyond `Todo`.
+`src/**` · `db/**` · `hooks/**` · `plugins/**` · `helix.toml [local.dev]` · manifests · `package-lock.json`. Brainy lane exception: `package.json:2 name→brainy + bin brainy`, `helix.toml:2 project→brainy`, `bin/brainy.mjs` creation, `docs/CONTRACT.md` Brainy v1, `ARCHITECTURE.md` this file. Todos still no new Helix labels beyond `Todo`; Brainy adds `Note/Project/Area/Resource/Archive` as new labels via SPEC.
 
 ## Non-Functional Requirements
 
-- Performance: `start` readiness bounded (30 s precedent, `scripts/verify-env.ts:55`);
-  `status`/`doctor` are bounded read-only probes; migration bounded by backup verification
-  (REQ-02, REQ-08). Todos reads are bounded `limit 1..100` with `rawListTodos` cap `max(limit*4,100)` (≤400) and hook fire-and-forget 1.5s per todo (≤3).
-- Availability: `stop` idempotent from the state file; `status`/`doctor` never mutate state;
-  slot N≥2 operations leave slot 1 (`3111`/`6969`) serving (AC-02, AC-03, NFR-D). Todos lane is additive — existing mem routes unaffected.
-- Security: Ley 172-13 output allowlist — ports, booleans, counts, HTTP status codes,
-  `$HOME`-collapsed paths only; secret presence flags only, value never read into any output
-  path; never-kill enforced statically and at runtime (NFR-A/B/F; RUN-REQ-03/04 — R2 co-signs
-  the allowlist). Todos lane carries same: hooks never log prompt/secret (SUPPORTED allowlist, `clean()`), MCP `_meta` bearer, plugin `Authorization` header only.
+- **Performance — hybrid p95 <10ms @10k:** vector ANN + scoped where + RRF in `src/search.ts`; `limit≤100` cap, over-fetch `max(limit*4,100)≤400` for fallback; `queryVector 1536` per-request embed cached heurística; hooks `POST /v1/notes` fire-and-forget 1.5s. Measured `scripts/eval.ts` → `docs/benchmarks/SCORECARD.md` + `verify` p95 harness; gate FAIL if >10ms.
+- **Performance — ops:** `start` readiness 30s bound (`scripts/verify-env.ts:55`); `status`/`doctor` bounded probes; migration bound by backup verify (REQ-02/08).
+- **Availability:** `stop` idempotente via state file; `status`/`doctor` no mutan estado; slot N≥2 deja slot 1 serving; Brainy alias 1 versión no rompe `agent-memory` clientes existentes (drop-in `BRAINY_*`).
+- **Security (Ley 172-13):** output allowlist ports/booleans/counts/status/`$HOME`-collapsed paths; secret presence only; `Note.content` PII-purpose `segundo cerebro` TTL `BRAINY_TTL_DAYS` 365 + `purge/forgetNote`; mask/tokenize en logs/prompts/exports; DPIA if high-risk; breach 72h; no freelance fixes — severity+location+owner to `barrera/subero`.
+- **Storage:** `helix.toml storage=disk` MinIO/S3 ACID; data never destroys volume; re-embeddings batched `forEachParam` with `setProperty`.
+
+## Traceability (Brainy)
+
+| SPEC REQ | ARCH section | Component | Evidence path |
+|---|---|---|---|
+| REQ-01 alias 1v | §1 CLI Legacy, §3 env alias | `bin/brainy.mjs` | `package.json:2`, `helix.toml:2`, `bin/brainy.mjs` |
+| REQ-02 cleanup | INV-001 | docs sweep | `grep` 0 agentmemory/iii |
+| REQ-03 schema | §6 DB contract, diagram | `db/queries.ts` LABELS/EDGES | `db/queries.ts:28-50` + HELIXQL |
+| REQ-04 1536 indexes | §6 bootstrap, INV-014 | bootstrapIndexes | `db/queries.ts:127-193` + probe index_not_found |
+| REQ-05 capture | Data Flow 1, §7 REST, §8 MCP | HelixStore.saveNote + server | `src/store.ts:691`, `src/server.ts: POST /v1/notes` |
+| REQ-06 organize | Data Flow 2 | classifier + moveNote | `src/store.ts classify` + `db/queries.ts moveNote` |
+| REQ-07 distill | Data Flow 3 | distillNote SUPERSEDES | `db/queries.ts distillNote` + LLM env |
+| REQ-08 express | Data Flow 4, §7 | context/export | `src/server.ts GET /v1/context` |
+| REQ-09 hybrid RRF | Data Flow 5, §7, NFR perf | hybridSearch | `src/search.ts:186-264` + SCORECARD p95 |
+| REQ-10 MCP | §8 | brainy_search/capture/link/reality_check | `src/mcp.ts:162-535` |
+| REQ-11 migration | Data Flow 6 | brainy.compat.agentmemory | `src/compat/agentmemory.ts` + import-transcript |
+| REQ-12 REST | §7 | /v1/* + alias | `src/server.ts` route table |
+| NFR-01 p95 | NFR Perf | search | `scripts/eval.ts` |
+| NFR-02 ACID | NFR Storage | bootstrap async | `helix.toml`, `scripts/bootstrap.ts` |
+| NFR-03 384→1536 | INV-014, §6 | migrate-embeddings | `src/embed.ts`, probe4 |
+| NFR-04 secrets | INV-004, NFR Security | auth guard | `src/server.ts` bearer, `src/mcp.ts handle` |
+
+Prior foundation traceability preserved: `REQ-P4-OPS-*`→§1-5+§7 Todo, `REQ-TODO-*`→§6-10 — see v2 git history.
