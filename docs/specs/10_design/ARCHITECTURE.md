@@ -138,6 +138,7 @@ Parametric invariants (CONTRACT §0, preserved): `writeBatch().forEachParam(empt
 |---|---|---|---|---|---|
 | POST | `/v1/notes` | `{title 1..500, content 1..200k, tags? string[64] 1..200, project? 1..200}` strict | 201 `{id,project,para,deduped}` | except `livez` | derive embed 1536, auto BELONGS_TO |
 | GET | `/v1/notes/:id` | `?project=` | 200 `{note,para,supersedes[],supersededBy}` | yes | 404 |
+| POST | `/v1/notes/:id/move` | `{to: project\|area\|resource\|archive, name: 1..500, project?}` strict | 200 `{id, para:{label,name}}` | yes | drop+add `BELONGS_TO` via `HelixStore.moveNote`; 404 note/target; 400 tenant |
 | POST | `/v1/search` | `{query 1..10k, project?, include_graph? bool, max_depth? 1..3 default2, vector_top_k? 1..20 default10, limit?1..100 default10}` | 200 `{mode:hybrid, results:[{note,score,graph_path,related_memories}],signals}` | yes | RRF 60, TTL filter, never 500 |
 | POST | `/v1/memory` | legacy `{statement|content, concepts?, project?, sessionId?, memory_type?}` | 201 compat | yes | alias statement→content |
 | GET | `/v1/context/:project` | `?project=&limit=1..100` | 200 `{project, notes[],memories[],graph,signals}` | yes | traversal depth2 |

@@ -249,6 +249,14 @@ const distillNoteBodySchema = z
   })
   .strict();
 
+const moveNoteBodySchema = z
+  .object({
+    to: paraCategorySchema,
+    name: z.string().trim().min(1).max(500),
+    project: projectSchema.optional(),
+  })
+  .strict();
+
 
 /* ------------------------------------------------------------------ */
 /* HTTP plumbing                                                       */
@@ -414,6 +422,64 @@ async function routeRequest(
     });
     sendJson(res, 201, { note: result });
     return 201;
+  }
+
+  // POST /v1/notes/:id/move (REQ-BRAINY-ENG-06, ADR-0003 — must precede the
+  // generic GET /v1/notes/:id block below, which would otherwise 405 it)
+  if (path.startsWith("/v1/notes/") && path.endsWith("/move")) {
+    requireMethod(method, "POST");
+    const id = decodeSegment(path.slice("/v1/notes/".length, -"/move".length));
+    const body = parseOr400(moveNoteBodySchema, await readJsonBody(req));
+    const query = parseOr400(getNoteQuerySchema, queryRecord(url));
+    const project = body.project ?? query.project ?? DEFAULT_PROJECT;
+    if (typeof store.moveNote !== "function") {
+      throw new HttpError(501, "not_implemented", "moveNote not supported by store");
+    }
+    // SC-MOVE-03: same-tenant verification before any edge write — mirror the
+    // POST /v1/link C8 pattern. A scoped miss that exists under another tenant
+    // is a cross-tenant move attempt, not a 404; zero writes in that case.
+    if (typeof store.getNoteById === "function") {
+      const scoped = await store.getNoteById(id, project);
+      if (!scoped || scoped.note.project !== project) {
+        const anyTenant = await store.getNoteById(id);
+        if (anyTenant && anyTenant.note.project !== project) {
+          throw new HttpError(400, "invalid_tenant_link", "Note and target must belong to the same project tenant");
+        }
+        sendJson(res, 404, { error: "note_not_found" });
+        return 404;
+      }
+    }
+    let moved: boolean;
+    try {
+      moved = await store.moveNote({
+        id,
+        toCategory: body.to,
+        toTarget: body.name,
+        project,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes("para_target_not_found")) {
+        sendJson(res, 404, { error: "para_target_not_found" });
+        return 404;
+      }
+      if (msg.includes("invalid_tenant_link")) {
+        throw new HttpError(400, "invalid_tenant_link", msg);
+      }
+      throw err;
+    }
+    if (!moved) {
+      sendJson(res, 404, { error: "note_not_found" });
+      return 404;
+    }
+    const labelByCategory = {
+      project: "Project",
+      area: "Area",
+      resource: "Resource",
+      archive: "Archive",
+    } as const;
+    sendJson(res, 200, { id, para: { label: labelByCategory[body.to], name: body.name } });
+    return 200;
   }
 
   // GET /v1/notes/:id

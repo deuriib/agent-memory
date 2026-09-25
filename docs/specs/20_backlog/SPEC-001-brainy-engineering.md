@@ -126,6 +126,7 @@ Preserve CONTRACT §0 facts (citar en PROPOSED_CHANGES): `writeBatch().forEachPa
 |---|---|---|---|---|
 | POST | `/v1/notes` | `{title 1..500, content 1..200k, tags? string[64], project?}` | 201 `{id,project,para}` | zod strict, embed 1536 |
 | GET | `/v1/notes/:id` | `?project=` | 200 `{note, para, supersedes, supersededBy}` | 404 |
+| POST | `/v1/notes/:id/move` | `{to, name 1..500, project?}` strict | 200 `{id,para}` | drop+add `BELONGS_TO`; 404/400 |
 | POST | `/v1/search` | `{query 1..10k, project?, include_graph?, max_depth? 1..3, vector_top_k? 1..20, limit? 1..100}` | 200 `{results:[{note,score,graph_path,related_memories}],signals}` | RRF 60 |
 | POST | `/v1/memory` | legacy `{statement|content, concepts?, project?, sessionId?, memory_type?}` | 201 `{id, sessionId, project, concepts, deduped}` | compat alias content |
 | GET | `/v1/context/:project` | `?limit=` | 200 `{project, notes[], memories[], graph}` | traversal |
