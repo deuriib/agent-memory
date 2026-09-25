@@ -48,6 +48,60 @@ export interface ImportRow {
   origin: string;
 }
 
+/** Resolved connection env: BRAINY_* canonical, AGENT_MEMORY_* 1-version fallback. */
+export interface ImportEnv {
+  base: string;
+  project: string;
+  secret: string | undefined;
+  /** True when any value came from a legacy AGENT_MEMORY_* variable. */
+  usedLegacy: boolean;
+}
+
+function nonEmpty(value: string | undefined): value is string {
+  return typeof value === "string" && value !== "";
+}
+
+/**
+ * Pure env resolution (unit-testable, no I/O). `projectOverride` is the
+ * `--project` CLI flag and wins over both env families. Ley 172-13/C5 note:
+ * this resolves routing only — prompt-text gating lives in rowsForLine and
+ * is untouched by env resolution.
+ */
+export function resolveImportEnv(
+  env: NodeJS.ProcessEnv,
+  projectOverride: string | undefined,
+): ImportEnv {
+  let usedLegacy = false;
+  let base: string;
+  if (nonEmpty(env["BRAINY_URL"])) {
+    base = env["BRAINY_URL"];
+  } else if (nonEmpty(env["AGENT_MEMORY_URL"])) {
+    base = env["AGENT_MEMORY_URL"];
+    usedLegacy = true;
+  } else {
+    base = "http://127.0.0.1:3111";
+  }
+  let project: string;
+  if (projectOverride !== undefined) {
+    project = projectOverride;
+  } else if (nonEmpty(env["BRAINY_PROJECT"])) {
+    project = env["BRAINY_PROJECT"];
+  } else if (nonEmpty(env["AGENT_MEMORY_PROJECT"])) {
+    project = env["AGENT_MEMORY_PROJECT"];
+    usedLegacy = true;
+  } else {
+    project = "default";
+  }
+  let secret: string | undefined;
+  if (nonEmpty(env["BRAINY_SECRET"])) {
+    secret = env["BRAINY_SECRET"];
+  } else if (nonEmpty(env["AGENT_MEMORY_SECRET"])) {
+    secret = env["AGENT_MEMORY_SECRET"];
+    usedLegacy = true;
+  }
+  return { base, project, secret, usedLegacy };
+}
+
 function failUsage(message: string): never {
   console.error(`import-transcript: ${oneLine(message)}`);
   console.error(USAGE);
@@ -173,9 +227,15 @@ function rowsForTyped(line: Record<string, unknown>, type: unknown, includePromp
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const base = process.env["AGENT_MEMORY_URL"] ?? "http://127.0.0.1:3111";
-  const project = args.project ?? process.env["AGENT_MEMORY_PROJECT"] ?? "default";
-  const secret = process.env["AGENT_MEMORY_SECRET"];
+  const resolved = resolveImportEnv(process.env, args.project);
+  if (resolved.usedLegacy) {
+    console.error(
+      "WARN deprecated use BRAINY_URL/BRAINY_PROJECT/BRAINY_SECRET — AGENT_MEMORY_* will be removed in next major",
+    );
+  }
+  const base = resolved.base;
+  const project = resolved.project;
+  const secret = resolved.secret;
   const sessionId = args.sessionId ?? randomUUID();
 
   let raw: string;
@@ -221,7 +281,7 @@ async function main(): Promise<void> {
   try {
     url = new URL("memory/remember", base.endsWith("/") ? base : `${base}/`);
   } catch {
-    console.error("import-transcript failed: invalid AGENT_MEMORY_URL");
+    console.error("import-transcript failed: invalid BRAINY_URL");
     process.exit(1);
   }
 
