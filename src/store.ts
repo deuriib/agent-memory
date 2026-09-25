@@ -85,8 +85,6 @@ import { oneLine } from "./logline.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
-let warnedDeprecatedStoreUrl = false;
-
 /** Non-empty env read: unset or empty -> undefined (never logs values). */
 function readNonEmptyEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
   const value = env[name];
@@ -94,36 +92,35 @@ function readNonEmptyEnv(env: NodeJS.ProcessEnv, name: string): string | undefin
 }
 
 /**
- * Helix endpoint resolution, canonical-first (REQ-BRAINY-OPS-02, RL-002).
+ * Helix endpoint resolution (REQ-BRAINY-OPS-02, RL-002 re-scoped per
+ * orchestrator arbitration 2026-09-25).
  *
- * `BRAINY_URL` wins; the `AGENT_MEMORY_URL` / `HELIX_URL` fallbacks resolve
- * behind a single static deprecation notice on stderr — the same 1-version
- * alias shape as `secretFromEnv` (`src/auth.ts`) and `ttlDaysFromEnv`
- * (`src/lifecycle.ts`): canonical value first, alias warns once per process,
- * values never logged. All absent/empty -> the local-dev default.
- * Exported pure-with-env-param for testability (mirrors `resolveBootstrapUrl`
- * in `scripts/bootstrap.ts`, which already resolves `BRAINY_URL` first).
+ * `HELIX_URL` is the ONLY env read here: SPEC-003 §4.3 declares it with
+ * "(no rename)", and ARCH §3 + README env table + `bin/brainy.mjs`
+ * `restBaseUrl` define `BRAINY_URL` as the REST URL
+ * (`http://127.0.0.1:R(N)`). This function builds a Helix client
+ * (`Client.server` below), so it must resolve the Helix endpoint — reading
+ * REST-semantics vars (`BRAINY_URL` / `AGENT_MEMORY_URL`) here pointed the
+ * store at `<rest>/v2/query` (404 → 500 on every write), the exact
+ * regression commit `b91821a` introduced: every spawned child receives BOTH
+ * vars (`bin/brainy.mjs` serverEnv), so a `BRAINY_URL`-first read always
+ * loses to the REST port. No REST fallback is permissible: when `HELIX_URL`
+ * is unset/empty, fail toward the correct local-dev default
+ * (`http://localhost:6969`), never toward a wrong port. Canonical-first
+ * (`BRAINY_URL` > `AGENT_MEMORY_URL`) still applies where the variable's
+ * canonical meaning matches the consumer — i.e. REST clients
+ * (`bin/brainy.mjs:462` restBaseUrl) — not here.
+ * Exported pure-with-env-param for testability. Values never logged.
  */
 export function resolveStoreUrl(env: NodeJS.ProcessEnv = process.env): string {
-  const canonical = readNonEmptyEnv(env, "BRAINY_URL");
-  if (canonical !== undefined) return canonical;
-  for (const alias of ["AGENT_MEMORY_URL", "HELIX_URL"] as const) {
-    const value = readNonEmptyEnv(env, alias);
-    if (value !== undefined) {
-      if (!warnedDeprecatedStoreUrl) {
-        warnedDeprecatedStoreUrl = true;
-        console.error("WARN deprecated use BRAINY_URL");
-      }
-      return value;
-    }
-  }
-  return "http://localhost:6969";
+  return readNonEmptyEnv(env, "HELIX_URL") ?? "http://localhost:6969";
 }
 
-/** Reset warning state for test isolation */
-export function _resetStoreUrlWarningState(): void {
-  warnedDeprecatedStoreUrl = false;
-}
+/**
+ * Reset hook kept for test-file import compat — resolution is now
+ * warning-free (single-source `HELIX_URL`, no aliases), so this is a no-op.
+ */
+export function _resetStoreUrlWarningState(): void {}
 
 /* ------------------------------------------------------------------ */
 /* REQ-F-01 embedding verify helpers (internal — never surfaced)       */
