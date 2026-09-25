@@ -25,7 +25,7 @@ import { embed } from "./embed.js";
 import { confidenceBoost, noteRecall, recallCount } from "./confidence.js";
 import { failureSignal } from "./errors.js";
 import { decayedImportance, filterExpired } from "./lifecycle.js";
-import type { MemoryStore, SearchHit } from "./store.js";
+import type { MemoryStore, SearchHit, MemoryRow } from "./store.js";
 
 /** RRF constant (frozen by contract §3). */
 export const RRF_K = 60;
@@ -44,9 +44,11 @@ export interface SearchResultRow extends SearchHit {
   source: SearchSource;
 }
 
-/** Fused rows additionally carry `signals` (contract §3). */
+/** Fused rows additionally carry `signals`, `graph_path`, and `related_memories`. */
 export interface FusedResultRow extends SearchResultRow {
   signals: string[];
+  graph_path?: string[];
+  related_memories?: MemoryRow[];
 }
 
 export interface SearchEnvelope<T> {
@@ -64,9 +66,12 @@ export interface Bm25SearchInput {
 
 export interface HybridSearchInput {
   query: string;
-  concepts: string[];
+  concepts?: string[];
   project: string;
   limit: number;
+  include_graph?: boolean;
+  max_depth?: number;
+  vector_top_k?: number;
 }
 
 type SourceOutcome =
@@ -187,23 +192,47 @@ export async function hybridSearch(
   store: MemoryStore,
   input: HybridSearchInput,
 ): Promise<SearchEnvelope<FusedResultRow>> {
+  const queryVector = embed(input.query);
+  const vectorK = input.vector_top_k ?? input.limit;
+
   const tasks: Promise<SourceOutcome>[] = [
-    runSource("vector", () =>
-      store.searchByVector({
-        queryVector: embed(input.query),
+    runSource("vector", async () => {
+      const memoryVectorPromise = store.searchByVector({
+        queryVector,
         project: input.project,
-        k: input.limit,
-      }),
-    ),
-    runSource("text", () =>
-      store.searchByText({ q: input.query, project: input.project, k: input.limit }),
-    ),
+        k: vectorK,
+      });
+      const noteVectorPromise = store.searchNotesByVector
+        ? store.searchNotesByVector({ queryVector, project: input.project, k: vectorK }).catch(() => [])
+        : Promise.resolve([]);
+      const [memHits, noteHits] = await Promise.all([memoryVectorPromise, noteVectorPromise]);
+      const merged = [...noteHits, ...memHits];
+      merged.sort((a, b) => (a.distance ?? 1) - (b.distance ?? 1));
+      return merged;
+    }),
+    runSource("text", async () => {
+      const memoryTextPromise = store.searchByText({ q: input.query, project: input.project, k: input.limit });
+      const noteTextPromise = store.searchNotesByText
+        ? store.searchNotesByText({ q: input.query, project: input.project, k: input.limit }).catch(() => [])
+        : Promise.resolve([]);
+      const [memHits, noteHits] = await Promise.all([memoryTextPromise, noteTextPromise]);
+      const merged = [...noteHits, ...memHits];
+      merged.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+      return merged;
+    }),
   ];
-  if (input.concepts.length > 0) {
+
+  const concepts = input.concepts ?? [];
+  if (concepts.length > 0) {
     tasks.push(
-      runSource("graph", () =>
-        store.graphSearch({ concepts: input.concepts, project: input.project, k: input.limit }),
-      ),
+      runSource("graph", async () => {
+        const memoryGraphPromise = store.graphSearch({ concepts, project: input.project, k: input.limit });
+        const noteGraphPromise = store.graphSearchNotes
+          ? store.graphSearchNotes({ concepts, project: input.project, k: input.limit }).catch(() => [])
+          : Promise.resolve([]);
+        const [memHits, noteHits] = await Promise.all([memoryGraphPromise, noteGraphPromise]);
+        return [...noteHits, ...memHits];
+      }),
     );
   }
 
@@ -244,6 +273,33 @@ export async function hybridSearch(
     fusedRows.push({ ...entry.hit, score: entry.score, source: entry.source, signals: [] });
   }
   fusedRows.sort(compareFusedAt(nowMs));
+
+  // Graph traversal enrichment if requested
+  if (input.include_graph && store.traverseNoteGraph) {
+    const depth = input.max_depth ?? 2;
+    await Promise.all(
+      fusedRows.slice(0, input.limit).map(async (row) => {
+        try {
+          const gInfo = await store.traverseNoteGraph!(row.id, input.project, depth);
+          const pathSegments: string[] = [];
+          if (gInfo.belongsTo.length > 0) {
+            pathSegments.push(gInfo.belongsTo.map((b) => b.name).join(" > "));
+          }
+          if (gInfo.relates.length > 0) {
+            pathSegments.push(...gInfo.relates.map((r) => r.id));
+          }
+          if (gInfo.references.length > 0) {
+            pathSegments.push(...gInfo.references.map((r) => r.id));
+          }
+          if (pathSegments.length > 0) {
+            row.graph_path = pathSegments;
+          }
+        } catch {
+          // Graceful degradation on traversal failure
+        }
+      }),
+    );
+  }
 
   // REQ-P1-1: TTL filter right before return (no over-fetch — upstream rows
   // were already capped at `limit`; filtering may yield fewer than limit).
