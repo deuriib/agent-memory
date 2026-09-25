@@ -14,18 +14,28 @@ import { Client, HelixError } from "@helix-db/helix-db";
 import { bootstrapIndexes, searchByText, searchByTextParams } from "../db/queries";
 
 /**
- * Brainy URL resolution: BRAINY_URL is canonical, HELIX_URL is a 1-version
- * fallback alias. Exported pure for testability (no side effects here —
- * the caller prints the single deprecation line).
+ * Helix endpoint resolution (REQ-BRAINY-OPS-02, mirroring `resolveStoreUrl`
+ * in `src/store.ts` per orchestrator arbitration 2026-09-25).
+ *
+ * `HELIX_URL` is the ONLY env read here: SPEC-003 §4.3 declares it with
+ * "(no rename)", and REQ-OPS-02 + README env table define `BRAINY_URL` as
+ * the REST URL (`http://127.0.0.1:R(N)`). This script builds a Helix client
+ * (`Client.server` below), so reading `BRAINY_URL` here pointed bootstrap
+ * at the REST port (`not_found` → FAILED on every run under a
+ * README:436-style `BRAINY_URL=<rest>` env). No REST fallback is
+ * permissible: when `HELIX_URL` is unset/empty, fail toward the correct
+ * local-dev default (`http://localhost:6969`), never toward a REST port.
+ * `usedLegacy` is kept (always false) for `resolveBootstrapUrl` import
+ * compat (`tests/step9.test.ts`, R1-owned — expects an update).
+ * Exported pure for testability (no side effects here — the caller prints
+ * the single deprecation line when `usedLegacy`).
  */
 export function resolveBootstrapUrl(env: NodeJS.ProcessEnv = process.env): {
   url: string;
   usedLegacy: boolean;
 } {
-  const brainy = env["BRAINY_URL"];
-  if (typeof brainy === "string" && brainy !== "") return { url: brainy, usedLegacy: false };
-  const legacy = env["HELIX_URL"];
-  if (typeof legacy === "string" && legacy !== "") return { url: legacy, usedLegacy: true };
+  const helix = env["HELIX_URL"];
+  if (typeof helix === "string" && helix !== "") return { url: helix, usedLegacy: false };
   return { url: "http://localhost:6969", usedLegacy: false };
 }
 
