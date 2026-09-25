@@ -6,8 +6,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -169,4 +170,217 @@ test("Step 8: never-kill static audit — guarded signals only, never a secret p
   assert.ok(text.includes("bearer: armed|unset"), "presence flag only");
   const killCalls = (text.match(/process\.kill\(/g) ?? []).length;
   assert.ok(killCalls >= 1, "expected guarded process.kill via signalOwned/pidAlive");
+});
+
+test("Step 8: move --help documents the dedicated move route semantics (REQ-04 ADR-0003-C3)", () => {
+  const res = brainy(["move", "--help"]);
+  assert.equal(res.code, 0);
+  assert.ok(res.out.includes("--to <project|area|resource|archive>"), res.out.slice(0, 400));
+  assert.ok(res.out.includes("--name"), res.out.slice(0, 800));
+  assert.ok(res.out.includes("current PARA node name"), res.out);
+});
+
+test("Step 8: move parser fail-closed — bad category/empty/conflict exit 2 (REQ-04)", () => {
+  for (const args of [
+    ["move", "n1"],
+    ["move", "n1", "--to", "bogus:X"],
+    ["move", "n1", "--to", "Project:X"],
+    ["move", "n1", "--to", "project:"],
+    ["move", "n1", "--to", "area:A", "--name", "B"],
+    ["move", "n1", "--to", "project", "--name", ""],
+  ]) {
+    const res = brainy(args);
+    assert.equal(res.code, 2, `${args.join(" ")} -> ${String(res.code)}`);
+    assert.ok(res.err.toLowerCase().includes("usage"), args.join(" "));
+  }
+});
+
+test("Step 8: move static — POST /v1/notes/:id/move, stale comment gone, no /v1/link (REQ-04 ADR-0003-C3)", () => {
+  const text = readFileSync(BRAINY, "utf8");
+  assert.ok(text.includes("/move"), "missing /move route");
+  assert.ok(!text.includes("no dedicated move route"), "stale comment still present");
+  assert.ok(!text.includes("/v1/link"), "old link workaround still present");
+  assert.ok(!text.includes("BELONGS_TO"), "old link type still present");
+});
+
+interface RecordedRequest {
+  method: string;
+  url: string;
+  body: string;
+}
+
+type MoveHandler = (req: RecordedRequest) => { status: number; payload: unknown };
+
+async function withMoveServer(handler: MoveHandler, fn: (baseUrl: string, requests: RecordedRequest[]) => Promise<void>): Promise<void> {
+  const requests: RecordedRequest[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const rec: RecordedRequest = { method: req.method ?? "", url: req.url ?? "", body };
+      requests.push(rec);
+      const answer = handler(rec);
+      res.writeHead(answer.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(answer.payload));
+    });
+  });
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const addr = server.address();
+  assert.ok(addr !== null && typeof addr === "object", "server did not bind");
+  try {
+    await fn(`http://127.0.0.1:${(addr as { port: number }).port}`, requests);
+  } finally {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    });
+  }
+}
+
+function runBrainyAsync(args: readonly string[], extraEnv: Record<string, string> = {}): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("node", [BRAINY, ...args], {
+      cwd: ROOT,
+      env: { ...scrubSecrets(process.env), ...extraEnv },
+    });
+    let out = "";
+    let errOut = "";
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      out += chunk;
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      errOut += chunk;
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`cli timeout: brainy ${args.join(" ")}`));
+    }, 25_000);
+    if (typeof timer.unref === "function") timer.unref();
+    child.on("error", (cause: Error) => {
+      clearTimeout(timer);
+      reject(cause);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, out, err: errOut });
+    });
+  });
+}
+
+test("Step 8: move shorthand POSTs /v1/notes/:id/move with {to,name,project} (REQ-04 ADR-0003-C3)", async () => {
+  await withMoveServer(
+    (req) => {
+      if (req.method === "POST" && req.url === "/v1/notes/n1/move") {
+        return { status: 200, payload: { id: "n1", para: { label: "Project", name: "Foo" } } };
+      }
+      return { status: 404, payload: { error: "not_found" } };
+    },
+    async (baseUrl, requests) => {
+      const res = await runBrainyAsync(["move", "n1", "--to", "project:Foo"], { BRAINY_URL: baseUrl });
+      assert.equal(res.code, 0, res.out + res.err);
+      assert.ok(res.out.includes("moved: n1 -> project:Foo"), res.out);
+      assert.equal(requests.length, 1, `expected POST only, got ${JSON.stringify(requests)}`);
+      assert.equal(requests[0]?.method, "POST");
+      assert.equal(requests[0]?.url, "/v1/notes/n1/move");
+      assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), { to: "project", name: "Foo", project: "default" });
+      assert.ok(!requests.some((r) => r.url === "/v1/link"), "must not call the old workaround");
+    },
+  );
+});
+
+test("Step 8: move --name flag plus --project reach the move body (REQ-04 ADR-0003-C3)", async () => {
+  await withMoveServer(
+    (req) => {
+      if (req.method === "POST" && req.url === "/v1/notes/n1/move") {
+        return { status: 200, payload: { id: "n1", para: { label: "Area", name: "Work" } } };
+      }
+      return { status: 404, payload: { error: "not_found" } };
+    },
+    async (baseUrl, requests) => {
+      const res = await runBrainyAsync(["move", "n1", "--to", "area", "--name", "Work", "--project", "p1"], {
+        BRAINY_URL: baseUrl,
+      });
+      assert.equal(res.code, 0, res.out + res.err);
+      assert.ok(res.out.includes("moved: n1 -> area:Work"), res.out);
+      assert.equal(requests.length, 1, `expected POST only, got ${JSON.stringify(requests)}`);
+      assert.deepEqual(JSON.parse(requests[0]?.body ?? "{}"), { to: "area", name: "Work", project: "p1" });
+      assert.ok(!requests.some((r) => r.url === "/v1/link"), "must not call the old workaround");
+    },
+  );
+});
+
+test("Step 8: move without --name reuses the current PARA name, never prints content (REQ-04 ADR-0003-C3)", async () => {
+  await withMoveServer(
+    (req) => {
+      if (req.method === "GET" && req.url.startsWith("/v1/notes/n1")) {
+        return {
+          status: 200,
+          payload: {
+            note: { id: "n1", title: "t", content: "super-secret-content-step8", project: "default" },
+            para: { category: "resource", name: "KeptName" },
+          },
+        };
+      }
+      if (req.method === "POST" && req.url === "/v1/notes/n1/move") {
+        return { status: 200, payload: { id: "n1", para: { label: "Archive", name: "KeptName" } } };
+      }
+      return { status: 404, payload: { error: "not_found" } };
+    },
+    async (baseUrl, requests) => {
+      const res = await runBrainyAsync(["move", "n1", "--to", "archive"], { BRAINY_URL: baseUrl });
+      assert.equal(res.code, 0, res.out + res.err);
+      assert.ok(res.out.includes("moved: n1 -> archive:KeptName"), res.out);
+      assert.ok(!res.out.includes("super-secret-content-step8") && !res.err.includes("super-secret-content-step8"));
+      assert.equal(requests.length, 2, `expected GET+POST, got ${JSON.stringify(requests)}`);
+      assert.equal(requests[0]?.method, "GET");
+      assert.equal(requests[1]?.method, "POST");
+      assert.equal(requests[1]?.url, "/v1/notes/n1/move");
+      assert.deepEqual(JSON.parse(requests[1]?.body ?? "{}"), { to: "archive", name: "KeptName", project: "default" });
+      assert.ok(!requests.some((r) => r.url === "/v1/link"), "must not call the old workaround");
+    },
+  );
+});
+
+test("Step 8: move maps POST 404/400 and missing-note GET to exit 1 (REQ-04 ADR-0003-C3)", async () => {
+  await withMoveServer(
+    (req) => {
+      if (req.method === "POST" && req.url === "/v1/notes/n-missing/move") {
+        return { status: 404, payload: { error: "para_target_not_found" } };
+      }
+      return { status: 404, payload: { error: "not_found" } };
+    },
+    async (baseUrl) => {
+      const missing = await runBrainyAsync(["move", "n-missing", "--to", "project:Nope"], { BRAINY_URL: baseUrl });
+      assert.equal(missing.code, 1, missing.out + missing.err);
+      assert.ok((missing.out + missing.err).includes("404"), missing.out + missing.err);
+    },
+  );
+  await withMoveServer(
+    (req) => {
+      if (req.method === "POST" && req.url === "/v1/notes/n-bad/move") {
+        return { status: 400, payload: { error: "invalid_request" } };
+      }
+      return { status: 404, payload: { error: "not_found" } };
+    },
+    async (baseUrl) => {
+      const bad = await runBrainyAsync(["move", "n-bad", "--to", "project:Nope"], { BRAINY_URL: baseUrl });
+      assert.equal(bad.code, 1, bad.out + bad.err);
+      assert.ok((bad.out + bad.err).includes("400"), bad.out + bad.err);
+    },
+  );
+  await withMoveServer(
+    () => ({ status: 404, payload: { error: "not_found" } }),
+    async (baseUrl, requests) => {
+      const gone = await runBrainyAsync(["move", "n-gone", "--to", "archive"], { BRAINY_URL: baseUrl });
+      assert.equal(gone.code, 1, gone.out + gone.err);
+      assert.ok((gone.out + gone.err).includes("note not found"), gone.out + gone.err);
+      assert.equal(requests.length, 1, "missing note must not attempt the move POST");
+      assert.equal(requests[0]?.method, "GET");
+    },
+  );
 });

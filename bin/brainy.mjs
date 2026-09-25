@@ -165,7 +165,7 @@ const USAGE = `brainy — ops control plane (SPEC-003)
 
 Usage:
   brainy add "text" [--title T] [--tags a,b] [--project P] [--slot N]
-  brainy move <noteId> --to <category:name> [--project P] [--slot N]
+  brainy move <noteId> --to <project|area|resource|archive>[:<name>] [--name NAME] [--project P] [--slot N]
   brainy distill <noteId> [--summary S] [--provider openai|gemini|anthropic] [--project P] [--slot N]
   brainy context --project P [--limit N] [--slot N]
   brainy export --format markdown --out PATH --project P [--slot N]
@@ -176,6 +176,11 @@ Usage:
   brainy doctor --slot N [--data-dir PATH]
                   [--migrate [--apply --yes] [--backup-dir PATH]]
   brainy --help
+
+Move default: when --name is omitted (and --to carries no :<name> suffix),
+  the note's current PARA node name is reused (re-categorization: same name,
+  new category). Explicit --name wins over a :<name> suffix when both agree;
+  conflicting names are a usage error.
 
 Slots (derived, never a default change):
   REST R(N) = 3111 + 3(N-1)   Helix H(N) = 6969 + (N-1)
@@ -194,10 +199,10 @@ Exit codes:
                (fixed precedence 5 > 4 > 3 > 1 > 0, one VERDICT line)`;
 
 const COMMANDS = new Set(["add", "move", "distill", "context", "export", "search", "start", "stop", "status", "doctor"]);
-const FLAG_ARITY = { "--slot": 1, "--data-dir": 1, "--backup-dir": 1, "--migrate": 0, "--apply": 0, "--yes": 0, "--title": 1, "--tags": 1, "--project": 1, "--to": 1, "--provider": 1, "--summary": 1, "--format": 1, "--out": 1, "--limit": 1, "--include-graph": 0 };
+const FLAG_ARITY = { "--slot": 1, "--data-dir": 1, "--backup-dir": 1, "--migrate": 0, "--apply": 0, "--yes": 0, "--title": 1, "--tags": 1, "--project": 1, "--to": 1, "--name": 1, "--provider": 1, "--summary": 1, "--format": 1, "--out": 1, "--limit": 1, "--include-graph": 0 };
 const FLAGS_BY_COMMAND = {
   add: new Set(["--slot", "--title", "--tags", "--project"]),
-  move: new Set(["--slot", "--to", "--project"]),
+  move: new Set(["--slot", "--to", "--name", "--project"]),
   distill: new Set(["--slot", "--summary", "--provider", "--project"]),
   context: new Set(["--slot", "--project", "--limit"]),
   export: new Set(["--slot", "--format", "--out", "--project"]),
@@ -216,13 +221,40 @@ function usageError(detail) {
 }
 
 /**
+ * Split a `move --to` value into `{ to, name }`.
+ * Accepts `<para>` plus an optional `--name`, or the shorthand
+ * `<para>:<name>`. An explicit `--name` must agree with a `:suffix` when
+ * both are present; a bare trailing colon is malformed.
+ * @returns {{to:string, name:string|undefined} | null} null when invalid.
+ */
+function parseMoveTarget(raw, explicitName) {
+  const idx = raw.indexOf(":");
+  const head = (idx === -1 ? raw : raw.slice(0, idx)).trim();
+  if (!["project", "area", "resource", "archive"].includes(head)) return null;
+  let inlineName;
+  if (idx !== -1) {
+    inlineName = raw.slice(idx + 1).trim();
+    if (inlineName.length === 0) return null;
+    if (inlineName.length > 500) return null;
+  }
+  let name = inlineName;
+  if (explicitName !== undefined) {
+    const trimmed = explicitName.trim();
+    if (trimmed.length < 1 || trimmed.length > 500) return null;
+    if (inlineName !== undefined && inlineName !== trimmed) return null;
+    name = trimmed;
+  }
+  return { to: head, name };
+}
+
+/**
  * Parse argv fail-closed. Unknown subcommand, unknown flag, a flag the
  * subcommand does not accept, a missing flag value or an invalid `--slot`
  * all exit 2 with usage on stderr. `--help` anywhere exits 0 with usage on
  * stdout.
  * @returns {{command:string, slot:number, dataDir?:string, backupDir?:string,
  *            migrate:boolean, apply:boolean, yes:boolean, title?:string, tags?:string,
- *            project?:string, to?:string, provider?:string, summary?:string,
+ *            project?:string, to?:string, name?:string, provider?:string, summary?:string,
  *            format?:string, out?:string, limit?:number, includeGraph:boolean,
  *            text?:string, noteId?:string, query?:string}}
  */
@@ -236,7 +268,7 @@ function parseArgs(argv) {
   if (!COMMANDS.has(head)) usageError(`unknown subcommand "${head}"`);
   const command = head;
 
-  const flags = { slot: "1", dataDir: undefined, backupDir: undefined, migrate: false, apply: false, yes: false, title: undefined, tags: undefined, project: undefined, to: undefined, provider: undefined, summary: undefined, format: undefined, out: undefined, limit: undefined, includeGraph: false };
+  const flags = { slot: "1", dataDir: undefined, backupDir: undefined, migrate: false, apply: false, yes: false, title: undefined, tags: undefined, project: undefined, to: undefined, name: undefined, provider: undefined, summary: undefined, format: undefined, out: undefined, limit: undefined, includeGraph: false };
   const positionals = [];
   let index = 1;
   while (index < argv.length) {
@@ -275,6 +307,7 @@ function parseArgs(argv) {
     else if (name === "--tags") flags.tags = value;
     else if (name === "--project") flags.project = value;
     else if (name === "--to") flags.to = value;
+    else if (name === "--name") flags.name = value;
     else if (name === "--provider") flags.provider = value;
     else if (name === "--summary") flags.summary = value;
     else if (name === "--format") flags.format = value;
@@ -320,7 +353,13 @@ function parseArgs(argv) {
       assertOnePositional("note id");
       noteId = positionals[0];
       need(noteId.length <= 200, "note id exceeds 200 chars");
-      need(flags.to !== undefined && flags.to.length > 0, '"move" requires "--to <category:name>"');
+      need(flags.to !== undefined && flags.to.length > 0, '"move" requires "--to <para>[:<name>]"');
+      {
+        const parsed = parseMoveTarget(flags.to, flags.name);
+        need(parsed !== null, '"--to" must be <project|area|resource|archive>[:<name>] with --name 1..500 chars');
+        flags.to = parsed.to;
+        flags.name = parsed.name;
+      }
       break;
     case "distill":
       assertOnePositional("note id");
@@ -349,7 +388,7 @@ function parseArgs(argv) {
       break;
   }
 
-  return { command, slot, dataDir: flags.dataDir, backupDir: flags.backupDir, migrate: flags.migrate, apply: flags.apply, yes: flags.yes, title: flags.title, tags: flags.tags, project: flags.project, to: flags.to, provider: flags.provider, summary: flags.summary, format: flags.format, out: flags.out, limit, includeGraph: flags.includeGraph, text, noteId, query };
+  return { command, slot, dataDir: flags.dataDir, backupDir: flags.backupDir, migrate: flags.migrate, apply: flags.apply, yes: flags.yes, title: flags.title, tags: flags.tags, project: flags.project, to: flags.to, name: flags.name, provider: flags.provider, summary: flags.summary, format: flags.format, out: flags.out, limit, includeGraph: flags.includeGraph, text, noteId, query };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1579,29 +1618,46 @@ async function cmdAdd(flags) {
   return 0;
 }
 
+/** Current PARA node name out of a GET /v1/notes/:id payload (never content). */
+function currentParaName(json) {
+  if (typeof json !== "object" || json === null || !("para" in json)) return undefined;
+  const para = json.para;
+  if (typeof para !== "object" || para === null || !("name" in para)) return undefined;
+  return typeof para.name === "string" && para.name.trim().length > 0 ? para.name.trim() : undefined;
+}
+
 async function cmdMove(flags) {
   const ports = derive(flags.slot);
   const base = restBaseUrl(flags.slot, ports);
   const secret = bearerSecret();
   const project = flags.project ?? "default";
-  const got = await apiCall(base, `/v1/notes/${encodeURIComponent(flags.noteId)}?project=${encodeURIComponent(project)}`, { secret });
-  if (got.status === -1) return apiRefused(base);
-  if (got.status === 404) {
-    err(`REFUSE — note not found: ${oneLine(flags.noteId, 120)}`);
-    return 1;
+  const to = flags.to;
+  // Default (re-categorization): same name, new category — resolve the name
+  // from the note's current PARA node; fall back to the category itself when
+  // the note has no PARA target yet (mirrors the store default).
+  let moveName = flags.name;
+  if (moveName === undefined) {
+    const got = await apiCall(base, `/v1/notes/${encodeURIComponent(flags.noteId)}?project=${encodeURIComponent(project)}`, { secret });
+    if (got.status === -1) return apiRefused(base);
+    if (got.status === 404) {
+      err(`REFUSE — note not found: ${oneLine(flags.noteId, 120)}`);
+      return 1;
+    }
+    if (got.status !== 200) return apiError(got.status, got.json, got.text);
+    moveName = currentParaName(got.json) ?? to;
   }
-  if (got.status !== 200) return apiError(got.status, got.json, got.text);
-  // NOTE (Cross-domain R1): the server has no dedicated move route; the move
-  // is expressed as a BELONGS_TO link rewrite. Targets that are not notes in
-  // the same project tenant surface here as 400 invalid_tenant_link.
-  const linked = await apiCall(base, "/v1/link", {
+  // ADR-0003 condition C3: dedicated move route POST /v1/notes/:id/move
+  // (dual bearer, same-tenant check server-side). Strict body { to, name, project }; the server maps
+  // misses to 404 note_not_found / para_target_not_found and bad links to
+  // 400 invalid_request / invalid_tenant_link.
+  const moved = await apiCall(base, `/v1/notes/${encodeURIComponent(flags.noteId)}/move`, {
     method: "POST",
     secret,
-    body: { fromId: flags.noteId, toId: flags.to, type: "BELONGS_TO", project },
+    body: { to, name: moveName, project },
   });
-  if (linked.status === -1) return apiRefused(base);
-  if (linked.status !== 201) return apiError(linked.status, linked.json, linked.text);
-  out(`moved: ${oneLine(flags.noteId, 120)} -> ${oneLine(flags.to, 200)}`);
+  if (moved.status === -1) return apiRefused(base);
+  if (moved.status !== 200) return apiError(moved.status, moved.json, moved.text);
+  out(`moved: ${oneLine(flags.noteId, 120)} -> ${oneLine(to, 24)}:${oneLine(moveName, 200)}`);
   return 0;
 }
 
