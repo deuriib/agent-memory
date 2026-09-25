@@ -85,6 +85,46 @@ import { oneLine } from "./logline.js";
 
 const QUERY_TIMEOUT_MS = 15_000;
 
+let warnedDeprecatedStoreUrl = false;
+
+/** Non-empty env read: unset or empty -> undefined (never logs values). */
+function readNonEmptyEnv(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const value = env[name];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+/**
+ * Helix endpoint resolution, canonical-first (REQ-BRAINY-OPS-02, RL-002).
+ *
+ * `BRAINY_URL` wins; the `AGENT_MEMORY_URL` / `HELIX_URL` fallbacks resolve
+ * behind a single static deprecation notice on stderr — the same 1-version
+ * alias shape as `secretFromEnv` (`src/auth.ts`) and `ttlDaysFromEnv`
+ * (`src/lifecycle.ts`): canonical value first, alias warns once per process,
+ * values never logged. All absent/empty -> the local-dev default.
+ * Exported pure-with-env-param for testability (mirrors `resolveBootstrapUrl`
+ * in `scripts/bootstrap.ts`, which already resolves `BRAINY_URL` first).
+ */
+export function resolveStoreUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const canonical = readNonEmptyEnv(env, "BRAINY_URL");
+  if (canonical !== undefined) return canonical;
+  for (const alias of ["AGENT_MEMORY_URL", "HELIX_URL"] as const) {
+    const value = readNonEmptyEnv(env, alias);
+    if (value !== undefined) {
+      if (!warnedDeprecatedStoreUrl) {
+        warnedDeprecatedStoreUrl = true;
+        console.error("WARN deprecated use BRAINY_URL");
+      }
+      return value;
+    }
+  }
+  return "http://localhost:6969";
+}
+
+/** Reset warning state for test isolation */
+export function _resetStoreUrlWarningState(): void {
+  warnedDeprecatedStoreUrl = false;
+}
+
 /* ------------------------------------------------------------------ */
 /* REQ-F-01 embedding verify helpers (internal — never surfaced)       */
 /* ------------------------------------------------------------------ */
@@ -845,8 +885,10 @@ function pickSurvivor(
 export class HelixStore implements BrainyStore {
   private readonly client: Client;
 
-  constructor(baseUrl: string = process.env["HELIX_URL"] ?? "http://localhost:6969") {
-    this.client = Client.server(baseUrl);
+  constructor(baseUrl?: string) {
+    this.client = Client.server(
+      typeof baseUrl === "string" && baseUrl.length > 0 ? baseUrl : resolveStoreUrl(),
+    );
   }
 
   private async send(request: QueryRequest): Promise<unknown> {

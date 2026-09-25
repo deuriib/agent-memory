@@ -130,6 +130,47 @@ export function decayedImportance(importance: number, createdAt: string, nowMs: 
 }
 
 /**
+ * Tolerant `createdAt` normalizer for the TTL expiry decision (DAT-004).
+ *
+ * Producer-type reality: Memory rows carry ISO-8601 strings (`new
+ * Date().toISOString()`), while Note rows carry epoch-milliseconds numbers
+ * (`Date.now()`) that read back as digit strings via `readString`
+ * (`src/store.ts`). `Date.parse` alone returns `NaN` for digit strings, which
+ * made TTL silently never apply to the entire Note PII store
+ * (fail-toward-keep on every row, with no `ttl` signal emitted).
+ *
+ * Accepted shapes (everything else -> `undefined`):
+ *   - finite `number` / `bigint`          -> epoch-ms as-is
+ *   - all-digit `string` (optional `-`)   -> epoch-ms (Note read-back shape)
+ *   - any other non-empty `string`        -> `Date.parse` (ISO Memory shape)
+ *
+ * Declared fail policy (SPEC-005 §4.2, unchanged): garbage / absent /
+ * non-finite timestamps read as `undefined` and the caller KEEPS the row
+ * (fail-toward-keep — hiding wrongly is reversible, deleting is not).
+ * Pure input->output; never logs values.
+ */
+export function parseCreatedAtMs(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === "bigint") {
+    const asNumber = Number(value);
+    return Number.isFinite(asNumber) ? asNumber : undefined;
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (text === "") return undefined;
+    if (/^-?\d+$/.test(text)) {
+      const epochMs = Number(text);
+      return Number.isFinite(epochMs) ? epochMs : undefined;
+    }
+    const parsed = Date.parse(text);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Drop TTL-expired rows (REQ-P1-1 corte A), preserving input order.
  *
  * TTL knob is canonical-first: `BRAINY_TTL_DAYS`, falling back to the legacy
@@ -138,8 +179,11 @@ export function decayedImportance(importance: number, createdAt: string, nowMs: 
  * A row expires only when ageDays is STRICTLY GREATER than the TTL — a row
  * exactly at the boundary survives (never delete on the fence). Unparseable
  * createdAt -> NOT expired (fail toward keeping data: hiding wrongly is
- * reversible, deleting is not). Pure input->output; the env is re-read per
- * call so tests control the knob.
+ * reversible, deleting is not). Timestamp shapes are normalized by
+ * `parseCreatedAtMs` (epoch-ms numbers/digit-strings AND ISO strings), so
+ * Note rows (epoch-ms producer) and Memory rows (ISO producer) expire on the
+ * same rule without migrating stored rows. Pure input->output; the env is
+ * re-read per call so tests control the knob.
  */
 export function filterExpired<T extends { createdAt: string }>(
   rows: readonly T[],
@@ -149,8 +193,8 @@ export function filterExpired<T extends { createdAt: string }>(
   if (ttlDays === undefined) return [...rows];
   const kept: T[] = [];
   for (const row of rows) {
-    const created = Date.parse(row.createdAt);
-    if (!Number.isFinite(created)) {
+    const created = parseCreatedAtMs(row.createdAt);
+    if (created === undefined) {
       kept.push(row);
       continue;
     }

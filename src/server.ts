@@ -20,6 +20,7 @@ import { z } from "zod";
 import { isBearerAuthorized, secretFromEnv } from "./auth.js";
 import { buildDigestLines } from "./digest.js";
 import { failureSignal, logSafeNote } from "./errors.js";
+import { filterExpired } from "./lifecycle.js";
 import { bm25Search, hybridSearch } from "./search.js";
 import { createDefaultStore, type MemoryStore } from "./store.js";
 
@@ -544,20 +545,33 @@ async function routeRequest(
     const project = decodeSegment(path.slice("/v1/context/".length));
     const query = parseOr400(contextQuerySchema, queryRecord(url));
     const limit = query.limit ?? DEFAULT_LIMIT;
-    const notes = typeof store.listNotes === "function" ? await store.listNotes({ project, limit }) : [];
+    const nowMs = Date.now();
+    const signals: string[] = [];
+    const listed = typeof store.listNotes === "function" ? await store.listNotes({ project, limit }) : [];
+    // DAT-003/DAT-004 (REQ-BRAINY-LEG-03): SPEC-005 §4.3 assigns
+    // `filterExpired` to this route — expired notes are hidden from context
+    // assembly (never deleted here). Epoch-ms Note timestamps expire on the
+    // same rule as ISO Memory rows via `parseCreatedAtMs` (no row migration).
+    const notes = filterExpired(listed, nowMs);
     let memories: unknown[] = [];
     try {
       memories = await store.searchByText({ q: "*", project, k: limit });
-    } catch {
+    } catch (err) {
+      // RL-001: LOUD degradation — the one route that failed silently now
+      // mirrors every sibling (`text: <failure>` signal, cf. bm25Search).
       memories = [];
+      signals.push(`text: ${failureSignal(err)}`);
     }
+    const memoriesKept = memories.filter((memory) => !isExpiredContextRow(memory, nowMs));
+    const hidden = listed.length - notes.length + (memories.length - memoriesKept.length);
+    if (hidden > 0) signals.push(`ttl: hidden ${hidden} expired rows`);
 
     const graph = {
       project,
       notesCount: notes.length,
-      memoriesCount: memories.length,
+      memoriesCount: memoriesKept.length,
     };
-    sendJson(res, 200, { project, notes, memories, graph });
+    sendJson(res, 200, { project, notes, memories: memoriesKept, graph, signals });
     return 200;
   }
 
@@ -930,6 +944,25 @@ function parsePort(raw: string | undefined): number {
     throw new Error("Port must be an integer between 1 and 65535");
   }
   return value;
+}
+
+/** Narrow structural check for untyped context rows (cast-free). */
+function isContextRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * TTL-expiry predicate for the untyped `memories` array on the context route
+ * (DAT-003 lane). Non-record rows and rows without a parseable `createdAt`
+ * are KEPT — the declared fail-toward-keep policy for unparseable timestamps
+ * (SPEC-005 §4.2, same rule `filterExpired` applies to typed rows). TTL OFF
+ * (env absent/invalid) keeps every row. Pure; never logs values.
+ */
+function isExpiredContextRow(value: unknown, nowMs: number): boolean {
+  if (!isContextRecord(value)) return false;
+  const createdAt = value["createdAt"];
+  if (typeof createdAt !== "string") return false;
+  return filterExpired([{ createdAt }], nowMs).length === 0;
 }
 
 /** Non-empty env read: unset or empty -> undefined. */
