@@ -3,6 +3,53 @@
 All notable changes to this project will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [v1.0.0] — 2026-09-25 / [brainy v1]
+
+### Changed / BREAKING CHANGE
+
+- **Atomic Product Rename to Brainy (SPEC-001, SPEC-002, SPEC-003 / ADR-0002):**
+  - **Package Manifest:** `package.json` renamed to `"name": "brainy"`, description updated to `"Segundo cerebro aumentado con agentes (CODE/PARA sobre HelixDB unificado)"`, version bumped to `1.0.0`.
+  - **HelixDB Project:** `helix.toml` project identifier updated to `name = "brainy"`, retaining persistent storage (`storage = "disk"`) and additive `[local.slot2]` configuration.
+  - **Control Plane CLI:** Canonical CLI authored at `bin/brainy.mjs` (Node $\ge 20$ ESM, zero external dependencies). Legacy `bin/agent-memory.mjs` converted to a 1-version backward compatibility shim.
+  - **Environment Variables:** Canonical primaries transitioned to `BRAINY_*` (`BRAINY_URL`, `BRAINY_PORT`, `BRAINY_HOST`, `BRAINY_SECRET`, `BRAINY_PROJECT`, `BRAINY_TTL_DAYS`, `BRAINY_EMBED_DIM`). Legacy `AGENT_MEMORY_*` variables remain supported as fallbacks during the deprecation window.
+  - **Model Context Protocol (MCP):** Server renamed to `McpServer({ name: "brainy", version: "1.0.0" })` exposing 4 native second-brain tools (`brainy_search`, `brainy_capture`, `brainy_link`, `brainy_reality_check`).
+  - **Plugin Manifests:** `plugin.json` and `mcp_config.json` updated to `brainy`.
+
+- **1-Version Backward Compatibility Window & Deprecation Warnings:**
+  - **CLI Shim:** Executing `bin/agent-memory.mjs` emits a diagnostic warning on stderr: `[brainy] deprecation: 'agent-memory' is deprecated and will be removed in next major version; use 'brainy'`, then seamlessly delegates commands and exit codes to `bin/brainy.mjs`.
+  - **REST Route Interceptor:** Inbound requests to legacy `/memory/*` endpoints return the HTTP response header `X-Deprecated: use /v1/*` while routing transparently to corresponding `/v1/*` handlers.
+  - **Environment Variable Fallback:** When a `BRAINY_*` primary is unset and the legacy `AGENT_MEMORY_*` equivalent is present, Brainy falls back with a single stderr notification.
+  - **Legacy MCP Tools:** Retains 11 legacy `memory_*` aliases and 6 `memory_todo_*` tools delegating to underlying store methods.
+
+- **Sunset Milestone Announcement:**
+  - The 1-version backward compatibility window will expire at the next major release (**v2.0.0**).
+  - In v2.0.0, the `bin/agent-memory.mjs` shim, `AGENT_MEMORY_*` environment fallbacks, `/memory/*` REST routes, and legacy `memory_*` MCP tool names will be permanently removed.
+
+- **Transparent SQLite to HelixDB Migration (`src/compat/agentmemory.ts`):**
+  - Provides idempotent, batch migration from legacy SQLite `agent_memory.db` to unified HelixDB nodes and typed edges according to PRD §7.2:
+    - `memories.statement` $\to$ `Memory.statement`
+    - `memories.type` $\to$ `Memory.memory_type`
+    - `objects.name` $\to$ `Resource.name`
+    - `contexts.name` $\to$ `Context.name`
+    - `links.about` $\to$ `E::ABOUT`
+    - `links.context` $\to$ `E::APPLIES_TO`
+  - Route `POST /v1/memory` accepts legacy payload structures, mapping `statement` $\to$ `content` with deduplication protection.
+
+- **Security & Secret Posture (`BRAINY_SECRET`):**
+  - `BRAINY_SECRET` and legacy `AGENT_MEMORY_SECRET` are read from the environment or vault only; tokens are NEVER logged, serialized, or emitted in error responses.
+  - Constant-time verification enforced using `crypto.timingSafeEqual`.
+  - Doctor probe credential isolation: `bin/brainy.mjs doctor` executes in sequence `C1 helix-healthz → C3 ports → C2 rest-health → C4 secret-presence → C5 storage-data-dir`. The C2 REST probe NEVER sends an `Authorization` header to foreign listeners (proven port ownership required).
+  - All public documentation and examples adhere strictly to placeholder hygiene (`BRAINY_SECRET=***`, `$BRAINY_SECRET`).
+
+- **Data Privacy & Ley 172-13 Invariants:**
+  - Formal declaration of purpose limitation: data stored exclusively for local agent context and developer recall.
+  - Default 365-day TTL (`BRAINY_TTL_DAYS`) with automatic expired record exclusion.
+  - Permanent right to erasure supported via `brainy forget` and `DELETE /v1/notes/:id`.
+  - Built-in capture hooks strictly omit raw user prompt text and credentials.
+
+- **Non-Negotiable Never-Kill Invariant (INV-003):**
+  - Upstream ports **3111, 3112, and 3113** are never killed or signaled under any circumstance. Port collisions fail closed with exit 1 and actionable rerouting advice to use port 3151 or slot derivation.
+
 ## [v0.9.0] — 2026-09-25
 
 ### Added

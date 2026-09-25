@@ -22,7 +22,7 @@ Exactly the README Quick start:
 helix start dev --disk --persist   # durable default: persists storage mode into helix.toml
 
 npm install
-npm run bootstrap               # create the 7 indexes, poll until ready
+npm run bootstrap               # create the 18 indexes, poll until ready
 npm run dev                     # REST server on http://127.0.0.1:3111
 ```
 
@@ -32,33 +32,33 @@ has it), so a plain `helix start dev` keeps data across restarts. A project
 whose `helix.toml` lacks the key runs `storage: memory` and **restarts wipe
 it**.
 
-### When port 3111 is held by the real upstream `agentmemory`
+### When port 3111 is held by an upstream service
 
-Ports `3111/3112/3113` may belong to the real upstream `agentmemory` (verified
+Ports `3111/3112/3113` may belong to an existing upstream service (verified
 live on this machine). Start ours on `3151` and point every HTTP client at it:
 
 ```bash
-AGENT_MEMORY_PORT=3151 npm run dev
-AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify
+BRAINY_PORT=3151 npm run dev
+BRAINY_URL=http://127.0.0.1:3151 npm run verify
 ```
 
 The REST server prints this exact reroute hint on `EADDRINUSE`. The MCP server
 needs no port change (stdio; it talks to HelixDB directly via `HELIX_URL`).
 
-**Never kill or displace a running upstream `agentmemory` instance** — if our
+**Never kill or displace a running upstream instance** — if our
 port is taken, *we* reroute, never them. This coexistence rule is permanent.
 
 ## Verification bar (run before every PR)
 
 ```bash
 npm run typecheck                                 # tsc --noEmit — zero errors
-AGENT_MEMORY_URL=http://127.0.0.1:3151 npm run verify   # E2E against our server
+BRAINY_URL=http://127.0.0.1:3151 npm run verify   # E2E against our server
 npx tsx scripts/verify-injection.ts               # injection assertions
 ```
 
 `npm run verify` targets the rerouted URL above so it exercises **our** server,
-not the upstream instance that may hold `3111` (its identity guard aborts
-read-only before any write against a non-agent-memory target).
+not an upstream instance that may hold `3111` (its identity guard aborts
+read-only before any write against a non-Brainy target).
 
 Full `package.json` script inventory: `typecheck`, `verify` (102-assertion
 E2E), `verify-env` (env boot, hook zero-output, `EADDRINUSE` reroute hint,

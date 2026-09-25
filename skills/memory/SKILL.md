@@ -71,6 +71,6 @@ Searches degrade instead of throwing: a dead index returns empty `results`
 plus a `signals` list, never a hard error. Recap/handoff degrade the same
 way (partial text, `signals` populated, never a 500). If every call fails,
 run `memory_health` — the memory service is likely not running
-(`npx tsx src/server.ts` in the agent-memory repo, or check
-`AGENT_MEMORY_URL`; default port 3111, ours runs on 3151 when the upstream
-`agentmemory` holds it — never kill the upstream instance).
+(`npx tsx src/server.ts` in the Brainy repo, or check
+`BRAINY_URL`; default port 3111, ours runs on 3151 when an upstream
+service holds it — never kill the upstream instance).

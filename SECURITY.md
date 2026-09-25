@@ -4,8 +4,8 @@
 
 | Version | Supported |
 |---|---|
-| `v0.3.x` (current line) | ✅ yes |
-| `< v0.2` | ❌ no |
+| `v1.x` (current line) | ✅ yes |
+| `< v1.0` | ❌ no |
 
 Only the current release line is supported. Older versions receive no security
 fixes — upgrade first, then re-check whether the issue still reproduces.
@@ -40,31 +40,31 @@ target:
 - the **OpenCode plugin** (auto-recall, context injection, and the plugin
   hooks/options it reads from `opencode.json`).
 
-Not covered here (report upstream instead): the `rohitg00/agentmemory` project
-itself, the HelixDB engine, and third-party dependencies — unless you can show
+Not covered here (report upstream instead): upstream third-party projects,
+the HelixDB engine, and third-party dependencies — unless you can show
 a concrete impact on this project. We welcome reports about those impacts.
 
 ## Secrets policy
 
-- The bearer secret comes from the environment: **`AGENT_MEMORY_SECRET`**.
-  The REST and MCP servers read the **environment only**. The one exception
-  is the **OpenCode plugin**, which also accepts a `secret` plugin option;
-  for the plugin the precedence is `secret` option (from `opencode.json`) →
-  `AGENT_MEMORY_SECRET`. **Prefer the environment variable**; if you use the
-  `secret` option, treat `opencode.json` as a credential-bearing file and
-  never commit a real secret in it.
+- The bearer secret comes from the environment: **`BRAINY_SECRET`** (with
+  deprecated fallback to `AGENT_MEMORY_SECRET`). The REST and MCP servers read the
+  **environment only**. The one exception is the **OpenCode plugin**, which also
+  accepts a `secret` plugin option; for the plugin the precedence is `secret`
+  option (from `opencode.json`) → `BRAINY_SECRET` → `AGENT_MEMORY_SECRET`.
+  **Prefer the environment variable**; if you use the `secret` option, treat
+  `opencode.json` as a credential-bearing file and never commit a real secret in it.
 - **Guard-open is a documented default, not an accident:** with
-  `AGENT_MEMORY_SECRET` unset the server runs
+  `BRAINY_SECRET` unset the server runs
   **unauthenticated** — every route except `livez` answers without a bearer.
-  That is the dev posture, matching upstream's open-localhost default; the
+  That is the dev posture, matching the open-localhost default; the
   compensating control is the default bind address **`127.0.0.1`**. An open
   guard is acceptable only while the server stays loopback-bound.
-- **`AGENT_MEMORY_HOST` removes that control silently:** binding anywhere but
-  loopback (e.g. `AGENT_MEMORY_HOST=0.0.0.0`) while the secret is unset
+- **`BRAINY_HOST` removes that control silently:** binding anywhere but
+  loopback (e.g. `BRAINY_HOST=0.0.0.0`) while the secret is unset
   exposes an unauthenticated server on every interface, and the boot log still
   only shows `auth: open` — nothing warns that the loopback protection is
   gone. Never combine an open guard with a non-loopback host: set a non-empty
-  `AGENT_MEMORY_SECRET` first.
+  `BRAINY_SECRET` first.
 - **Never** commit a secret, place one in code, config, docs, examples, logs,
   events, or issue/PR text, or echo/print it.
 - The guarantees are documented in the README

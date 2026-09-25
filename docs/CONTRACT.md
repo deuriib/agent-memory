@@ -1,4 +1,4 @@
-# agent-memory — v1.6 Frozen Contract
+# Brainy — v1 Frozen Contract
 
 Source of truth for both build lanes. Reference-only packet: implement against this,
 report deviations, do not rename exports or routes.
@@ -6,6 +6,15 @@ report deviations, do not rename exports or routes.
 Status: every construct in §1 and §3 was empirically verified against the running
 instance at `http://localhost:6969` (see `scripts/probe.ts`, `scripts/probe2.ts`,
 `scripts/probe3.ts`).
+
+**v1.7 amendment (2026-09-25, SPEC-001/002/003 Brainy v1 initiative):** Project identity
+rebranded to **Brainy** (CODE/PARA on unified HelixDB). Introduces PARA entities (`Note`,
+`Project`, `Area`, `Resource`, `Archive` + 7 typed edges), 1536-dim vector embeddings
+(`note_embedding`), canonical `/v1/*` routes (`POST /v1/notes`, `GET /v1/notes/:id`,
+`POST /v1/search`, `POST /v1/link`, `GET /v1/context/:project`), and 4 native MCP tools
+(`brainy_search`, `brainy_capture`, `brainy_link`, `brainy_reality_check`). Retains legacy
+`Memory`, `Session`, `Concept`, and `Todo` surfaces under 1-version backward compatibility
+window (§6 Appendix).
 
 **v1.1 amendment (2026-09-23, P1+P2.1 lane):** `Memory.dedupKey` + index #8,
 `findMemoryByDedupKey`/`listExpired`/`listProjects` queries, `remember` auto
@@ -558,10 +567,9 @@ host payload as for every event.
 > store anything. `3111` is the REST service port.
 
 **Port conflict (environment fact, verified):** `3111/3112/3113` may already be held
-by the real upstream `agentmemory` (npx → `node …/bin/agentmemory` → `iii`). This
-repo keeps `3111` as its default for drop-in parity, but when upstream is running,
-start ours elsewhere (`AGENT_MEMORY_PORT=3151`) and point clients at it
-(`AGENT_MEMORY_URL=http://127.0.0.1:3151`). Never kill the user's upstream instance.
+by the upstream service. This repo keeps `3111` as its default for drop-in parity,
+but when upstream is running, start ours elsewhere (`BRAINY_PORT=3151`) and point
+clients at it (`BRAINY_URL=http://127.0.0.1:3151`). Never kill the user's upstream instance.
 
 Hook privacy + project rules (verified): content is only ever one of the
 allowlisted shapes above (`agent session started`, `tool used: <tool>`,
@@ -690,3 +698,77 @@ retention until manually purged (declared — DAT-003).
 `scripts/verify-injection.ts` (**73**), `scripts/verify-env.ts` (**21**) green.
 `scripts/probe3.ts` GREEN. `scripts/purge.ts --dry-run` + usage guard exit 2.
 Demo green.
+
+---
+
+## 6. Backwards Compatibility Appendix (Frozen Wire Contract)
+
+This appendix defines the frozen compatibility wire contract maintained throughout Brainy v1.x under the 1-version deprecation window. Sunset and removal of this surface is scheduled for v2.0.0.
+
+### 6.1 Legacy REST `/memory/*` Wire Compatibility
+
+Inbound requests to `/memory/*` endpoints are intercepted, serviced, and returned with the deprecation header:
+```http
+X-Deprecated: use /v1/*
+```
+
+1. **`POST /v1/memory` / `POST /memory/remember`:**
+   Accepts legacy memory payloads:
+   ```json
+   {
+     "statement": "string (mapped to content)",
+     "sessionId": "string (optional)",
+     "origin": "string (optional)",
+     "importance": 0.0,
+     "concepts": ["string"]
+   }
+   ```
+   Returns `201 Created` with `{ memoryId, id, content, ... }` ensuring wire compatibility with legacy agent extensions.
+
+2. **Route Mappings:**
+   - `POST /memory/remember` $\to$ mapped to note store with legacy response shape
+   - `POST /memory/search` $\to$ BM25 text search
+   - `POST /memory/smart-search` $\to$ hybrid RRF retrieval
+   - `GET /memory/livez` $\to$ unauthenticated readiness probe (HTTP 200)
+   - `POST /memory/todos`, `GET /memory/todos`, `GET /memory/frontier` $\to$ corresponding todo and frontier handlers
+
+### 6.2 Legacy MCP Tools Contract (11 Memory + 6 Todo Tools)
+
+The stdio MCP server registers the following legacy tool signatures, delegating to `HelixStore`:
+- `memory_save`: `{ content: string, sessionId?: string, origin?: string, importance?: number, concepts?: string[] }`
+- `memory_search`: `{ query: string, project?: string, limit?: number }`
+- `memory_smart_search`: `{ query: string, project?: string, limit?: number, concepts?: string[] }`
+- `memory_forget`: `{ memoryId: string }`
+- `memory_health`: `{ project?: string }`
+- `memory_sessions`: `{ project?: string, limit?: number }`
+- `memory_session_memories`: `{ sessionId: string, project?: string, limit?: number }`
+- `memory_recap`: `{ sessionId: string, project?: string }`
+- `memory_handoff`: `{ sessionId: string, project?: string }`
+- `memory_lesson`: `{ sessionId: string, project?: string }`
+- `memory_delete`: `{ memoryId: string, reason: string }`
+- `memory_todo_create`, `memory_todo_list`, `memory_todo_get`, `memory_todo_update`, `memory_todo_delete`, `memory_frontier`
+
+### 6.3 SQLite to HelixDB Data Migration (`brainy.compat.agentmemory`)
+
+The module `src/compat/agentmemory.ts` provides batch migration from legacy SQLite schemas to HelixDB graph nodes and edges per PRD §7.2:
+- `memories.statement` $\to$ `Memory.statement`
+- `memories.type` $\to$ `Memory.memory_type`
+- `objects.name` $\to$ `Resource.name`
+- `contexts.name` $\to$ `Context.name`
+- `links.about` $\to$ edge `E::ABOUT`
+- `links.context` $\to$ edge `E::APPLIES_TO`
+
+Migration operates idempotently using write-time deduplication (`dedupKey = sha256(project + "\n" + normalize(content))`).
+
+### 6.4 Environment Variables Backward Compatibility
+
+| Canonical Primary (`BRAINY_*`) | Deprecated Alias (`AGENT_MEMORY_*`) | Behavior on Read |
+|---|---|---|
+| `BRAINY_URL` | `AGENT_MEMORY_URL` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_PORT` | `AGENT_MEMORY_PORT` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_HOST` | `AGENT_MEMORY_HOST` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_SECRET` | `AGENT_MEMORY_SECRET` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_PROJECT` | `AGENT_MEMORY_PROJECT` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_TTL_DAYS` | `AGENT_MEMORY_TTL_DAYS` | Resolves canonical primary; falls back to alias with stderr warning |
+| `BRAINY_EMBED_DIM` | `AGENT_MEMORY_EMBED_DIM` | Resolves canonical primary; falls back to alias (default: 1536) |
+| `HELIX_URL` | `HELIX_URL` | HelixDB engine endpoint |

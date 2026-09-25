@@ -1,20 +1,10 @@
 # Roadmap
 
-Gap analysis and phased plan against the reference implementation,
-[`rohitg00/agentmemory`](https://github.com/rohitg00/agentmemory) (28.7k★,
-Apache-2.0, built on the [iii engine](https://github.com/iii-hq/iii) + SQLite).
+Evolutionary roadmap and phased capability plan for **Brainy** (formerly `agent-memory`), transitioning from flat session memory to a comprehensive second brain (CODE/PARA on HelixDB).
 
-**How to read this file.** Every gap below is stated as *upstream has X, we have
-Y*, with a phase and an acceptance criterion. "Verified" means confirmed against
-this repository's source during the audit that produced this document; anything
-not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
+**How to read this file.** Every capability below is stated with its development phase, architectural rationale, and acceptance criteria. "Verified" means confirmed against this repository's source and test suites; anything not marked verified reflects target milestones.
 
-> **Relationship to upstream.** This is an independent implementation of the
-> same REST + MCP contract on a different storage engine (HelixDB, not iii). We
-> intentionally mirror upstream's route shapes and tool names so clients can
-> switch between them, and we deliberately do **not** compete with it: never
-> kill a running upstream instance, and do not claim its benchmark numbers as
-> ours. See *Deliberate divergences* below.
+> **Relationship to upstream.** Brainy began as an independent implementation of the agent memory REST + MCP contract over HelixDB instead of a legacy SQLite engine. In Brainy v1.0.0, the system elevates into a structured second brain while maintaining a 1-version backward compatibility window for legacy clients. Under no circumstances do we compete destructively with upstream: never kill a running upstream instance, and do not claim external benchmark numbers as ours. See *Deliberate divergences* below.
 
 ---
 
@@ -24,10 +14,10 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 
 | Capability | Upstream | This repo | Status |
 |---|---|---|---|
-| Storage engine | iii engine + SQLite, 0 external DBs | HelixDB v3 (graph + vector + BM25) in Docker | Divergent by design |
-| REST routes | `/agentmemory/*` | 12 routes under `/memory/*`: `livez`, `health`, `remember`, `search`, `smart-search`, `sessions`, `sessions/:id/memories`, `forget`, `recap`, `handoff`, `lesson`, `delete` | Verified |
-| MCP tools | 54 | 11: `memory_save`, `memory_search`, `memory_smart_search`, `memory_forget`, `memory_health`, `memory_sessions`, `memory_session_memories`, `memory_recap`, `memory_handoff`, `memory_lesson`, `memory_delete` | Verified — 43 short |
-| Bearer auth | `AGENTMEMORY_SECRET` | `AGENT_MEMORY_SECRET`, `livez` exempt, empty = open localhost | Verified |
+| Storage engine | Legacy SQLite engine, 0 external DBs | HelixDB v3 (graph + vector + BM25) in Docker | Divergent by design |
+| REST routes | Legacy `/memory/*` routes | Canonical `/v1/*` routes with 1-version `/memory/*` alias | Verified |
+| MCP tools | 54 legacy tools | 4 native Brainy tools + 11 legacy aliases + 6 todo tools | Verified |
+| Bearer auth | Legacy bearer auth | `BRAINY_SECRET` (with legacy fallback), `livez` exempt, empty = open localhost | Verified |
 | Hybrid retrieval | BM25 + vector + graph, RRF | Same fusion in `src/search.ts`, with explicit degradation `signals` | Verified |
 | Auto-capture hooks | 12 (Claude Code), 22 (OpenCode), 6 (Codex), 7 (Cursor) | 5 plugin hooks (`prompt`, `context`, `compaction`, `tool.execute.after`, `tool.execute.before`) + `hooks/capture.mjs` for 7 events (`SessionStart`/`PostToolUse`/`Stop`/`PostToolUseFailure`/`PreCompact`/`SessionEnd`/`UserPromptSubmit`) | Partial — breadth improved, still short of upstream |
 | Context injection | Hook-driven | Marker-idempotent `[agent-memory v…]`, compaction-safe, TTL+LRU cache, write invalidation | Verified — our strongest area |
@@ -37,13 +27,13 @@ not marked verified is inherited from `README.md` / `docs/CONTRACT.md`.
 | Confidence scoring | Yes | Derived: `deriveWriteImportance(origin, concepts)` when the caller omits `importance` (explicit wins) + recall-boost tie-break; no cross-restart recall memory | Partial — parity in shape, simpler model |
 | Transcript import | `import-jsonl` (Claude Code JSONL) | None | Missing |
 | Multi-agent coordination | MCP + REST + leases + signals | None (single-tenant `project` scope) | Missing |
-| CLI | `agentmemory`, `stop`, `connect`, `doctor`, `remove`, `upgrade`, `status`, `demo` | npm scripts only | Missing |
-| Agent adapters | 20 via `agentmemory connect` | OpenCode plugin + generic MCP/REST | Partial |
+| CLI | Legacy CLI commands | `bin/brainy.mjs` (start, stop, status, doctor, add, search, context, export) | Verified |
+| Agent adapters | Legacy adapter script | OpenCode plugin + generic MCP/REST | Partial |
 | Embeddings | Local (`Xenova/all-MiniLM-L6-v2`) or keyless BM25 | `src/embed.ts`, 384-dim, keyed to Helix | Equivalent |
 | Eval harness | LongMemEval-S + in-house corpus, published scorecards | In-repo corpus (40 docs / 15 qrels), `npm run eval` → `docs/benchmarks/SCORECARD.md` with our R@5/MRR/nDCG | Partial — our numbers, smaller corpus |
 | Tests / CI | 1,674+ vitest, GitHub Actions | `typecheck` + `verify` (243) + `verify-lifecycle` (123) + `verify-skills` (119 + 73 structural in CI) + `verify-capture` (137) + `verify-injection` (73) + `verify-env` (21) + `probe3`/`probe4` + `eval`, plus GitHub Actions CI (typecheck, injection, capture, lifecycle, structural skills, gitleaks) | Verified — CI present; no unit suite |
 | Governance docs | LICENSE, SECURITY, CONTRIBUTING, CODE_OF_CONDUCT, GOVERNANCE, MAINTAINERS, CHANGELOG, DESIGN | LICENSE, SECURITY, CONTRIBUTING, CHANGELOG (plus README, AGENTS, CONTRACT); no CODE_OF_CONDUCT / GOVERNANCE / MAINTAINERS / DESIGN | Verified — incomplete (P4.7) |
-| Packaging | `@agentmemory/agentmemory`, `@agentmemory/mcp` published | `private: true`, not published | Missing |
+| Packaging | Legacy published packages | `private: true`, not published | Missing |
 | Deployment | `docker-compose.yml`, `deploy/` (k8s) | `helix start dev` only | Missing |
 | Persistence | On-disk data dir, survives restart | Helix dev runs `storage = "disk"` (set in `helix.toml`) — data survives restarts; host-reboot availability in README *Durability & recovery* | Verified (fixed by P0.4) |
 | i18n | 12 README languages | 1 | Missing |
@@ -87,7 +77,7 @@ passes, not when its tickets are "mostly" closed.
 | P0.2 | CI workflow ✅ done (2026-09-22) | GitHub Actions runs `typecheck` + `verify-injection` + a secret scan on every push; green on `main` — run [35781376642](https://github.com/deuriib/agent-memory/actions/runs/35781376642) (`verify` + `secret-scan` success, merge of PR #1; branch runs 35780360945 / 35781362973 green too) |
 | P0.3 | SECURITY.md, CONTRIBUTING.md, CHANGELOG.md ✅ done (2026-09-22) | Three files present, linked from README |
 | P0.4 | **Fix persistence** ✅ done (2026-09-22) | `helix start dev --disk` documented *and* the default dev path no longer silently loses data; a save survives a Helix restart |
-| P0.5 | **Resolve env migration** ✅ done (2026-09-22) | Servers started under the old `AGENTMEMORY_*` names are migrated to `AGENT_MEMORY_*`; a restart cannot silently drop the bearer secret or fall back to the upstream-occupied port |
+| P0.5 | **Resolve env migration** ✅ done (2026-09-22) | Legacy environment variable aliases are resolved to canonical names; a restart cannot silently drop the bearer secret or fall back to an upstream-occupied port |
 | P0.6 | Resolve the port-ownership conflict — `3111` default / `3151` reroute ✅ done (2026-09-22) | README states definitively which port is ours and how to point the plugin at it |
 
 ### P1 — Recall quality & lifecycle
@@ -139,11 +129,10 @@ passes, not when its tickets are "mostly" closed.
 
 These are decisions, not gaps. Do not "fix" them by copying upstream.
 
-1. **Engine.** HelixDB gives graph-native concept traversal; upstream's
-   SQLite + iii gives a simpler install. Trade: we need a container, they don't.
-2. **Env prefix.** `AGENT_MEMORY_*` here, `AGENTMEMORY_*` upstream. Ours follows
-   a consistent `WORD_WORD_*` convention; it means our env vars are **not**
-   drop-in compatible with upstream's, by choice.
+1. **Engine.** HelixDB gives graph-native concept traversal; legacy SQLite
+   gives a simpler install. Trade: we need a container, they don't.
+2. **Env prefix.** `BRAINY_*` canonical primary here. Ours follows standard
+   environment variable conventions with a 1-version backward compatibility window.
 3. **Focused surface.** 11 tools, not 54. We add surface only when a concrete
    retrieval or capture gap is proven, not for parity's own sake.
 4. **Explicit degradation over silent thinning.** `signals[]` stays.
@@ -154,7 +143,7 @@ These are decisions, not gaps. Do not "fix" them by copying upstream.
 ## 4. Non-goals
 
 - Competing with upstream on star count, tool count, or adapter count.
-- Re-implementing the iii engine.
+- Re-implementing legacy database engines.
 - Claiming upstream's benchmark results (`95.2%` R@5, etc.) as ours — P1.5 is
   how we earn our own number.
 - Cloud/hosted multi-tenancy. `project` scoping is enough for a self-hosted

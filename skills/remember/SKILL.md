@@ -26,11 +26,11 @@ lesson 0.75 / hook 0.55 / else 0.5, plus 0.025 per concept, capped at 8 concepts
 
 ## Example
 
-Base URL: `http://127.0.0.1:3111` (the default). When the upstream
-`agentmemory` (iii) holds 3111, ours runs on 3151 — export
-`AGENT_MEMORY_URL=http://127.0.0.1:3151` and use that base below. Never kill
-the upstream instance. If `AGENT_MEMORY_SECRET` is set, add
-`-H "authorization: Bearer $AGENT_MEMORY_SECRET"`.
+Base URL: `http://127.0.0.1:3111` (the default). When an upstream
+service holds 3111, ours runs on 3151 — export
+`BRAINY_URL=http://127.0.0.1:3151` and use that base below. Never kill
+the upstream instance. If `BRAINY_SECRET` is set, add
+`-H "authorization: Bearer $BRAINY_SECRET"`.
 
 ```bash
 curl -sS -X POST http://127.0.0.1:3111/memory/remember \
