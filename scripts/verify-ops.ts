@@ -1,10 +1,12 @@
 /**
- * P4 ops harness — SPEC-P4-OPS AC-01..09,A..F -> A..L + C1 header proof
+ * Brainy ops harness — SPEC-003 REQ-BRAINY-OPS-01..06 + NFR-BRAINY-OPS-01.
  * House style of verify-env.ts: check(), counters, VERIFY PASS/FAIL.
  * npx tsx scripts/verify-ops.ts  (npm run verify-ops)
+ * Primary binary under test: bin/brainy.mjs; bin/agent-memory.mjs is a
+ * 1-version shim (deprecation on stderr, same exit codes).
  * NEVER bind 3111/3112/3113/3151/6969; NEVER restart helix dev.
  * Live-slot checks gated -> SKIP/DEFER not FAIL. Synthetic listeners cleaned.
- * Sections A..L evidence column per SPEC §3; C1 header proof synthetic server.
+ * Sections A..M evidence column per SPEC §3; C1 header proof synthetic server.
  * Node >=20 ESM, node: builtins + fetch only, zero new deps (HARD).
  * Captures foreign-listener header proof for security C1 (no Authorization).
  */
@@ -12,12 +14,14 @@ import { randomUUID } from "node:crypto";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createServer, connect, type Server } from "node:net";
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, statSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, statSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { logSafeNote } from "../src/errors.js";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const BRAINY_BIN = "bin/brainy.mjs";
+const LEGACY_BIN = "bin/agent-memory.mjs";
 const HOST = "127.0.0.1";
 const TEST_SECRET = `synthetic-verify-ops-${randomUUID()}`;
 const TEST_CANARY = `canary-verify-ops-${randomUUID()}`;
@@ -67,14 +71,20 @@ function cleanEnv(extra: Record<string, string | undefined>): NodeJS.ProcessEnv 
   for (const [k, v] of Object.entries(extra)) { if (v === undefined) delete env[k]; else env[k] = v; } return env;
 }
 async function runCli(args: readonly string[], extraEnv: Record<string, string | undefined> = {}): Promise<{ code: number | null; out: string; err: string }> {
-  const s = spawnCapture("node", ["bin/agent-memory.mjs", ...args], cleanEnv(extraEnv));
+  const s = spawnCapture("node", [BRAINY_BIN, ...args], cleanEnv(extraEnv));
+  const code = await race(s.exited, 15_000);
+  if (code === undefined) { s.child.kill("SIGTERM"); await race(s.exited, 3_000); if (s.exitCode() === undefined) s.child.kill("SIGKILL"); }
+  await sleep(50); return { code: s.exitCode() ?? null, out: s.stdout(), err: s.stderr() };
+}
+async function runLegacy(args: readonly string[], extraEnv: Record<string, string | undefined> = {}): Promise<{ code: number | null; out: string; err: string }> {
+  const s = spawnCapture("node", [LEGACY_BIN, ...args], cleanEnv(extraEnv));
   const code = await race(s.exited, 15_000);
   if (code === undefined) { s.child.kill("SIGTERM"); await race(s.exited, 3_000); if (s.exitCode() === undefined) s.child.kill("SIGKILL"); }
   await sleep(50); return { code: s.exitCode() ?? null, out: s.stdout(), err: s.stderr() };
 }
 function derive(slot: number) { const rest = 3111 + 3 * (slot - 1); return { rest, r1: rest + 1, r2: rest + 2, helix: 6969 + (slot - 1), instance: slot === 1 ? "dev" : `slot${slot}` }; }
-function defaultDataDir(slot: number): string { return path.join(os.homedir(), ".local", "share", "agent-memory", String(slot)); }
-function defaultStatePath(slot: number): string { return path.join(os.homedir(), ".local", "share", "agent-memory", "state", `slot-${slot}.json`); }
+function defaultDataDir(slot: number): string { return path.join(os.homedir(), ".local", "share", "brainy", String(slot)); }
+function defaultStatePath(slot: number): string { return path.join(os.homedir(), ".local", "share", "brainy", "state", `slot-${slot}.json`); }
 /* ---- Sections A..L ---- */
 async function sectionA(): Promise<void> {
   section("A. CLI surface --help lists 4 subcommands, unknown flag -> exit 2");
@@ -90,6 +100,21 @@ async function sectionA(): Promise<void> {
   check("unknown prints usage on stderr", unknown.err.toLowerCase().includes("usage"), brief(unknown.err));
   const badFlag = await runCli(["status", "--slot", "1", "--unknown-flag"]);
   check("unknown flag -> exit 2", badFlag.code === 2, `code=${String(badFlag.code)}`);
+}
+async function sectionA2(): Promise<void> {
+  section("A2. legacy shim deprecation on stderr, same usage + exit codes as brainy");
+  const help = await runLegacy(["--help"]);
+  check("shim --help exits 0", help.code === 0, `code=${String(help.code)}`);
+  check("shim stdout carries brainy usage", help.out.includes("brainy add") && help.out.includes("doctor"), brief(help.out));
+  check("shim stderr deprecation line", help.err.includes("WARN deprecated use brainy"), brief(help.err));
+  const brainyHelp = await runCli(["--help"]);
+  check("shim usage identical to brainy usage", help.out === brainyHelp.out, "diverged");
+  const unknown = await runLegacy(["unknown-cmd"]);
+  check("shim unknown subcommand -> exit 2", unknown.code === 2, `code=${String(unknown.code)}`);
+  check("shim unknown also warns", unknown.err.includes("WARN deprecated use brainy"), brief(unknown.err));
+  const status = await runLegacy(["status", "--slot", "63"]);
+  const direct = await runCli(["status", "--slot", "63"]);
+  check("shim status exit mirrors brainy", status.code === direct.code, `shim=${String(status.code)} brainy=${String(direct.code)}`);
 }
 async function sectionB(): Promise<void> {
   section(`B. start pre-flight refusal on foreign occupant (slot ${SLOT_FOREIGN})`);
@@ -140,7 +165,7 @@ async function sectionD(): Promise<void> {
 }
 async function sectionE(): Promise<void> {
   section("E. doctor verdicts: healthy/helix-down/upstream/secret-missing/doctor-check-failed + precedence 5>4>3>1>0");
-  const binText = readFileSync(path.join(ROOT, "bin/agent-memory.mjs"), "utf8");
+  const binText = readFileSync(path.join(ROOT, BRAINY_BIN), "utf8");
   const tokens = ["healthy", "helix-down", "upstream-holds-port", "secret-missing", "doctor-check-failed"];
   for (const tok of tokens) check(`doctor token "${tok}" present`, binText.includes(tok), "missing");
   const order = ["secretMissing", "helixDown", "upstreamPort", "checkFailed"];
@@ -155,7 +180,7 @@ async function sectionE(): Promise<void> {
   check("doctor exit in closed set 0/1/3/4/5", [0, 1, 3, 4, 5].includes(doctor.code ?? -1) || doctor.code === 2, `code=${String(doctor.code)}`);
   if (doctor.code === 0) check("doctor healthy when slot1 up", true); else console.log(`  SKIP/DEFER E live-healthy: exit ${String(doctor.code)} — no exclusive window`);
   const secretEnv = { ...process.env }; delete secretEnv["AGENT_MEMORY_SECRET"];
-  const s2 = spawnCapture("node", ["bin/agent-memory.mjs", "doctor", "--slot", "1"], secretEnv);
+  const s2 = spawnCapture("node", [BRAINY_BIN, "doctor", "--slot", "1"], secretEnv);
   await race(s2.exited, 15_000); await sleep(50);
   const c2 = s2.stdout() + s2.stderr();
   check("doctor without secret: mentions secret-missing or FAIL C4", c2.includes("secret-missing") || c2.includes("C4"), brief(c2));
@@ -173,6 +198,20 @@ async function sectionF(): Promise<void> {
   let never3151 = true; for (let n = 1; n <= 20; n++) { const d = derive(n); if (d.rest === 3151 || d.helix === 3151) never3151 = false; }
   check("derivation never yields 3151 as REST/Helix (N=1..20)", never3151, "3151 found");
   const slot14 = derive(14); check("slot14 reserved includes 3151", slot14.r1 === 3151 || slot14.r2 === 3151, `got ${slot14.r1},${slot14.r2}`);
+  check("derive(1)=3111/6969", derive(1).rest === 3111 && derive(1).helix === 6969, JSON.stringify(derive(1)));
+  check("derive(2)=3114/6970", derive(2).rest === 3114 && derive(2).helix === 6970, JSON.stringify(derive(2)));
+  let formulaOk = true; let disjointOk = true;
+  for (let n = 1; n <= 20; n++) {
+    const d = derive(n);
+    if (d.rest !== 3111 + 3 * (n - 1) || d.helix !== 6969 + (n - 1) || d.r1 !== d.rest + 1 || d.r2 !== d.rest + 2) formulaOk = false;
+    if (n >= 2 && [d.rest, d.r1, d.r2, d.helix].some((p) => p === 3111 || p === 3112 || p === 3113 || p === 6969)) disjointOk = false;
+  }
+  check("slots 1..20 follow R(N)/H(N) formulas", formulaOk, "mismatch");
+  check("slots 2..20 quartets disjoint from {3111,3112,3113,6969}", disjointOk, "overlap");
+  const s20 = await runCli(["status", "--slot", "20"]);
+  check("status --slot 20 prints quartet rest=3168 helix=6988", (s20.out + s20.err).includes("rest=3168") && (s20.out + s20.err).includes("helix=6988"), brief(s20.out + s20.err));
+  const oor = await runCli(["status", "--slot", "30000"]);
+  check("--slot 30000 (out-of-range port) -> exit 2", oor.code === 2, `code=${String(oor.code)}`);
 }
 async function sectionG(): Promise<void> {
   section("G. data-dir precedence, state file outside data dir, mode 0600/0700, secret-free");
@@ -184,6 +223,12 @@ async function sectionG(): Promise<void> {
   const envDir = path.join(tmpBase, "env-data");
   const de = await runCli(["doctor", "--slot", String(slot)], { AGENT_MEMORY_DATA_DIR: envDir });
   check("AGENT_MEMORY_DATA_DIR env reflected", (de.out + de.err).includes(envDir) || (de.out + de.err).includes("data-dir"), brief(de.out + de.err));
+  check("AGENT_MEMORY_DATA_DIR emits WARN deprecated use BRAINY_DATA_DIR", (de.out + de.err).includes("WARN deprecated use BRAINY_DATA_DIR"), brief(de.out + de.err));
+  const brainyDir = path.join(tmpBase, "brainy-data");
+  const prec = await runCli(["status", "--slot", String(slot)], { BRAINY_DATA_DIR: brainyDir, AGENT_MEMORY_DATA_DIR: envDir });
+  const precCombined = prec.out + prec.err;
+  check("BRAINY_DATA_DIR wins over AGENT_MEMORY_DATA_DIR", precCombined.includes(brainyDir), brief(precCombined));
+  check("unused alias emits no warning when BRAINY_* wins", !precCombined.includes("WARN deprecated"), brief(precCombined));
   const defDir = defaultDataDir(slot); const statePath = defaultStatePath(slot);
   check("state file sibling of data dir (not inside)", !statePath.startsWith(defDir + path.sep), `${statePath} inside ${defDir}`);
   check("state path is .../state/slot-N.json", statePath.includes(`${path.sep}state${path.sep}slot-${slot}.json`), statePath);
@@ -222,7 +267,7 @@ async function sectionI(): Promise<void> {
   if (!bound) { check("I foreign listener bound", false, "could not bind"); return; }
   const cmds: Array<readonly string[]> = [["start", "--slot", String(SLOT_FOREIGN)], ["stop", "--slot", String(SLOT_FOREIGN)], ["status", "--slot", String(SLOT_FOREIGN)], ["doctor", "--slot", String(SLOT_FOREIGN)]];
   for (const args of cmds) { await runCli(args as string[]); check(`foreign survives after ${args[0]}`, server.listening, `died after ${args[0]}`); }
-  const binText = readFileSync(path.join(ROOT, "bin/agent-memory.mjs"), "utf8");
+  const binText = readFileSync(path.join(ROOT, BRAINY_BIN), "utf8");
   for (const needle of ["helix prune", "helix delete", "docker volume rm", "docker rm", "fuser", "pkill", "killall"]) {
     check(`static: no "${needle}"`, !binText.includes(needle), `found "${needle}"`);
   }
@@ -239,6 +284,13 @@ async function sectionJ(): Promise<void> {
     check(`${args[0]}: stdout+stderr never contains secret VALUE`, !combined.includes(TEST_SECRET), combined.includes(TEST_SECRET) ? "leaked" : undefined);
     if (args[0] === "status" || args[0] === "doctor") check(`${args[0]} shows bearer: armed`, combined.includes("bearer: armed") || combined.includes("secret: present"), brief(combined));
   }
+  const brainyRes = await runCli(["status", "--slot", "1"], { BRAINY_SECRET: TEST_SECRET });
+  const brainyCombined = brainyRes.out + brainyRes.err;
+  check("BRAINY_SECRET: stdout+stderr never contain value", !brainyCombined.includes(TEST_SECRET), "leaked");
+  check("BRAINY_SECRET: bearer armed flag shown", brainyCombined.includes("bearer: armed"), brief(brainyCombined));
+  const aliasWarn = await runCli(["status", "--slot", "1"], { AGENT_MEMORY_SECRET: TEST_SECRET });
+  const warnCount = (aliasWarn.err.match(/WARN deprecated use BRAINY_SECRET/g) ?? []).length;
+  check("AGENT_MEMORY_SECRET read warns exactly once", warnCount === 1, `count=${warnCount}`);
   const sp = defaultStatePath(1);
   if (existsSync(sp)) check("state file never contains synthetic secret", !readFileSync(sp, "utf8").includes(TEST_SECRET), "leaked to state file");
   else check("state file secret check (no file -> vacuously pass)", true);
@@ -254,7 +306,7 @@ async function sectionK(): Promise<void> {
 }
 async function sectionL(): Promise<void> {
   section("L. port-parity default 3111/6969 unchanged (git diff)");
-  const binText = readFileSync(path.join(ROOT, "bin/agent-memory.mjs"), "utf8");
+  const binText = readFileSync(path.join(ROOT, BRAINY_BIN), "utf8");
   check("bin REST_BASE is 3111", binText.includes("REST_BASE = 3111") || binText.includes("3111"), brief(binText.slice(0, 500)));
   check("bin HELIX_BASE is 6969", binText.includes("HELIX_BASE = 6969") || binText.includes("6969"), brief(binText.slice(0, 500)));
   check("src/server.ts default 3111 unchanged", readFileSync(path.join(ROOT, "src/server.ts"), "utf8").includes("3111"), "missing 3111");
@@ -285,13 +337,43 @@ async function sectionHeaderProof(): Promise<void> {
   else check(`C1: ${requestCount} request(s) but 0 Authorization (still C1 PASS)`, authHeaders.length === 0, `requests=${requestCount}`);
   await new Promise<void>((r) => httpServer.close(() => r())); extraServers.splice(extraServers.indexOf(httpServer as unknown as Server), 1);
 }
+async function sectionM(): Promise<void> {
+  section("M. closed-schema state rejection, migrate zero-writes, doctor C1..C5 order");
+  const tmpBase = mkdtempSync(path.join(os.tmpdir(), "verify-ops-m-"));
+  try {
+    const slot = 61;
+    const dataDir = path.join(tmpBase, "data61");
+    const stateDir = path.join(tmpBase, "state");
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(path.join(stateDir, `slot-${slot}.json`), JSON.stringify({ slot, bogus: true }), { mode: 0o600 });
+    const stale = await runCli(["doctor", "--slot", String(slot), "--data-dir", dataDir]);
+    check("doctor reports invalid state (closed schema)", (stale.out + stale.err).includes("state: invalid"), brief(stale.out + stale.err));
+    const stopRefuse = await runCli(["stop", "--slot", String(slot), "--data-dir", dataDir]);
+    check("stop refuses invalid state exit 1 (no signal)", stopRefuse.code === 1 && (stopRefuse.out + stopRefuse.err).includes("REFUSE"), `code=${String(stopRefuse.code)}`);
+    const backupDir = path.join(tmpBase, "backup");
+    const before = readdirSync(tmpBase).sort().join(",");
+    const mig = await runCli(["doctor", "--slot", String(slot), "--data-dir", dataDir, "--migrate", "--apply", "--yes", "--backup-dir", backupDir]);
+    const migCombined = mig.out + mig.err;
+    check("--migrate --apply --yes still aborts unsupported-runtime", migCombined.includes("MIGRATE ABORT") && migCombined.includes("unsupported-runtime"), brief(migCombined));
+    check("migrate touched zero files (no backup dir created)", readdirSync(tmpBase).sort().join(",") === before && !existsSync(backupDir), readdirSync(tmpBase).join(","));
+    const doc = await runCli(["doctor", "--slot", String(slot), "--data-dir", dataDir], { BRAINY_SECRET: TEST_SECRET });
+    const docCombined = doc.out + doc.err;
+    const order = ["C1 helix-healthz", "C3 ports", "C2 rest-health", "C4 secret-presence", "C5 storage-data-dir"];
+    const idxs = order.map((t) => docCombined.indexOf(t));
+    check("doctor emits C1->C3->C2->C4->C5 in order", idxs.every((v) => v !== -1) && idxs.every((v, i) => i === 0 || v > (idxs[i - 1] as number)), `idxs=${idxs.join(",")}`);
+    const verdicts = (docCombined.match(/VERDICT:/g) ?? []).length;
+    check("doctor prints exactly one VERDICT line", verdicts === 1, `count=${verdicts}`);
+  } finally {
+    rmSync(tmpBase, { recursive: true, force: true });
+  }
+}
 async function cleanup(): Promise<void> {
   for (const kid of kids) { if (kid.exitCode() === undefined) { kid.child.kill("SIGTERM"); await race(kid.exited, 3_000); } if (kid.exitCode() === undefined) { kid.child.kill("SIGKILL"); await race(kid.exited, 2_000); } }
   for (const srv of [...extraServers]) if ((srv as unknown as { listening: boolean }).listening) await new Promise<void>((r) => srv.close(() => r()));
 }
 async function runAll(): Promise<void> {
   try {
-    await sectionA(); await sectionB(); await sectionC(); await sectionD(); await sectionE(); await sectionF(); await sectionG(); await sectionH(); await sectionI(); await sectionJ(); await sectionK(); await sectionL(); await sectionHeaderProof();
+    await sectionA(); await sectionA2(); await sectionB(); await sectionC(); await sectionD(); await sectionE(); await sectionF(); await sectionG(); await sectionH(); await sectionI(); await sectionJ(); await sectionK(); await sectionL(); await sectionM(); await sectionHeaderProof();
   } finally { await cleanup(); }
   console.log(`\n${passed} passed, ${failures.length} failed`);
   if (failures.length > 0) { console.error(`VERIFY FAIL\n  - ${failures.join("\n  - ")}`); process.exit(1); }
