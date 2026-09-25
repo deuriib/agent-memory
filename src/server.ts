@@ -175,6 +175,81 @@ const frontierQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).optional(),
 });
 
+/* Brainy v1 Schemas */
+const noteTitleSchema = z.string().trim().min(1).max(500);
+const noteContentSchema = z.string().trim().min(1).max(200_000);
+const noteTagsSchema = z.array(z.string().trim().min(1).max(100)).max(64);
+const paraCategorySchema = z.enum(["project", "area", "resource", "archive"]);
+
+const createNoteBodySchema = z
+  .object({
+    title: noteTitleSchema,
+    content: noteContentSchema,
+    tags: noteTagsSchema.optional(),
+    project: projectSchema.optional(),
+    paraCategory: paraCategorySchema.optional(),
+    paraTarget: z.string().trim().min(1).max(200).optional(),
+    sessionId: sessionIdSchema.optional(),
+  })
+  .strict();
+
+const getNoteQuerySchema = z
+  .object({
+    project: projectSchema.optional(),
+  })
+  .strict();
+
+const searchNotesBodySchema = z
+  .object({
+    query: queryTextSchema,
+    project: projectSchema.optional(),
+    include_graph: z.boolean().optional(),
+    max_depth: z.number().int().min(1).max(3).optional(),
+    vector_top_k: z.number().int().min(1).max(20).optional(),
+    limit: limitSchema.optional(),
+  })
+  .strict();
+
+const legacyMemoryBodySchema = z
+  .object({
+    statement: contentSchema.optional(),
+    content: contentSchema.optional(),
+    concepts: conceptsSchema.optional(),
+    project: projectSchema.optional(),
+    sessionId: sessionIdSchema.optional(),
+    memory_type: z.string().trim().max(100).optional(),
+    origin: originSchema.optional(),
+    importance: importanceSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (data) =>
+      (data.content !== undefined && data.content.trim().length > 0) ||
+      (data.statement !== undefined && data.statement.trim().length > 0),
+    { message: "either statement or content is required" },
+  );
+
+const contextQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
+const linkNodesBodySchema = z
+  .object({
+    fromId: z.string().trim().min(1).max(200),
+    toId: z.string().trim().min(1).max(200),
+    type: z.enum(["REFERENCES", "BELONGS_TO", "RELATES_TO"]),
+    project: projectSchema.optional(),
+  })
+  .strict();
+
+const distillNoteBodySchema = z
+  .object({
+    summary: z.string().trim().min(1).max(200_000).optional(),
+    project: projectSchema.optional(),
+  })
+  .strict();
+
+
 /* ------------------------------------------------------------------ */
 /* HTTP plumbing                                                       */
 /* ------------------------------------------------------------------ */
@@ -281,12 +356,177 @@ async function routeRequest(
     path = path.replace("/agentmemory/", "/memory/");
   }
 
-  // Everything under /memory/ is guarded; `livez` alone is exempt.
-  if (!path.startsWith("/memory/")) throw new HttpError(404, "not_found");
-  if (path !== "/memory/livez" && !isBearerAuthorized(req.headers.authorization, secret)) {
+  // 1-version /memory/* legacy deprecation alias adds X-Deprecated header
+  if (path.startsWith("/memory/")) {
+    res.setHeader("X-Deprecated", "use /v1/*");
+  }
+
+  // Routes must start with /memory/ or /v1/
+  if (!path.startsWith("/memory/") && !path.startsWith("/v1/")) throw new HttpError(404, "not_found");
+
+  // livez is exempt on both /memory/livez and /v1/livez
+  const isLivez = path === "/memory/livez" || path === "/v1/livez";
+  if (!isLivez && !isBearerAuthorized(req.headers.authorization, secret)) {
     res.setHeader("www-authenticate", "Bearer");
     sendJson(res, 401, { error: "unauthorized" });
     return 401;
+  }
+
+  // GET /v1/livez
+  if (path === "/v1/livez") {
+    requireMethod(method, "GET");
+    sendJson(res, 200, { status: "ok" });
+    return 200;
+  }
+
+  // POST /v1/notes
+  if (path === "/v1/notes") {
+    requireMethod(method, "POST");
+    const body = parseOr400(createNoteBodySchema, await readJsonBody(req));
+    if (typeof store.saveNote !== "function") {
+      throw new HttpError(501, "not_implemented", "saveNote not supported by store");
+    }
+    const result = await store.saveNote({
+      title: body.title,
+      content: body.content,
+      tags: body.tags,
+      project: body.project ?? DEFAULT_PROJECT,
+      paraCategory: body.paraCategory,
+      paraTarget: body.paraTarget,
+      sessionId: body.sessionId,
+    });
+    sendJson(res, 201, result);
+    return 201;
+  }
+
+  // POST /v1/notes/:id/distill
+  if (path.startsWith("/v1/notes/") && path.endsWith("/distill")) {
+    requireMethod(method, "POST");
+    const id = decodeSegment(path.slice("/v1/notes/".length, -"/distill".length));
+    const body = parseOr400(distillNoteBodySchema, await readJsonBody(req));
+    if (typeof store.distillNote !== "function") {
+      throw new HttpError(501, "not_implemented", "distillNote not supported by store");
+    }
+    const result = await store.distillNote({
+      id,
+      project: body.project ?? DEFAULT_PROJECT,
+      summary: body.summary,
+    });
+    sendJson(res, 201, { note: result });
+    return 201;
+  }
+
+  // GET /v1/notes/:id
+  if (path.startsWith("/v1/notes/")) {
+    requireMethod(method, "GET");
+    const id = decodeSegment(path.slice("/v1/notes/".length));
+    const query = parseOr400(getNoteQuerySchema, queryRecord(url));
+    if (typeof store.getNoteById !== "function") {
+      throw new HttpError(501, "not_implemented", "getNoteById not supported by store");
+    }
+    const result = await store.getNoteById(id, query.project ?? DEFAULT_PROJECT);
+    if (!result) {
+      sendJson(res, 404, { error: "not_found" });
+      return 404;
+    }
+    sendJson(res, 200, result);
+    return 200;
+  }
+
+  // POST /v1/search
+  if (path === "/v1/search") {
+    requireMethod(method, "POST");
+    const body = parseOr400(searchNotesBodySchema, await readJsonBody(req));
+    const envelope = await hybridSearch(store, {
+      query: body.query,
+      project: body.project ?? DEFAULT_PROJECT,
+      limit: body.limit ?? DEFAULT_LIMIT,
+      include_graph: body.include_graph,
+      max_depth: body.max_depth,
+      vector_top_k: body.vector_top_k,
+    });
+    sendJson(res, 200, envelope);
+    return 200;
+  }
+
+  // POST /v1/memory (compat translating statement to content)
+  if (path === "/v1/memory") {
+    requireMethod(method, "POST");
+    const body = parseOr400(legacyMemoryBodySchema, await readJsonBody(req));
+    const content = (body.content ?? body.statement)!;
+    const result = await store.remember({
+      content,
+      concepts: body.concepts ?? [],
+      project: body.project ?? DEFAULT_PROJECT,
+      sessionId: body.sessionId ?? randomUUID(),
+      origin: body.origin ?? DEFAULT_ORIGIN,
+      importance: body.importance,
+    });
+    sendJson(res, 201, {
+      id: result.id,
+      sessionId: result.sessionId,
+      project: result.project,
+      concepts: result.concepts,
+      deduped: result.deduped,
+    });
+    return 201;
+  }
+
+  // GET /v1/context/:project
+  if (path.startsWith("/v1/context/")) {
+    requireMethod(method, "GET");
+    const project = decodeSegment(path.slice("/v1/context/".length));
+    const query = parseOr400(contextQuerySchema, queryRecord(url));
+    const limit = query.limit ?? DEFAULT_LIMIT;
+    const notes = typeof store.listNotes === "function" ? await store.listNotes({ project, limit }) : [];
+    let memories: unknown[] = [];
+    try {
+      memories = await store.searchByText({ q: "*", project, k: limit });
+    } catch {
+      memories = [];
+    }
+
+    const graph = {
+      project,
+      notesCount: notes.length,
+      memoriesCount: memories.length,
+    };
+    sendJson(res, 200, { project, notes, memories, graph });
+    return 200;
+  }
+
+  // POST /v1/link
+  if (path === "/v1/link") {
+    requireMethod(method, "POST");
+    const body = parseOr400(linkNodesBodySchema, await readJsonBody(req));
+    const project = body.project ?? DEFAULT_PROJECT;
+    // Condition C8: Verify both nodes belong to the same project tenant
+    if (typeof store.getNoteById === "function") {
+      const fromNote = await store.getNoteById(body.fromId, project);
+      const toNote = await store.getNoteById(body.toId, project);
+      if (!fromNote || !toNote || fromNote.note.project !== toNote.note.project) {
+        throw new HttpError(400, "invalid_tenant_link", "Nodes must belong to the same project tenant");
+      }
+    }
+    if (typeof store.linkNodes === "function") {
+      try {
+        await store.linkNodes({
+          fromId: body.fromId,
+          toId: body.toId,
+          type: body.type,
+          project,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("invalid_tenant_link")) {
+          throw new HttpError(400, "invalid_tenant_link", msg);
+        }
+        throw err;
+      }
+    }
+    sendJson(res, 201, { edge: { fromId: body.fromId, toId: body.toId, type: body.type } });
+    return 201;
+
   }
 
   // GET /memory/livez
@@ -295,6 +535,7 @@ async function routeRequest(
     sendJson(res, 200, { status: "ok" });
     return 200;
   }
+
 
   // GET /memory/health?project=
   if (path === "/memory/health") {
@@ -586,13 +827,15 @@ function respondToError(req: IncomingMessage, res: ServerResponse, err: unknown)
   return 500;
 }
 
-export interface AgentMemoryServerOptions {
+export interface BrainyServerOptions {
   store?: MemoryStore;
   /** Non-empty secret arms the bearer guard; undefined leaves routes open. */
   secret?: string | undefined;
 }
 
-export function createAgentMemoryServer(options: AgentMemoryServerOptions = {}): Server {
+export type AgentMemoryServerOptions = BrainyServerOptions;
+
+export function createBrainyServer(options: BrainyServerOptions = {}): Server {
   const store = options.store ?? createDefaultStore();
   const secret = options.secret;
   return createServer((req, res) => {
@@ -608,15 +851,17 @@ export function createAgentMemoryServer(options: AgentMemoryServerOptions = {}):
       })
       .catch((err: unknown) => {
         // Client vanished mid-response; keep the server alive, log safely.
-        console.error(`[agentmemory] response failed: ${logSafeNote(err)}`);
+        console.error(`[brainy] response failed: ${logSafeNote(err)}`);
       });
   });
 }
 
+export const createAgentMemoryServer = createBrainyServer;
+
 function parsePort(raw: string | undefined): number {
   const value = raw === undefined ? 3111 : Number(raw);
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new Error("AGENT_MEMORY_PORT must be an integer between 1 and 65535");
+    throw new Error("Port must be an integer between 1 and 65535");
   }
   return value;
 }
@@ -642,32 +887,37 @@ function systemErrorCode(err: unknown): string | undefined {
 const REROUTE_PORT = 3151;
 
 /**
- * Actionable EADDRINUSE hint (REQ-P0-6), two lines on stderr before exit:
+ * Actionable EADDRINUSE hint (REQ-P0-6 / INV-003), two lines on stderr before exit:
  *   1. port-ownership statement — upstream agentmemory (iii) may hold
  *      3111/3112/3113, NEVER kill it, start ours elsewhere with the 3151
  *      example;
  *   2. the client instruction — point clients at the port ours runs on via
- *      AGENT_MEMORY_URL.
+ *      BRAINY_URL.
  * Commands and ports only; no env values and never the secret.
  */
 function portInUseHint(port: number): string {
   return [
-    `[agentmemory] port ${port} is already in use — if the upstream agentmemory (iii) holds ` +
+    `[brainy] port ${port} is already in use — if the upstream agentmemory (iii) holds ` +
       `3111/3112/3113, NEVER kill it; start ours elsewhere: ` +
-      `AGENT_MEMORY_PORT=${REROUTE_PORT} npm run dev`,
-    `[agentmemory] then point clients at the port ours runs on: ` +
-      `AGENT_MEMORY_URL=http://127.0.0.1:${REROUTE_PORT} (example)`,
+      `BRAINY_PORT=${REROUTE_PORT} npm run dev`,
+    `[brainy] then point clients at the port ours runs on: ` +
+      `BRAINY_URL=http://127.0.0.1:${REROUTE_PORT} (example)`,
   ].join("\n");
 }
 
 function main(): void {
-  const port = parsePort(process.env["AGENT_MEMORY_PORT"]);
-  const host = nonEmptyEnv("AGENT_MEMORY_HOST") ?? "127.0.0.1";
+  const port = parsePort(process.env["BRAINY_PORT"] ?? process.env["AGENT_MEMORY_PORT"]);
+  const host = nonEmptyEnv("BRAINY_HOST") ?? nonEmptyEnv("AGENT_MEMORY_HOST") ?? "127.0.0.1";
   const secret = secretFromEnv();
 
-  const server = createAgentMemoryServer({ secret });
+  // Condition C1: warn if non-loopback host with unauthenticated access
+  if (host !== "127.0.0.1" && host !== "localhost" && secret === undefined) {
+    console.warn(`WARN INSECURE: Server listening on non-loopback host ${host} with authentication disabled`);
+  }
+
+  const server = createBrainyServer({ secret });
   server.on("error", (err: Error) => {
-    console.error(`[agentmemory] server error: ${logSafeNote(err)}`);
+    console.error(`[brainy] server error: ${logSafeNote(err)}`);
     if (systemErrorCode(err) === "EADDRINUSE") {
       console.error(portInUseHint(port));
     }
@@ -676,7 +926,7 @@ function main(): void {
   server.listen(port, host, () => {
     // Never print the secret value — only whether the guard is armed.
     console.log(
-      `agent-memory REST on http://${host}:${port} (auth: ${secret === undefined ? "open" : "bearer-required"})`,
+      `brainy REST on http://${host}:${port} (auth: ${secret === undefined ? "open" : "bearer-required"})`,
     );
   });
 
@@ -685,6 +935,7 @@ function main(): void {
     setTimeout(() => process.exit(0), 500).unref();
   };
   process.on("SIGINT", shutdown);
+
   process.on("SIGTERM", shutdown);
 }
 

@@ -1,29 +1,51 @@
 /**
  * Bearer guard shared by the REST server and the stdio MCP server.
  *
- * Rule (contract §3): when AGENT_MEMORY_SECRET is set to a NON-EMPTY value,
- * every surface except `livez` requires `Authorization: Bearer <secret>`;
- * mismatch -> reject. Unset/empty -> open (local-dev default).
+ * Rule (contract §3, SPEC-001 §4.3, C1): when BRAINY_SECRET (or fallback
+ * AGENT_MEMORY_SECRET) is set to a NON-EMPTY value, every surface except
+ * `livez` requires `Authorization: Bearer <secret>`; mismatch -> reject.
+ * Unset/empty -> open (local-dev default).
  *
  * The secret value is never logged, echoed, or included in error text.
  */
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
+
+let warnedDeprecatedSecret = false;
 
 /**
  * Non-empty secret arms the guard; unset or empty disarms it.
+ * Resolves BRAINY_SECRET first, falling back to AGENT_MEMORY_SECRET with a
+ * single static deprecation notice on stderr (C2).
  */
 export function secretFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const value = env["AGENT_MEMORY_SECRET"];
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  const brainy = env["BRAINY_SECRET"];
+  if (typeof brainy === "string" && brainy.length > 0) {
+    return brainy;
+  }
+  const legacy = env["AGENT_MEMORY_SECRET"];
+  if (typeof legacy === "string" && legacy.length > 0) {
+    if (!warnedDeprecatedSecret) {
+      warnedDeprecatedSecret = true;
+      console.error("WARN deprecated use BRAINY_SECRET — AGENT_MEMORY_SECRET will be removed in next major");
+    }
+    return legacy;
+  }
+  return undefined;
 }
 
-/** Constant-time comparison of the presented bearer against `secret`. */
+/** Reset warning state for test isolation */
+export function _resetSecretWarningState(): void {
+  warnedDeprecatedSecret = false;
+}
+
+/** Constant-time comparison of the presented bearer against `secret` via SHA-256 digests. */
 function bearerMatches(authorizationHeader: string, secret: string): boolean {
   const expected = `Bearer ${secret}`;
   const presented = Buffer.from(authorizationHeader, "utf8");
   const wanted = Buffer.from(expected, "utf8");
-  if (presented.length !== wanted.length) return false;
-  return timingSafeEqual(presented, wanted);
+  const h1 = createHash("sha256").update(presented).digest();
+  const h2 = createHash("sha256").update(wanted).digest();
+  return timingSafeEqual(h1, h2);
 }
 
 /**
@@ -53,3 +75,4 @@ export function isMetaAuthorized(meta: unknown, secret: string | undefined): boo
   if (typeof value !== "string") return false;
   return bearerMatches(value, secret);
 }
+
