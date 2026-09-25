@@ -30,6 +30,7 @@ export const LABELS = {
   Session: "Session",
   Memory: "Memory",
   Concept: "Concept",
+  Todo: "Todo",
 } as const;
 
 /** Edge labels — CONTRACT §1. */
@@ -159,6 +160,22 @@ export function bootstrapIndexes(): WriteBatch {
       "memory_dedup",
       g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Memory, "dedupKey")),
     )
+    .varAs(
+      "todo_id",
+      g().createIndexIfNotExists(IndexSpec.nodeUniqueEquality(LABELS.Todo, "todoId")),
+    )
+    .varAs(
+      "todo_project",
+      g().createIndexIfNotExists(IndexSpec.nodeEquality(LABELS.Todo, "project")),
+    )
+    .varAs(
+      "todo_status",
+      g().createIndexIfNotExists(IndexSpec.nodeEquality(LABELS.Todo, "status")),
+    )
+    .varAs(
+      "todo_title",
+      g().createIndexIfNotExists(IndexSpec.nodeText(LABELS.Todo, "title", "project")),
+    )
     .returning([
       "memory_id",
       "session_id",
@@ -168,6 +185,10 @@ export function bootstrapIndexes(): WriteBatch {
       "memory_embedding",
       "memory_content",
       "memory_dedup",
+      "todo_id",
+      "todo_project",
+      "todo_status",
+      "todo_title",
     ]);
 }
 
@@ -693,4 +714,149 @@ export function updateMemoryContent(): WriteBatch {
     )
     .forEachParam("concepts", conceptBody())
     .returning(["updated", "memory"]);
+}
+
+/* ------------------------------------------------------------------ *
+ * Todos — follow-ups the agent surfaced during sessions (image spec).
+ * Node: Todo { todoId, title, description, priority, status, project,
+ * sessionId, createdAt, updatedAt }. Status flow pending → active →
+ * done/blocked; frontier = pending ∪ active (unblocked, ready to pick).
+ * Priority: low|medium|high (stored verbatim, ordered high>medium>low).
+ * ------------------------------------------------------------------ */
+
+const todoRowProjection: PropertyProjection[] = [
+  PropertyProjection.renamed("$id", "id"),
+  PropertyProjection.new("todoId"),
+  PropertyProjection.new("title"),
+  PropertyProjection.new("description"),
+  PropertyProjection.new("priority"),
+  PropertyProjection.new("status"),
+  PropertyProjection.new("project"),
+  PropertyProjection.new("sessionId"),
+  PropertyProjection.new("createdAt"),
+  PropertyProjection.new("updatedAt"),
+  PropertyProjection.new("parentId"),
+];
+
+export const saveTodoParams = defineParams({
+  todoId: param.string(),
+  title: param.string(),
+  description: param.string(),
+  priority: param.string(),
+  status: param.string(),
+  project: param.string(),
+  sessionId: param.string(),
+  createdAt: param.dateTime(),
+  updatedAt: param.dateTime(),
+  parentId: param.string(),
+});
+
+export function saveTodo(): WriteBatch {
+  return writeBatch()
+    .varAs(
+      "todo",
+      g().addN(LABELS.Todo, {
+        todoId: PropertyInput.param("todoId"),
+        title: PropertyInput.param("title"),
+        description: PropertyInput.param("description"),
+        priority: PropertyInput.param("priority"),
+        status: PropertyInput.param("status"),
+        project: PropertyInput.param("project"),
+        sessionId: PropertyInput.param("sessionId"),
+        createdAt: PropertyInput.param("createdAt"),
+        updatedAt: PropertyInput.param("updatedAt"),
+        parentId: PropertyInput.param("parentId"),
+      }),
+    )
+    .returning(["todo"]);
+}
+
+export const listTodosParams = defineParams({
+  project: param.string(),
+  limit: param.i64(),
+});
+
+export function listTodos(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "todos",
+      g()
+        .nWithLabel(LABELS.Todo)
+        .where(Predicate.eqParam("project", "project"))
+        .orderBy("$id", Order.Desc)
+        .limit(listTodosParams.limit)
+        .project([...todoRowProjection]),
+    )
+    .returning(["todos"]);
+}
+
+export const getTodoByIdParams = defineParams({
+  todoId: param.string(),
+});
+
+export function getTodoById(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "todo",
+      g().nWithLabel(LABELS.Todo).where(Predicate.eqParam("todoId", "todoId")).limit(1).project([...todoRowProjection]),
+    )
+    .returning(["todo"]);
+}
+
+export const updateTodoParams = defineParams({
+  todoId: param.string(),
+  title: param.string(),
+  description: param.string(),
+  priority: param.string(),
+  status: param.string(),
+  updatedAt: param.dateTime(),
+  parentId: param.string(),
+});
+
+export function updateTodo(): WriteBatch {
+  return writeBatch()
+    .varAs("todo", g().nWithLabel(LABELS.Todo).where(Predicate.eqParam("todoId", "todoId")))
+    .varAsIf(
+      "updated",
+      BatchCondition.varNotEmpty("todo"),
+      g()
+        .n(NodeRef.var("todo"))
+        .setProperty("title", PropertyInput.param("title"))
+        .setProperty("description", PropertyInput.param("description"))
+        .setProperty("priority", PropertyInput.param("priority"))
+        .setProperty("status", PropertyInput.param("status"))
+        .setProperty("updatedAt", PropertyInput.param("updatedAt"))
+        .setProperty("parentId", PropertyInput.param("parentId")),
+    )
+    .returning(["updated", "todo"]);
+}
+
+export const searchTodosByTextParams = defineParams({
+  q: param.string(),
+  project: param.string(),
+  k: param.i64(),
+});
+
+export function searchTodosByText(): ReadBatch {
+  return readBatch()
+    .varAs(
+      "hits",
+      g()
+        .nWithLabel(LABELS.Todo)
+        .where(Predicate.eqParam("project", "project"))
+        .textSearchWith(LABELS.Todo, "title", PropertyInput.param("q"), searchTodosByTextParams.k, PropertyInput.param("project"))
+        .project([...todoRowProjection]),
+    )
+    .returning(["hits"]);
+}
+
+export const deleteTodoParams = defineParams({
+  todoId: param.string(),
+});
+
+export function deleteTodo(): WriteBatch {
+  return writeBatch()
+    .varAs("target", g().nWithLabel(LABELS.Todo).where(Predicate.eqParam("todoId", "todoId")))
+    .varAsIf("deleted", BatchCondition.varNotEmpty("target"), g().n(NodeRef.var("target")).drop())
+    .returning(["target", "deleted"]);
 }

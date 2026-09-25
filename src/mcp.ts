@@ -110,6 +110,42 @@ const deleteInput = {
     .pipe(z.string().min(1).max(1000)),
 };
 
+const todoPrioritySchema = z.enum(["low", "medium", "high"]);
+const todoStatusSchema = z.enum(["pending", "active", "done", "blocked"]);
+const todoCreateInput = {
+  title: z.string().trim().min(1).max(500),
+  description: z.string().trim().max(5000).optional(),
+  priority: todoPrioritySchema.optional(),
+  status: todoStatusSchema.optional(),
+  project: projectSchema.optional(),
+  sessionId: z.string().trim().min(1).max(200).optional(),
+  parentId: z.string().trim().min(1).max(200).optional(),
+};
+const todoUpdateInput = {
+  todoId: z.string().trim().min(1).max(200),
+  title: z.string().trim().min(1).max(500).optional(),
+  description: z.string().trim().max(5000).optional(),
+  priority: todoPrioritySchema.optional(),
+  status: todoStatusSchema.optional(),
+  parentId: z.union([z.string().trim().min(1).max(200), z.null()]).optional(),
+};
+const todoListInput = {
+  project: projectSchema.optional(),
+  limit: limitSchema.optional(),
+  status: todoStatusSchema.optional(),
+  priority: todoPrioritySchema.optional(),
+  search: z.string().trim().max(500).optional(),
+  frontier: z.boolean().optional(),
+  parentId: z.string().trim().min(1).max(200).optional(),
+};
+const todoGetInput = {
+  todoId: z.string().trim().min(1).max(200),
+};
+const todoFrontierInput = {
+  project: projectSchema.optional(),
+  limit: limitSchema.optional(),
+};
+
 function ok(payload: unknown): CallToolResult {
   return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
@@ -371,12 +407,138 @@ export function registerTools(mcp: McpServer, store: MemoryStore, secret: string
         return ok({ deleted: true, receipt: { memoryId: args.memoryId, deletedAt } });
       }),
   );
+
+  // ---- Todos (follow-ups) — renamed from actions, never "actions" naming ----
+  mcp.registerTool(
+    "memory_todo_create",
+    {
+      description:
+        "Create a todo (follow-up: decision to revisit, file to inspect, task blocked on input). Status flows pending → active → done/blocked; frontier marks what is unblocked and ready. Returns the created todo.",
+      inputSchema: todoCreateInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async (args, extra) =>
+      handle("memory_todo_create", extra._meta, async () => {
+        try {
+          const todo = await store.createTodo({
+            title: args.title,
+            description: args.description,
+            priority: args.priority,
+            status: args.status,
+            project: args.project ?? DEFAULT_PROJECT,
+            sessionId: args.sessionId,
+            parentId: args.parentId,
+          });
+          return ok({ todo });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("parent todo not found") || msg.includes("title is required")) return failed({ error: msg });
+          throw err;
+        }
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_todo_list",
+    {
+      description:
+        "List todos with optional filters: status, priority, search (title/description substring + BM25), frontier (pending|active only), parentId. Sorted high→low priority then newest first.",
+      inputSchema: todoListInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_todo_list", extra._meta, async () =>
+        ok({
+          todos: await store.listTodos({
+            project: args.project ?? DEFAULT_PROJECT,
+            limit: args.limit ?? DEFAULT_LIMIT,
+            status: args.status,
+            priority: args.priority,
+            search: args.search,
+            frontier: args.frontier,
+            parentId: args.parentId,
+          }),
+        }),
+      ),
+  );
+
+  mcp.registerTool(
+    "memory_todo_get",
+    {
+      description: "Get one todo by its todoId.",
+      inputSchema: todoGetInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_todo_get", extra._meta, async () => {
+        const todo = await store.getTodo(args.todoId);
+        return todo !== undefined ? ok({ todo }) : failed({ error: "not_found" });
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_todo_update",
+    {
+      description:
+        "Update a todo (title/description/priority/status/parentId). Status flow pending→active→done/blocked; parentId null clears the parent.",
+      inputSchema: todoUpdateInput,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false },
+    },
+    async (args, extra) =>
+      handle("memory_todo_update", extra._meta, async () => {
+        try {
+          const todo = await store.updateTodo(args.todoId, {
+            title: args.title,
+            description: args.description,
+            priority: args.priority,
+            status: args.status,
+            parentId: args.parentId as string | null | undefined,
+          });
+          return todo !== undefined ? ok({ todo }) : failed({ error: "not_found" });
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("parent todo not found") || msg.includes("cannot be its own parent") || msg.includes("title is required"))
+            return failed({ error: msg });
+          throw err;
+        }
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_todo_delete",
+    {
+      description: "Delete one todo by its todoId.",
+      inputSchema: todoGetInput,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_todo_delete", extra._meta, async () => {
+        const deleted = await store.deleteTodo(args.todoId);
+        return deleted ? ok({ deleted: true }) : failed({ error: "not_found" });
+      }),
+  );
+
+  mcp.registerTool(
+    "memory_frontier",
+    {
+      description:
+        "Frontier: unblocked todos ready to pick up next (pending ∪ active, priority-ordered). Same as todo_list frontier=true.",
+      inputSchema: todoFrontierInput,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    },
+    async (args, extra) =>
+      handle("memory_frontier", extra._meta, async () =>
+        ok({
+          frontier: await store.frontierTodos({ project: args.project ?? DEFAULT_PROJECT, limit: args.limit ?? DEFAULT_LIMIT }),
+        }),
+      ),
+  );
 }
 
 async function main(): Promise<void> {
   const store = createDefaultStore();
   const secret = secretFromEnv();
-  const mcp = new McpServer({ name: "agent-memory", version: "0.8.0" });
+  const mcp = new McpServer({ name: "agent-memory", version: "0.9.0" });
   registerTools(mcp, store, secret);
   // stdout is the protocol channel: never console.log from here.
   await mcp.connect(new StdioServerTransport());

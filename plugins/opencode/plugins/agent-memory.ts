@@ -60,7 +60,7 @@
  */
 import { Plugin } from "@opencode/plugin";
 
-const VERSION = "0.8.0";
+const VERSION = "0.9.0";
 
 /* ------------------------------------------------------------------ */
 /* Constants                                                           */
@@ -105,6 +105,9 @@ const MAX_SESSION = 200;
 const MAX_ORIGIN = 100;
 const MAX_QUERY = 10_000;
 const MAX_MEMORY_ID = 200;
+const MAX_TODO_TITLE = 500;
+const MAX_TODO_DESC = 5000;
+const MAX_TODO_ID = 200;
 
 /** Bounds for the automatic path (token budget + embedding sanity). */
 const MIN_AUTO_QUERY = 3;
@@ -269,7 +272,7 @@ function safeOrigin(base: string): string | undefined {
 
 export async function call(
   cfg: Config,
-  method: "GET" | "POST",
+  method: "GET" | "POST" | "PATCH" | "DELETE",
   path: string,
   body: unknown,
   timeoutMs: number = TIMEOUT_MS,
@@ -915,6 +918,180 @@ export default Plugin.define({
             2,
           );
           return { content: payload ?? "{}", metadata: { ok: true } };
+        },
+      });
+
+      // ---- Todos (follow-ups) — renamed from actions, never "actions" naming ----
+      editor.add({
+        name: "todo_create",
+        description:
+          "Create a todo (follow-up: decision to revisit, file to inspect, task blocked on input). Status flows pending → active → done/blocked; frontier marks what is unblocked. Optional parentId links to a parent todo.",
+        input: {
+          type: "object",
+          properties: {
+            title: { type: "string", minLength: 1, maxLength: MAX_TODO_TITLE, description: "Todo title." },
+            description: { type: "string", maxLength: MAX_TODO_DESC, description: "Optional detail." },
+            priority: { type: "string", enum: ["low", "medium", "high"], description: "Priority. Defaults to medium." },
+            status: { type: "string", enum: ["pending", "active", "done", "blocked"], description: "Initial status. Defaults to pending." },
+            project: { type: "string", minLength: 1, maxLength: MAX_PROJECT, description: "Tenant/scope key. Defaults to workspace name." },
+            sessionId: { type: "string", minLength: 1, maxLength: MAX_SESSION, description: "Session grouping. Defaults to current session." },
+            parentId: { type: "string", minLength: 1, maxLength: MAX_TODO_ID, description: "Optional parent todoId for sub-todos." },
+          },
+          required: ["title"],
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown, toolContext) => {
+          const input = isBag(raw) ? raw : {};
+          const title = str(input.title, MAX_TODO_TITLE);
+          if (title === undefined) return invalid("`title` must be a non-empty string");
+          const body: Record<string, unknown> = {
+            title,
+            project: str(input.project, MAX_PROJECT) ?? cfg.project,
+            sessionId: str(input.sessionId, MAX_SESSION) ?? String(toolContext.sessionID),
+          };
+          const desc = typeof input.description === "string" ? input.description.trim().slice(0, MAX_TODO_DESC) : undefined;
+          if (desc !== undefined && desc.length > 0) body.description = desc;
+          const prio = typeof input.priority === "string" ? input.priority : undefined;
+          if (prio === "low" || prio === "medium" || prio === "high") body.priority = prio;
+          const st = typeof input.status === "string" ? input.status : undefined;
+          if (st === "pending" || st === "active" || st === "done" || st === "blocked") body.status = st;
+          const pid = str(input.parentId, MAX_TODO_ID);
+          if (pid !== undefined) body.parentId = pid;
+          const outcome = await call(cfg, "POST", "memory/todos", body);
+          if (outcome.ok) recallCache.clear();
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
+        },
+      });
+
+      editor.add({
+        name: "todo_list",
+        description: "List todos with optional filters: status, priority, search, frontier (pending|active), parentId. Sorted high→low priority then newest first.",
+        input: {
+          type: "object",
+          properties: {
+            project: { type: "string", minLength: 1, maxLength: MAX_PROJECT },
+            limit: { type: "integer", minimum: 1, maximum: 100 },
+            status: { type: "string", enum: ["pending", "active", "done", "blocked"] },
+            priority: { type: "string", enum: ["low", "medium", "high"] },
+            search: { type: "string", maxLength: 500 },
+            frontier: { type: "boolean" },
+            parentId: { type: "string", minLength: 1, maxLength: MAX_TODO_ID },
+          },
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown) => {
+          const input = isBag(raw) ? raw : {};
+          const params = new URLSearchParams();
+          params.set("project", str(input.project, MAX_PROJECT) ?? cfg.project);
+          const lim = integer(input.limit, 1, 100);
+          if (lim !== undefined) params.set("limit", String(lim));
+          if (typeof input.status === "string") params.set("status", input.status);
+          if (typeof input.priority === "string") params.set("priority", input.priority);
+          if (typeof input.search === "string" && input.search.trim().length > 0) params.set("search", input.search.trim());
+          if (input.frontier === true) params.set("frontier", "true");
+          const pid = str(input.parentId, MAX_TODO_ID);
+          if (pid !== undefined) params.set("parentId", pid);
+          const outcome = await call(cfg, "GET", `memory/todos?${params.toString()}`, undefined);
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
+        },
+      });
+
+      editor.add({
+        name: "todo_get",
+        description: "Get one todo by its todoId.",
+        input: {
+          type: "object",
+          properties: { todoId: { type: "string", minLength: 1, maxLength: MAX_TODO_ID } },
+          required: ["todoId"],
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown) => {
+          const input = isBag(raw) ? raw : {};
+          const todoId = str(input.todoId, MAX_TODO_ID);
+          if (todoId === undefined) return invalid("`todoId` must be a non-empty string");
+          const outcome = await call(cfg, "GET", `memory/todos/${encodeURIComponent(todoId)}`, undefined);
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
+        },
+      });
+
+      editor.add({
+        name: "todo_update",
+        description: "Update a todo (title/description/priority/status/parentId). Set parentId null to clear parent; status flows pending→active→done/blocked.",
+        input: {
+          type: "object",
+          properties: {
+            todoId: { type: "string", minLength: 1, maxLength: MAX_TODO_ID },
+            title: { type: "string", minLength: 1, maxLength: MAX_TODO_TITLE },
+            description: { type: "string", maxLength: MAX_TODO_DESC },
+            priority: { type: "string", enum: ["low", "medium", "high"] },
+            status: { type: "string", enum: ["pending", "active", "done", "blocked"] },
+            parentId: { type: ["string", "null"] as unknown as string, minLength: 1, maxLength: MAX_TODO_ID },
+          },
+          required: ["todoId"],
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown) => {
+          const input = isBag(raw) ? raw : {};
+          const todoId = str(input.todoId, MAX_TODO_ID);
+          if (todoId === undefined) return invalid("`todoId` must be a non-empty string");
+          const body: Record<string, unknown> = {};
+          const t = typeof input.title === "string" ? input.title.trim() : undefined;
+          if (t !== undefined && t.length > 0) body.title = t;
+          if (typeof input.description === "string") body.description = input.description;
+          if (typeof input.priority === "string") body.priority = input.priority;
+          if (typeof input.status === "string") body.status = input.status;
+          if ("parentId" in input) body.parentId = input.parentId as string | null;
+          if (Object.keys(body).length === 0) return invalid("provide at least one field to update");
+          const outcome = await call(cfg, "PATCH", `memory/todos/${encodeURIComponent(todoId)}`, body);
+          if (outcome.ok) recallCache.clear();
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
+        },
+      });
+
+      editor.add({
+        name: "todo_delete",
+        description: "Delete one todo by its todoId.",
+        input: {
+          type: "object",
+          properties: { todoId: { type: "string", minLength: 1, maxLength: MAX_TODO_ID } },
+          required: ["todoId"],
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown) => {
+          const input = isBag(raw) ? raw : {};
+          const todoId = str(input.todoId, MAX_TODO_ID);
+          if (todoId === undefined) return invalid("`todoId` must be a non-empty string");
+          const outcome = await call(cfg, "DELETE", `memory/todos/${encodeURIComponent(todoId)}`, undefined);
+          if (outcome.ok) recallCache.clear();
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
+        },
+      });
+
+      editor.add({
+        name: "frontier",
+        description: "Frontier: unblocked todos ready to pick up next (pending ∪ active, priority-ordered).",
+        input: {
+          type: "object",
+          properties: {
+            project: { type: "string", minLength: 1, maxLength: MAX_PROJECT },
+            limit: { type: "integer", minimum: 1, maximum: 100 },
+          },
+          additionalProperties: false,
+        },
+        options: { namespace: "memory", codemode: true },
+        execute: async (raw: unknown) => {
+          const input = isBag(raw) ? raw : {};
+          const params = new URLSearchParams();
+          params.set("project", str(input.project, MAX_PROJECT) ?? cfg.project);
+          const lim = integer(input.limit, 1, 100);
+          if (lim !== undefined) params.set("limit", String(lim));
+          const outcome = await call(cfg, "GET", `memory/frontier?${params.toString()}`, undefined);
+          return outcome.ok ? ok(outcome.body) : failed(outcome.note);
         },
       });
     });

@@ -1,6 +1,6 @@
 # agent-memory
 
-[![Version](https://img.shields.io/badge/version-v0.8.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.9.0-blue.svg)](CHANGELOG.md)
 
 Persistent memory for AI coding agents — a v1 replica of
 [rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) rebuilt on

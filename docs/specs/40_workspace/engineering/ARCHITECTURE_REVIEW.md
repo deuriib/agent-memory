@@ -5,8 +5,105 @@
 
 | Lane | Proposal | Spec | Date | Verdict | ADR |
 |---|---|---|---|---|---|
-| **Lane 2 — P4 ops control plane (current)** | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-P4-OPS` | 2026-09-24 | **Approved-with-conditions (C1–C3)** | **none, verdict only** |
+| **Lane 3 — Todos follow-ups (current)** | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-020-todos` | 2026-09-25 | **Approved** | **none, verdict only (§6)** |
+| Lane 2 — P4 ops control plane | `PROPOSED_CHANGES.md` (7 rows) | `SPEC-P4-OPS` | 2026-09-24 | **Approved-with-conditions (C1–C3)** | **none, verdict only** |
 | Lane 1 — F01 embedding verify (prior, preserved below) | inline orchestrator proposal | `SPEC-F01-EMB` | 2026-09-24 | Conditional | none |
+
+---
+
+# Architecture Review: SPEC-020-todos (Todos follow-ups) — Lane 3
+
+**Reviewer:** engineering owner (R1, `general(vasquez)`) — per `skills/review-architecture/references/architecture-review.md`
+**Date:** 2026-09-25
+**Verdict:** **Approved** — per §6 ADR trigger test, no ADR required (verdict only)
+**Packet (reference-only):** `SPEC:docs/specs/20_backlog/SPEC-020-todos.md#REQ-TODO-01..07 / HARD:subagents / GATE:security-Approved / DOMAINS:R1,R2,R8`
+
+| Input | Artifact |
+|---|---|
+| Proposal (7 rows: 6 file-modify + 1 config/bootstrap) | `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md` — retro-doc lane, grounded `db/queries.ts:32-34,127-193,720-852` · `src/store.ts:289-351,1313-1472` · `src/server.ts:136-177,268-283,470-560` · `src/mcp.ts:113-147,411-536` · `plugins/opencode/plugins/agent-memory.ts:108-111,924-1097` · `hooks/capture.mjs:209-286` |
+| Canonical contract (this lane) | `docs/specs/10_design/ARCHITECTURE.md` v2 — singleton, already merged by `translate-to-spec` (DO NOT MODIFY per packet) |
+| Specs | `docs/specs/20_backlog/SPEC-020-todos.md` (REQ-TODO-01..07 + NFR-TODO-A..D) · `docs/briefs/BRIEF-todos.md` (approved 2026-09-25, frozen) |
+| Gate | `security-Approved` — bearer parity + hook PII posture co-signed by `general(barrera)` R2; this review does not re-decide R2 |
+
+## Contract Compliance — Interfaces (proposal vs ARCHITECTURE.md v2)
+
+| Contract Ask | ARCHITECTURE.md | PROPOSED_CHANGES.md | Status | Notes |
+|---|---|---|---|---|
+| **Todo node 12 indexes** (REQ-TODO-01) | §6 DB contract: `Todo {todoId,title,description,priority,status,project,sessionId,createdAt,updatedAt,parentId?}` + 4 indexes `todo_id` uniqueEquality `todoId`, `todo_project` equality `project`, `todo_status` equality `status`, `todo_title` text `title` tenant `project` → total 12; `todoRowProjection` + 6 builders `saveTodo/listTodos/getTodoById/updateTodo/searchTodosByText/deleteTodo`; `db/queries.ts:32-34,127-193,727-862` | Row `db/queries.ts` file-modify — identical 4 indexes, identical label `Todo`, identical projection `$id→id + 9 fields` with `parentId="" → undefined` on read, identical param sets/batches; no other DDL; `scripts/bootstrap.ts` 8→12 | **pass** | Proposal is verbatim restatement of §6. Additive only via `bootstrapIndexes`; Types `TodoRow` in `src/store.ts:289-322` carry `parentId` absent-as-"" semantics. |
+| **Alias `/agentmemory/`** (REQ-TODO-02) | §7 REST contract: `isAgentMemoryAlias` rewrites `/agentmemory/todos*` and `/agentmemory/frontier*` → `/memory/*` **before** bearer guard; bearer identical to other `/memory/*` (only `livez` exempt, 401 + `www-authenticate: Bearer`); 6 routes with schemas strict, `parentIdSchema 1..200` | Row `src/server.ts` file-modify — same rewriter position before guard, same 6 routes `POST /memory/todos 201`, `GET /memory/todos 200 {todos}`, `GET /memory/todos/:id`, `PATCH /memory/todos/:id {parentId:string\|null}`, `DELETE /memory/todos/:id`, `GET /memory/frontier 200 {frontier,count}` + alias pair; `src/server.ts:136-177,268-283,470-560,584-588` | **pass** | Scope-limited rewriter (only `todos\|frontier`, remainder 404) matches §7 Notes + SPEC R3 Low. No port or guard weakening. |
+| **parentId optional hierarchy** (REQ-TODO-04) | INV-012 + §7/Components: scalar `parentId?` only, app-side filter (no dedicated index), fail-closed `parent todo not found: <id>` → 400, `cannot be its own parent` → 400, `PATCH parentId:null` clears (`""` stored → read undefined), `GET ?parentId=` exact-match `parentId ?? ""` | Rows `src/store.ts` + `src/server.ts` + `src/mcp.ts` + `plugins/...` — `createTodo`/`updateTodo` lookup `getTodo(parentId)` → throw 400, `updateTodo` merge `null→""` clear, `===todoId` self 400, `parentIdSchema`/`MAX_TODO_ID 200` bounds; `filterTodos` exact `parentId`; MCP `memory_todo_create/update` + plugin `memory/todo_create/update` mirror `string\|null` | **pass** | INV-012 preserved verbatim; over-fetch `max(limit*4,100)` ≤400 accepted residual (SPEC R1 Low, NFR horizon >1k children). No `PARENT_OF` edge (explicit out-of-scope, SPEC §5). |
+| **Frontier semantics** (REQ-TODO-06 + REQ-TODO-03 sort) | §7 `GET /memory/frontier {frontier,count}` = `pending ∪ active` priority-ordered; `filterTodos` order `priorityRank(high3>med2>low1) desc → updatedAt localeCompare desc → todoId asc`; `GET /memory/todos?frontier=true` same set; search branch BM25 `searchTodosByText(q,project,limit)` → `filterTodos` + substring fallback | Rows `src/store.ts` (`filterTodos`, `frontierTodos` delegates to `listTodos({frontier:true})`, `rawListTodos(max(limit*4,100))`) + `src/server.ts` frontier route + `src/mcp.ts` `memory_frontier` + plugin `memory/frontier`; heuristic search BM25 on `todo_title` tenant `project` + fallback `title/description` icase over 200 | **pass** | Frontier = unblocked = `pending∪active`; `done\|blocked` excluded next read; `search+frontier` composition via `filterTodos` as specced. No graph/lease/signal semantics added (INV-011). |
+| **Remaining surfaces** — MCP 6 tools (REQ-TODO-05), plugin 6 tools + hook auto-extract (REQ-TODO-07) | §8 MCP `memory_todo_create/list/get/update/delete` + `memory_frontier` via `handle(_meta)` bearer; §9 plugin 6 tools namespace `memory` codemode total 11; §10 hook `Stop\|SessionEnd\|PreCompact\|PostToolUse`, `collectBody` ≥400, lines 12..200, cap 5→dedup→3, 1.5s fire-and-forget, exit 0 | Rows `src/mcp.ts:113-147,411-536` (isMetaAuthorized, `_meta.authorization="Bearer <secret>"`), `plugins/opencode/plugins/agent-memory.ts:108-111,924-1097` (`MAX_TODO_TITLE 500` etc), `hooks/capture.mjs:209-286` (extractTodos pure + POST ≤3) | **pass** | Each maps onto existing Components table entry; hook never logs prompt/secret (Ley 172-13 NFR-TODO-B); zero new deps (NFR-TODO-A), never kill intact (NFR-TODO-C). |
+
+## Contract Compliance — Invariants (INV-001..012, `ARCHITECTURE.md:165-198`)
+
+| Invariant | Status | Notes |
+|-----------|--------|-------|
+| INV-001 zero new deps | pass | `node:` + `@helix-db/helix-db@3.0.4` only; `package.json`/`package-lock.json` untouched per PROPOSED_CHANGES Risk/Alternatives. |
+| INV-002 frozen surfaces | pass | Lane is retro-doc — no new `src/**`/`db/**` edit proposed; `helix.toml` additive via `bootstrapIndexes` 12 (sanctioned, §6). Previous P4 lane's `[local.slotN]` + MCP stdio rules unaffected. |
+| INV-003 never-kill | pass | No signal/kill path in change set; hook 1.5s timeout bounded; `src/server.ts:641-661` port guards untouched. |
+| INV-004 no secret in output/state | pass | Hooks/MCP/plugin never log secret; `logSafeNote` sanitized; bearer passthrough only. |
+| INV-005 defaults untouched | pass | REST 3111 / Helix 6969 / `AGENT_MEMORY_URL` default preserved; alias is rewrite, not default change. |
+| INV-006 doctor verdict closed set | pass | Not touched by this lane (R1 todos only). |
+| INV-007 state file outside HELIX_DATA_DIR | pass | Not touched. |
+| INV-008 migration fail-closed | pass | Not touched. |
+| INV-009 status ≠ doctor | pass | Not touched. |
+| INV-010 env/flags only | pass | Not touched; this lane derives no new slot/quartet. |
+| INV-011 todos naming `todos` never `actions`; graph/leases/signals out-of-scope | pass | Proposal + ARCHITECTURE §2/§5 explicitly enforce `todos` everywhere, YAGNI cut `requires/unlocks/gated_by/conflicts_with` deferred to P4.3. |
+| INV-012 parentId app-side, fail-closed 400, null clears | pass | Matched above; no dedicated parentId index minted. |
+
+## Cross-Domain Contract Impact
+
+- **R2 (Security) — GATE:security-Approved already:** bearer guard on 6 REST routes + alias before guard, MCP `_meta` bearer (`isMetaAuthorized`/`handle`), hook allowlist (no prompt text, no secret, titles `clean 0..120`), Ley 172-13 purpose/TTL/minimization (NFR-TODO-B) — all consumed as `ARCHITECTURE.md` §7/§8/§10 state and `PROPOSED_CHANGES.md` Security Considerations. This review does not re-decide R2; it records the gate as satisfied.
+- **R8 (Automation/Ops):** hook detached `extractTodos` pure + fire-and-forget `slice(0,3)` `AbortSignal.timeout(1500)`, always exit 0; plugin `memory/*` 5→11 with `recallCache.clear()` on mutate; `scripts/bootstrap.ts` 12-index expectation. No pipeline/CI gate weakening (INV-010, R8 scope). Consumed verbatim from ARCHITECTURE §10 + PROPOSED_CHANGES R8 row.
+- **No cross-domain delta:** neither proposal nor review edits `SPEC-P4-OPS-RUNBOOK.md` or the §4b allowlist; all cross-domain interfaces enumerated in AGENTS.md guardrails remain satisfied.
+
+## ADR Required? — §6 Trigger Test
+
+- [ ] Yes — ADR created
+- [x] **No — change is within existing contracts (verdict only, citing §6)**
+
+### Reasoning (no-ADR verdict, §6)
+
+ADR trigger test — breaks/creates an invariant, adds a component to the canonical contract, or changes a cross-domain contract. None fires:
+
+1. **No invariant broken or created.** Proposal implements INV-011 and INV-012 exactly as `ARCHITECTURE.md` v2 already states them; INV-001..010 untouched. It mints no new invariant. The 4 Todo indexes are not a new invariant — they are the §6 DB contract that `translate-to-spec` already merged into the canonical file.
+2. **No component added beyond the contract.** Every proposal row maps onto an existing Components/Interfaces/Data Flow entry: Todo node (§6), REST + frontier (§7), MCP (§8), plugin (§9), hook (§10). Data Flow §5 Todos lifecycle already describes the end-to-end `POST → BM25+fallback → filterTodos → frontier` flow. No watcher, janitor, second binary, new edge type, or new Helix label beyond `Todo`.
+3. **No cross-domain contract changed.** R2 security and R8 automation contracts are *consumed* unchanged; the proposal edits neither the R8 runbook nor the R2 allowlist. Blast radius is dev-only (`storage="disk"`, loopback `POST /memory/todos`), no customer/regulator/revenue plane impact.
+
+Comparator applied: **Todo node 12 indexes** (§6), **alias** (`isAgentMemoryAlias` before guard, §7), **parentId scalar app-side** (INV-012 + §7), **frontier `pending∪active` priority-ordered** (§7 + §5 lifecycle) — all four are cited verbatim in both artifacts; no delta.
+
+### Condition that invalidates this no-ADR verdict (§6)
+
+Execution **STOPs and mints `docs/specs/12_adr/ADR-012-todos.md`** (`Status: proposed`; next free number — `docs/adr/ADR-0001` exists, `docs/specs/12_adr/` does not exist yet; one number, one file, never reuse) if reconciliation or implementation reveals any of:
+
+- an **ARCHITECTURE.md amendment** — e.g. adding a `PARENT_OF` edge, a dedicated `parentId` index, a `todo_description` text index for BM25, or a new `TodoHistory` label — any edit to the canonical contract requires an ADR;
+- a **new component** outside the Components table (a watcher/janitor, second binary, new route/tool beyond the 6+6+6, or a new Helix label beyond `Todo`);
+- an **invariant delta** — any deviation from INV-001..012 (including weakening `INV-012` fail-closed 400, changing frontier to include `blocked`, or adding graph/lease/signal semantics);
+- a **cross-domain change** — any edit to `SPEC-P4-OPS-RUNBOOK.md` (R8) or to the R2 §4b allowlist scope rather than consumption by name.
+
+Default otherwise: citation-only, no ADR (this verdict).
+
+## Conditions for Approval
+
+None — **Approved** without conditions. `GATE:security-Approved` satisfied; `HARD:subagents` honored (retro-doc lane, subagents frozen at frame-intent); `ARCHITECTURE.md` v2 requires no in-lane edit per packet. Cleared for `frame-ship:quality-gate` and `frame-ship:verify-handoff`.
+
+## Sign-off
+
+- [x] **engineering owner (R1, `general(vasquez)`)** — **Approved**: proposal matches `ARCHITECTURE.md` v2 on Todo node 12 indexes (§6), alias before guard (§7), parentId scalar app-side (INV-012), frontier `pending∪active` priority-ordered (§7 + Data Flow §5); no invariant break, no new component, no cross-domain delta; **no ADR (verdict only, §6)**.
+- [x] **security owner (R2, `general(barrera)`)** — **Approved** (gate carried: `GATE:security-Approved` in packet; bearer + alias-before-guard + MCP `_meta` + hook no-PII posture co-signed).
+- [ ] **automation/ops owner (R8, `general(espinoza)`) — PENDING countersignature if required** (hook detached + plugin tool count + bootstrap 12 consumed as written; no pipeline change).
+
+**Packet:** `SPEC:docs/specs/20_backlog/SPEC-020-todos.md#REQ-TODO-01..07 / HARD:subagents / GATE:security-Approved / DOMAINS:R1,R2,R8`
+**ADR:** none, verdict only (§6) — invalidation triggers above; next free number reserved: `ADR-012-todos` (mint only on trigger)
+**Commit:** left to orchestrator (lane synthesis): `docs(arch-review): SPEC-020-todos Approved, no ADR (§6)`
+
+### Scoped evidence (this review)
+
+- `docs/specs/40_workspace/engineering/PROPOSED_CHANGES.md:13-29` (summary + 7 rows), `:32-44` (alternatives), `:61-96` (risk + blast radius + rollback), `:98-106` (C2 hook) — retro-doc lane.
+- `docs/specs/10_design/ARCHITECTURE.md:27-44` (Components — 5 Todo rows), `:112-139` (§6–§10 Todos contracts: DB §6, REST §7, MCP §8, plugin §9, hook §10), `:141-198` (Data Flow §5 Todos lifecycle + INV-011/INV-012 + frozen surfaces), `:199-209` (NFRs perf/avail/security).
+- `docs/specs/20_backlog/SPEC-020-todos.md:20-53` (REQ-TODO-01..07), `:54-60` (NFR-TODO-A..D), `:61-73` (AC-TODO-01..07 traceability), `:108-145` (dependencies/risks R1..R3 + assumptions A1..A3), grounded anchors `db/queries.ts:32-34,127-193` · `src/store.ts:289-351,1313-1472` · `src/server.ts:136-177,268-283,470-560` · `src/mcp.ts:113-147,411-536` · `hooks/capture.mjs:209-286` · `plugins/opencode/plugins/agent-memory.ts:108-111,924-1097`.
+- Repo state: `docs/specs/10_design/ARCHITECTURE.md` v2 intact (not modified per packet); `docs/specs/12_adr/` does not exist → no ADR minted (verdict only); `docs/adr/ADR-0001-*` exists (convention); `GATE:security-Approved` carried in packet.
 
 ---
 

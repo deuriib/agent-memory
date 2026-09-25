@@ -22,24 +22,36 @@ import {
 } from "@helix-db/helix-db";
 import {
   EMBED_DIM,
+  deleteTodo as deleteTodoQuery,
+  deleteTodoParams,
   findMemoryByDedupKey as findMemoryByDedupKeyQuery,
   findMemoryByDedupKeyParams,
   forgetMemory as forgetMemoryQuery,
   getMemoryById as getMemoryByIdQuery,
   getMemoryByIdParams,
+  getTodoById as getTodoByIdQuery,
+  getTodoByIdParams,
   graphSearch as graphSearchQuery,
   healthCount as healthCountQuery,
   linkMemoryConcepts as linkMemoryConceptsQuery,
   linkMemoryConceptsParams,
   listSessions as listSessionsQuery,
+  listTodos as listTodosQuery,
+  listTodosParams,
   memoryConcepts as memoryConceptsQuery,
   memoryConceptsParams,
   saveMemory as saveMemoryQuery,
+  saveTodo as saveTodoQuery,
+  saveTodoParams,
   searchByText as searchByTextQuery,
   searchByVector as searchByVectorQuery,
+  searchTodosByText as searchTodosByTextQuery,
+  searchTodosByTextParams,
   sessionMemories as sessionMemoriesQuery,
   updateMemoryContent as updateMemoryContentQuery,
   updateMemoryContentParams,
+  updateTodo as updateTodoQuery,
+  updateTodoParams,
 } from "../db/queries.js";
 import { embed } from "./embed.js";
 import { extractConcepts } from "./concepts.js";
@@ -274,6 +286,51 @@ export interface SessionMemoriesInput {
   limit: number;
 }
 
+export type TodoPriority = "low" | "medium" | "high";
+export type TodoStatus = "pending" | "active" | "done" | "blocked";
+
+export interface TodoRow {
+  id: string;
+  todoId: string;
+  title: string;
+  description: string;
+  priority: TodoPriority;
+  status: TodoStatus;
+  project: string;
+  sessionId: string;
+  createdAt: string;
+  updatedAt: string;
+  parentId?: string;
+}
+
+export interface CreateTodoInput {
+  title: string;
+  description?: string;
+  priority?: TodoPriority;
+  status?: TodoStatus;
+  project: string;
+  sessionId?: string;
+  parentId?: string;
+}
+
+export interface UpdateTodoInput {
+  title?: string;
+  description?: string;
+  priority?: TodoPriority;
+  status?: TodoStatus;
+  parentId?: string | null;
+}
+
+export interface ListTodosInput {
+  project: string;
+  limit: number;
+  status?: TodoStatus;
+  priority?: TodoPriority;
+  search?: string;
+  frontier?: boolean;
+  parentId?: string;
+}
+
 export interface MemoryStore {
   remember(input: RememberInput): Promise<RememberResult>;
   searchByVector(input: VectorSearchInput): Promise<SearchHit[]>;
@@ -284,6 +341,13 @@ export interface MemoryStore {
   /** true when the response indicates the node was deleted, false when not found. */
   forget(memoryId: string): Promise<boolean>;
   healthCounts(project: string): Promise<HealthCounts>;
+  // Todos — follow-ups: decisions to revisit, files to inspect, tasks blocked on input
+  createTodo(input: CreateTodoInput): Promise<TodoRow>;
+  listTodos(input: ListTodosInput): Promise<TodoRow[]>;
+  getTodo(todoId: string): Promise<TodoRow | undefined>;
+  updateTodo(todoId: string, patch: UpdateTodoInput): Promise<TodoRow | undefined>;
+  deleteTodo(todoId: string): Promise<boolean>;
+  frontierTodos(input: { project: string; limit: number }): Promise<TodoRow[]>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -387,6 +451,37 @@ function toSessionRow(row: Record<string, unknown>): SessionRow {
     project: readString(row, ["project"], ""),
     startedAt: readString(row, ["startedAt", "started_at", "createdAt"], ""),
     updatedAt: readString(row, ["updatedAt", "updated_at"], ""),
+  };
+}
+
+const TODO_ROW_NAMES = ["todos", "hits", "results", "rows"] as const;
+
+function priorityRank(p: string): number {
+  if (p === "high") return 3;
+  if (p === "medium") return 2;
+  return 1; // low or unknown
+}
+
+function toTodoRow(row: Record<string, unknown>): TodoRow {
+  const todoId = readString(row, ["todoId", "todo_id"], "");
+  const priorityRaw = readString(row, ["priority"], "medium").toLowerCase();
+  const statusRaw = readString(row, ["status"], "pending").toLowerCase();
+  const priority: TodoPriority = priorityRaw === "high" ? "high" : priorityRaw === "low" ? "low" : "medium";
+  const status: TodoStatus =
+    statusRaw === "active" ? "active" : statusRaw === "done" ? "done" : statusRaw === "blocked" ? "blocked" : "pending";
+  const parentRaw = readString(row, ["parentId", "parent_id"], "");
+  return {
+    id: readString(row, ["id", "$id"], todoId),
+    todoId,
+    title: readString(row, ["title"], ""),
+    description: readString(row, ["description"], ""),
+    priority,
+    status,
+    project: readString(row, ["project"], ""),
+    sessionId: readString(row, ["sessionId", "session_id"], ""),
+    createdAt: readString(row, ["createdAt", "created_at"], ""),
+    updatedAt: readString(row, ["updatedAt", "updated_at"], ""),
+    parentId: parentRaw !== "" ? parentRaw : undefined,
   };
 }
 
@@ -1214,6 +1309,166 @@ export class HelixStore implements MemoryStore {
     }
     return { memories, sessions };
   }
+
+  // ---- Todos ----------------------------------------------------
+  async createTodo(input: CreateTodoInput): Promise<TodoRow> {
+    const todoId = `todo_${randomUUID()}`;
+    const now = new Date().toISOString();
+    const title = input.title.trim();
+    if (title.length === 0) throw new Error("title is required");
+    if (title.length > 500) throw new Error("title too long (max 500)");
+    const description = (input.description ?? "").trim().slice(0, 5000);
+    const priority = input.priority ?? "medium";
+    const status = input.status ?? "pending";
+    const parentId = (input.parentId ?? "").trim().slice(0, 200);
+    if (parentId !== "") {
+      // best-effort parent check: if parent exists but in different project, allow? enforce same project if found
+      const parent = await this.getTodo(parentId).catch(() => undefined);
+      if (parent === undefined) throw new Error(`parent todo not found: ${parentId}`);
+    }
+    const response = await this.send(
+      saveTodoQuery().toQueryRequest(saveTodoParams, {
+        todoId,
+        title,
+        description,
+        priority,
+        status,
+        project: input.project,
+        sessionId: input.sessionId ?? "",
+        createdAt: now,
+        updatedAt: now,
+        parentId,
+      }),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "todo")) {
+      throw new Error("saveTodo response did not include the 'todo' return");
+    }
+    const rows = rowsOf(response, ["todo"]);
+    if (rows !== undefined && rows.length > 0) {
+      const parsed = toRecords(rows).map(toTodoRow)[0];
+      if (parsed !== undefined && parsed.todoId !== "") return parsed;
+    }
+    return {
+      id: todoId,
+      todoId,
+      title,
+      description,
+      priority,
+      status,
+      project: input.project,
+      sessionId: input.sessionId ?? "",
+      createdAt: now,
+      updatedAt: now,
+      parentId: parentId !== "" ? parentId : undefined,
+    };
+  }
+
+  async listTodos(input: ListTodosInput): Promise<TodoRow[]> {
+    // Text search path — project-scoped BM25 on title
+    if (input.search !== undefined && input.search.trim().length > 0) {
+      const q = input.search.trim();
+      const response = await this.send(
+        searchTodosByTextQuery().toQueryRequest(searchTodosByTextParams, { q, project: input.project, k: input.limit }),
+      );
+      let hits = hitsFromTodo(response, ["hits"]);
+      hits = this.filterTodos(hits, input);
+      // also include substring fallback that text index may miss (e.g. short tokens)
+      if (hits.length === 0) {
+        const all = await this.rawListTodos(input.project, 200);
+        const lower = q.toLowerCase();
+        const sub = all.filter((t) => t.title.toLowerCase().includes(lower) || t.description.toLowerCase().includes(lower));
+        hits = this.filterTodos(sub, input);
+      }
+      return hits.slice(0, input.limit);
+    }
+    const all = await this.rawListTodos(input.project, Math.max(input.limit * 4, 100));
+    const filtered = this.filterTodos(all, input);
+    return filtered.slice(0, input.limit);
+  }
+
+  private filterTodos(rows: TodoRow[], input: ListTodosInput): TodoRow[] {
+    let out = rows;
+    if (input.status !== undefined) out = out.filter((t) => t.status === input.status);
+    if (input.priority !== undefined) out = out.filter((t) => t.priority === input.priority);
+    if (input.parentId !== undefined) out = out.filter((t) => (t.parentId ?? "") === input.parentId);
+    if (input.frontier === true) out = out.filter((t) => t.status === "pending" || t.status === "active");
+    // sort: frontier ordering high→low priority, then updatedAt desc, then todoId
+    out.sort((a, b) => {
+      const pr = priorityRank(b.priority) - priorityRank(a.priority);
+      if (pr !== 0) return pr;
+      const at = b.updatedAt.localeCompare(a.updatedAt);
+      if (at !== 0) return at;
+      return a.todoId.localeCompare(b.todoId);
+    });
+    return out;
+  }
+
+  private async rawListTodos(project: string, limit: number): Promise<TodoRow[]> {
+    const response = await this.send(listTodosQuery().toQueryRequest(listTodosParams, { project, limit }));
+    if (!isRecord(response)) throw new Error("unexpected helix response shape (not an object)");
+    const rows = rowsOf(response, TODO_ROW_NAMES);
+    if (rows === undefined) return [];
+    return toRecords(rows).map(toTodoRow);
+  }
+
+  async getTodo(todoId: string): Promise<TodoRow | undefined> {
+    const response = await this.send(getTodoByIdQuery().toQueryRequest(getTodoByIdParams, { todoId }));
+    if (!isRecord(response)) throw new Error("unexpected helix response shape (not an object)");
+    const rows = rowsOf(response, ["todo"]);
+    if (rows === undefined || rows.length === 0) return undefined;
+    const row = toRecords(rows)[0];
+    if (row === undefined) return undefined;
+    const parsed = toTodoRow(row);
+    if (parsed.todoId === "") return undefined;
+    return parsed;
+  }
+
+  async updateTodo(todoId: string, patch: UpdateTodoInput): Promise<TodoRow | undefined> {
+    const existing = await this.getTodo(todoId);
+    if (existing === undefined) return undefined;
+    const title = patch.title !== undefined ? patch.title.trim() : existing.title;
+    const description = patch.description !== undefined ? patch.description.trim().slice(0, 5000) : existing.description;
+    const priority = patch.priority ?? existing.priority;
+    const status = patch.status ?? existing.status;
+    let parentId: string;
+    if (patch.parentId === null) parentId = "";
+    else if (patch.parentId !== undefined) {
+      parentId = patch.parentId.trim().slice(0, 200);
+      if (parentId !== "") {
+        if (parentId === todoId) throw new Error("todo cannot be its own parent");
+        const parent = await this.getTodo(parentId).catch(() => undefined);
+        if (parent === undefined) throw new Error(`parent todo not found: ${parentId}`);
+      }
+    } else {
+      parentId = existing.parentId ?? "";
+    }
+    if (title.length === 0) throw new Error("title is required");
+    const updatedAt = new Date().toISOString();
+    const response = await this.send(
+      updateTodoQuery().toQueryRequest(updateTodoParams, { todoId, title, description, priority, status, updatedAt, parentId }),
+    );
+    if (!isRecord(response) || !Object.hasOwn(response, "updated")) {
+      throw new Error("updateTodo response did not include the 'updated' return");
+    }
+    if (!indicatesPresence(response["updated"])) throw new Error("updateTodo did not update any row");
+    return { ...existing, title, description, priority, status, updatedAt, parentId: parentId !== "" ? parentId : undefined };
+  }
+
+  async deleteTodo(todoId: string): Promise<boolean> {
+    const response = await this.send(deleteTodoQuery().toQueryRequest(deleteTodoParams, { todoId }));
+    return indicatesPresence(response);
+  }
+
+  async frontierTodos(input: { project: string; limit: number }): Promise<TodoRow[]> {
+    return this.listTodos({ project: input.project, limit: input.limit, frontier: true });
+  }
+}
+
+function hitsFromTodo(response: unknown, names: readonly string[]): TodoRow[] {
+  if (!isRecord(response)) throw new Error("unexpected helix response shape (not an object)");
+  const rows = rowsOf(response, names);
+  if (rows === undefined) throw new Error(`helix response missing a result array (wanted one of: ${names.join(", ")})`);
+  return toRecords(rows).map(toTodoRow);
 }
 
 /** Shared factory: REST server and MCP server build the same store. */

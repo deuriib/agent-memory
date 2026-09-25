@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   try {
     await client.query(bootstrapIndexes().toQueryRequest()).send();
-    console.log("bootstrapIndexes: OK (8 indexes ensured)");
+    console.log("bootstrapIndexes: OK (12 indexes ensured)");
   } catch (err) {
     console.error(`FAILED — bootstrapIndexes rejected by ${url}: ${describeError(err)}`);
     process.exit(1);

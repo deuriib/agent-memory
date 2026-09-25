@@ -177,37 +177,112 @@ async function main() {
   if (typeof hook !== "object" || hook === null || Array.isArray(hook)) return;
 
   const content = observationFor(event, hook);
-  if (content === null || content.length === 0) return;
+  if (content !== null && content.length > 0) {
+    const payload = {
+      content,
+      project: projectFor(hook),
+      sessionId: sessionIdFor(hook),
+      origin: `hook:${event}`, // frozen origin format from contract §3
+    };
 
-  const payload = {
-    content,
-    project: projectFor(hook),
-    sessionId: sessionIdFor(hook),
-    origin: `hook:${event}`, // frozen origin format from contract §3
-  };
-
-  const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
-  let url;
-  try {
-    // URL API does the joining — no hand-built request strings, and the
-    // trailing slash keeps any path prefix in AGENT_MEMORY_URL intact.
-    url = new URL("memory/remember", base.endsWith("/") ? base : `${base}/`);
-  } catch {
-    return; // misconfigured base URL: ignore
+    const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
+    let url;
+    try {
+      url = new URL("memory/remember", base.endsWith("/") ? base : `${base}/`);
+    } catch {
+      // misconfigured base url handled below for todos as well
+      url = null;
+    }
+    if (url !== null) {
+      const headers = { "content-type": "application/json" };
+      const secret = process.env.AGENT_MEMORY_SECRET;
+      if (typeof secret === "string" && secret.length > 0) headers.authorization = `Bearer ${secret}`;
+      await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(2000),
+      }).catch(() => undefined);
+    }
   }
 
-  const headers = { "content-type": "application/json" };
-  const secret = process.env.AGENT_MEMORY_SECRET;
-  if (typeof secret === "string" && secret.length > 0) {
-    headers.authorization = `Bearer ${secret}`; // same guard as REST, never logged
+  // Todos auto-extract (#3) — long session bodies → follow-ups (no blocking)
+  const todos = extractTodos(event, hook);
+  if (todos.length > 0) {
+    const base = process.env.AGENT_MEMORY_URL ?? "http://127.0.0.1:3111";
+    let url;
+    try {
+      url = new URL("memory/todos", base.endsWith("/") ? base : `${base}/`);
+    } catch {
+      return;
+    }
+    const headers = { "content-type": "application/json" };
+    const secret = process.env.AGENT_MEMORY_SECRET;
+    if (typeof secret === "string" && secret.length > 0) headers.authorization = `Bearer ${secret}`;
+    const project = projectFor(hook);
+    const sessionId = sessionIdFor(hook);
+    // Fire-and-forget up to 3 todos, each bounded, never throws
+    for (const t of todos.slice(0, 3)) {
+      await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ title: t.title, description: t.description, priority: t.priority, project, sessionId }),
+        signal: AbortSignal.timeout(1500),
+      }).catch(() => undefined);
+    }
   }
+}
 
-  await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(2000), // a hung server must not hang the agent
+function extractTodos(event, hook) {
+  // Only on session-end / stop / compaction where a long body may be present
+  if (event !== "Stop" && event !== "SessionEnd" && event !== "PreCompact" && event !== "PostToolUse") return [];
+  const body = collectBody(hook);
+  if (body.length < 400) return [];
+  // Heuristics: lines containing TODO/FIXME/decision/revisit/inspect/blocked
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length >= 12 && l.length <= 200);
+  const hits = [];
+  for (const line of lines) {
+    if (/^(TODO|FIXME|HACK|decision|revisit|inspect|blocked on|follow-?up)\b/i.test(line)) {
+      hits.push({ title: clean(line.slice(0, 120), 120), description: "auto-extracted from session", priority: "medium" });
+    } else if (line.length > 60 && /\b(should|need to|must|blocked|revisit)\b/i.test(line)) {
+      hits.push({ title: clean(line.slice(0, 120), 120), description: "auto-extracted from session", priority: "low" });
+    }
+    if (hits.length >= 5) break;
+  }
+  // Deterministic dedup by title
+  const seen = new Set();
+  return hits.filter((h) => {
+    const k = h.title.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
   });
+}
+
+function collectBody(hook) {
+  const candidates = [
+    hook.transcript,
+    hook.session_body,
+    hook.body,
+    hook.content,
+    hook.prompt?.text,
+    hook.tool_output,
+    hook.result,
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.length >= 400) return c;
+    if (Array.isArray(c)) {
+      const joined = c.map((x) => (typeof x === "string" ? x : typeof x?.text === "string" ? x.text : "")).join("\n");
+      if (joined.length >= 400) return joined;
+    }
+  }
+  // fallback: stringify hook and scan for long text values
+  try {
+    const flat = JSON.stringify(hook);
+    return flat.length > 800 ? flat.slice(0, 4000) : "";
+  } catch {
+    return "";
+  }
 }
 
 main()

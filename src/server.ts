@@ -133,6 +133,48 @@ const listQuerySchema = z.object({
 
 const healthQuerySchema = z.object({ project: projectSchema.optional() });
 
+/* Todos — follow-ups: decisions to revisit, files to inspect, tasks blocked on input */
+const todoPrioritySchema = z.enum(["low", "medium", "high"]);
+const todoStatusSchema = z.enum(["pending", "active", "done", "blocked"]);
+const parentIdSchema = z.string().trim().min(1).max(200);
+
+const createTodoBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(500),
+    description: z.string().trim().max(5000).optional(),
+    priority: todoPrioritySchema.optional(),
+    status: todoStatusSchema.optional(),
+    project: projectSchema.optional(),
+    sessionId: sessionIdSchema.optional(),
+    parentId: parentIdSchema.optional(),
+  })
+  .strict();
+
+const updateTodoBodySchema = z
+  .object({
+    title: z.string().trim().min(1).max(500).optional(),
+    description: z.string().trim().max(5000).optional(),
+    priority: todoPrioritySchema.optional(),
+    status: todoStatusSchema.optional(),
+    parentId: z.union([parentIdSchema, z.null()]).optional(),
+  })
+  .strict();
+
+const listTodosQuerySchema = z.object({
+  project: projectSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  status: todoStatusSchema.optional(),
+  priority: todoPrioritySchema.optional(),
+  search: z.string().trim().max(500).optional(),
+  frontier: z.coerce.boolean().optional(),
+  parentId: parentIdSchema.optional(),
+});
+
+const frontierQuerySchema = z.object({
+  project: projectSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 /* ------------------------------------------------------------------ */
 /* HTTP plumbing                                                       */
 /* ------------------------------------------------------------------ */
@@ -231,7 +273,13 @@ async function routeRequest(
 ): Promise<number> {
   const method = req.method ?? "GET";
   const url = new URL(req.url ?? "/", "http://memory.local"); // inbound parsing only
-  const path = url.pathname;
+  let path = url.pathname;
+
+  // Compat: image shows POST http://localhost:3111/agentmemory/todos — support /agentmemory/* alias for todos/frontier
+  const isAgentMemoryAlias = path.startsWith("/agentmemory/");
+  if (isAgentMemoryAlias && (path.startsWith("/agentmemory/todos") || path.startsWith("/agentmemory/frontier"))) {
+    path = path.replace("/agentmemory/", "/memory/");
+  }
 
   // Everything under /memory/ is guarded; `livez` alone is exempt.
   if (!path.startsWith("/memory/")) throw new HttpError(404, "not_found");
@@ -417,6 +465,97 @@ async function routeRequest(
     );
     sendJson(res, 200, { deleted: true, receipt: { memoryId: body.memoryId, deletedAt } });
     return 200;
+  }
+
+  // ---- Todos ----------------------------------------------------
+  // POST /memory/todos — create
+  if (path === "/memory/todos") {
+    if (method === "POST") {
+      const body = parseOr400(createTodoBodySchema, await readJsonBody(req));
+      try {
+        const todo = await store.createTodo({
+          title: body.title,
+          description: body.description,
+          priority: body.priority,
+          status: body.status,
+          project: body.project ?? DEFAULT_PROJECT,
+          sessionId: body.sessionId,
+          parentId: body.parentId,
+        });
+        sendJson(res, 201, { todo });
+        return 201;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("parent todo not found")) throw new HttpError(400, "invalid_request", msg);
+        throw err;
+      }
+    }
+    if (method === "GET") {
+      const query = parseOr400(listTodosQuerySchema, queryRecord(url));
+      const todos = await store.listTodos({
+        project: query.project ?? DEFAULT_PROJECT,
+        limit: query.limit ?? DEFAULT_LIMIT,
+        status: query.status,
+        priority: query.priority,
+        search: query.search,
+        frontier: query.frontier,
+        parentId: query.parentId,
+      });
+      sendJson(res, 200, { todos });
+      return 200;
+    }
+    throw new HttpError(405, "method_not_allowed", "GET, POST");
+  }
+
+  // GET /memory/frontier — unblocked ready to pick (pending ∪ active, priority-ordered)
+  if (path === "/memory/frontier") {
+    requireMethod(method, "GET");
+    const query = parseOr400(frontierQuerySchema, queryRecord(url));
+    const todos = await store.frontierTodos({ project: query.project ?? DEFAULT_PROJECT, limit: query.limit ?? DEFAULT_LIMIT });
+    sendJson(res, 200, { frontier: todos, count: todos.length });
+    return 200;
+  }
+
+  // /memory/todos/:todoId
+  if (path.startsWith("/memory/todos/")) {
+    const todoId = decodeSegment(path.slice("/memory/todos/".length));
+    if (method === "GET") {
+      const todo = await store.getTodo(todoId);
+      if (todo === undefined) {
+        sendJson(res, 404, { error: "not_found" });
+        return 404;
+      }
+      sendJson(res, 200, { todo });
+      return 200;
+    }
+    if (method === "PATCH") {
+      const body = parseOr400(updateTodoBodySchema, await readJsonBody(req));
+      try {
+        const updated = await store.updateTodo(todoId, body as never);
+        if (updated === undefined) {
+          sendJson(res, 404, { error: "not_found" });
+          return 404;
+        }
+        sendJson(res, 200, { todo: updated });
+        return 200;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("parent todo not found") || msg.includes("cannot be its own parent") || msg.includes("title is required")) {
+          throw new HttpError(400, "invalid_request", msg);
+        }
+        throw err;
+      }
+    }
+    if (method === "DELETE") {
+      const deleted = await store.deleteTodo(todoId);
+      if (!deleted) {
+        sendJson(res, 404, { error: "not_found" });
+        return 404;
+      }
+      sendJson(res, 200, { deleted: true });
+      return 200;
+    }
+    throw new HttpError(405, "method_not_allowed", "GET, PATCH, DELETE");
   }
 
   throw new HttpError(404, "not_found");

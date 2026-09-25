@@ -289,6 +289,12 @@ async function main(): Promise<void> {
     sessionMemories: () => Promise.resolve([]),
     forget: () => Promise.resolve(false),
     healthCounts: () => Promise.resolve({ memories: 0, sessions: 0 }),
+    createTodo: () => Promise.reject(new Error("stub: createTodo not exercised")) as never,
+    listTodos: () => Promise.resolve([]),
+    getTodo: () => Promise.resolve(undefined),
+    updateTodo: () => Promise.resolve(undefined),
+    deleteTodo: () => Promise.resolve(false),
+    frontierTodos: () => Promise.resolve([]),
   };
   const mcpServer = new McpServer({ name: "verify-mcp", version: "0.0.0" });
   registerTools(mcpServer, mcpStubStore, undefined); // no secret -> auth gate passes without _meta
@@ -1170,6 +1176,12 @@ async function main(): Promise<void> {
     sessionMemories: () => Promise.reject(new Error("stub: sessionMemories not exercised")),
     forget: () => Promise.reject(new Error("stub: forget not exercised")),
     healthCounts: () => Promise.reject(new Error("stub: healthCounts not exercised")),
+    createTodo: () => Promise.reject(new Error("stub: createTodo not exercised")) as never,
+    listTodos: () => Promise.resolve([]),
+    getTodo: () => Promise.resolve(undefined),
+    updateTodo: () => Promise.resolve(undefined),
+    deleteTodo: () => Promise.resolve(false),
+    frontierTodos: () => Promise.resolve([]),
   });
   const stubBm25 = (q: string): { query: string; project: string; limit: number } => ({
     query: q,
